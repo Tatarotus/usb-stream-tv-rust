@@ -179,7 +179,10 @@ impl StreamBackend for LiveEngine {
         if need_reanchor {
             let old_pos = if anchor.active { mapped_spos0 } else { foff };
             let old_fend = anchor.last_fend;
-            let target_spos = if channel_switched || !anchor.active {
+            let target_spos = if channel_switched
+                || !anchor.active
+                || sm_decision == SmDecision::ConfirmedSeek
+            {
                 cur_write0.saturating_sub(LEADBACK)
             } else if let Some(resume_pos) = target_spos_override {
                 resume_pos

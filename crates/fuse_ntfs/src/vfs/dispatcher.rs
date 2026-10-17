@@ -883,4 +883,92 @@ mod tests {
         // The trailing hole bytes are zeros.
         assert!(buf[TS_PKT_SZ * 4..].iter().all(|&x| x == 0));
     }
+
+    /// Builds a raw INIT request in `buf`; returns the total request length.
+    fn init_request(buf: &mut AlignedFuseBuf, minor: u32, flags: u32) -> usize {
+        let req_len = IN_HDR_SZ + 16;
+        buf.0[..req_len].fill(0);
+        // SAFETY: 8-byte aligned buffer, req_len >= IN_HDR_SZ + 16.
+        let ih = unsafe { &mut *(buf.0.as_mut_ptr() as *mut fuse_in_header) };
+        ih.len = req_len as u32;
+        ih.opcode = FUSE_INIT;
+        ih.unique = 7;
+        let ii = unsafe { &mut *(buf.0[IN_HDR_SZ..].as_mut_ptr() as *mut fuse_init_in) };
+        ii.major = 7;
+        ii.minor = minor;
+        ii.max_readahead = MAX_MSG_SZ as u32;
+        ii.flags = flags;
+        req_len
+    }
+
+    fn dispatch_init(req: &mut AlignedFuseBuf, minor: u32, flags: u32) -> Box<AlignedFuseBuf> {
+        let (srv, _b) = server();
+        // fd = -1: `reply` discards the EBADF from the failed write.
+        let session = FuseSession::new(-1, srv);
+        let req_len = init_request(req, minor, flags);
+        let mut out = AlignedFuseBuf::new_boxed();
+        session.dispatch(&req.0[..req_len], &mut out);
+        out
+    }
+
+    fn out_len(out: &AlignedFuseBuf) -> usize {
+        u32::from_ne_bytes(out.0[0..4].try_into().unwrap()) as usize
+    }
+
+    fn out_err(out: &AlignedFuseBuf) -> i32 {
+        i32::from_ne_bytes(out.0[4..8].try_into().unwrap())
+    }
+
+    #[test]
+    fn test_init_reply_truncated_for_legacy_minor() {
+        let mut req = AlignedFuseBuf::new_boxed();
+        let out = dispatch_init(&mut req, 18, FUSE_ASYNC_READ | FUSE_BIG_WRITES);
+        // Tablet kernel 3.4.0 negotiates 7.18 (< 23): body capped at 24.
+        assert_eq!(out_len(&out), OUT_HDR_SZ + 24);
+        assert_eq!(out_err(&out), 0);
+        // SAFETY: 8-byte aligned buffer, reply covers the whole struct.
+        let io = unsafe { &*(out.0[OUT_HDR_SZ..].as_ptr() as *const fuse_init_out) };
+        assert_eq!(io.major, 7);
+        assert_eq!(io.minor, 18);
+        assert_eq!(io.max_readahead, MAX_MSG_SZ as u32);
+        assert_eq!(io.flags, FUSE_ASYNC_READ | FUSE_BIG_WRITES);
+        assert_eq!(io.max_write, MAX_MSG_SZ as u32);
+        // Zero-filled reply region: no stale MPEG-TS bytes leak into
+        // kernel-visible fields.
+        assert_eq!(io.max_background, 0);
+        assert_eq!(io.congestion_threshold, 0);
+    }
+
+    #[test]
+    fn test_init_reply_caps_minor_at_26() {
+        let mut req = AlignedFuseBuf::new_boxed();
+        let out = dispatch_init(&mut req, 31, FUSE_ASYNC_READ);
+        assert_eq!(
+            out_len(&out),
+            OUT_HDR_SZ + std::mem::size_of::<fuse_init_out>()
+        );
+        assert_eq!(out_err(&out), 0);
+        // SAFETY: as above.
+        let io = unsafe { &*(out.0[OUT_HDR_SZ..].as_ptr() as *const fuse_init_out) };
+        assert_eq!(io.major, 7);
+        assert_eq!(io.minor, 26);
+        assert_eq!(io.flags, FUSE_ASYNC_READ);
+    }
+
+    #[test]
+    fn test_init_rejects_short_payload() {
+        let (srv, _b) = server();
+        let session = FuseSession::new(-1, srv);
+        let mut req = AlignedFuseBuf::new_boxed();
+        req.0[..IN_HDR_SZ].fill(0);
+        // SAFETY: 8-byte aligned buffer, IN_HDR_SZ bytes available.
+        let ih = unsafe { &mut *(req.0.as_mut_ptr() as *mut fuse_in_header) };
+        ih.len = IN_HDR_SZ as u32;
+        ih.opcode = FUSE_INIT;
+        ih.unique = 9;
+        let mut out = AlignedFuseBuf::new_boxed();
+        session.dispatch(&req.0[..IN_HDR_SZ], &mut out);
+        assert_eq!(out_len(&out), OUT_HDR_SZ);
+        assert_eq!(out_err(&out), -libc::EINVAL);
+    }
 }
