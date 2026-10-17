@@ -1677,6 +1677,7 @@ def build_ffmpeg_cmd(url, audio_url=None, is_live=False, use_proxy=False, start_
         "-c:v", "libx264",
         "-preset", "ultrafast",
         "-tune", "zerolatency",
+        "-bf", "0",
         "-threads", "0",
         "-b:v", b_v,
         "-maxrate", maxrate,
@@ -1686,7 +1687,7 @@ def build_ffmpeg_cmd(url, audio_url=None, is_live=False, use_proxy=False, start_
         "-sc_threshold", "0",
         "-profile:v", "main",
         "-level", "4.1",
-        "-x264-params", "repeat-headers=1:slices=1:aq-mode=2:aq-strength=1.0",
+        "-x264-params", "repeat-headers=1:slices=1:bframes=0:aq-mode=2:aq-strength=1.0",
 
         # Normalização sonora: AC3 (Dolby Digital) a 48kHz (padrão nativo de TV Samsung)
         "-af", "aresample=async=1000:first_pts=0:min_hard_comp=0.100000",
