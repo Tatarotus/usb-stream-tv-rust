@@ -37,3 +37,4 @@ catalog_cache/
 .vscode/
 .aider*
 
+target/
