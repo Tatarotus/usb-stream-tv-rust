@@ -339,6 +339,8 @@ impl StreamBackend for LiveEngine {
                 x.invalidate_tail();
             }
             let fend = foff.saturating_add(dst.len() as u64);
+            let now_ms = self.ring.lock().now_ms();
+            x.note_ckpt(fend, now_ms);
             let mut a = self.anchor.lock().unwrap_or_else(|e| e.into_inner());
             a.last_fend = fend;
         }

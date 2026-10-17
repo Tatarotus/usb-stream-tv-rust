@@ -374,21 +374,17 @@ impl FuseSession {
         } else {
             0
         };
-        let is_legacy = minor < 23;
         // The Samsung tablet ships kernel 3.4.0, whose FUSE client negotiates
-        // minor 7.18: it only understands the 16-byte body (major, minor,
-        // max_readahead, flags) and its IN payload carries no flags field.
-        // Replying with the full 24-byte struct makes that kernel read past
-        // the declared reply length, so the body size is scaled to the
-        // negotiated minor (8 < 5, 16 < 23, full otherwise).
-        let body_len = if minor < 5 {
-            8
-        } else if is_legacy {
-            16
+        // minor 7.18: it understands the reply only up through `max_write`,
+        // so the body must be truncated at exactly 24 payload bytes whenever
+        // the negotiated minor is < 23 (anything longer makes the kernel read
+        // past the declared reply length). This mirrors the audited C daemon
+        // (`fuse_ntfs.c` INIT handshake) and the `fuse_direct` sibling.
+        let out_len = if minor < 23 {
+            OUT_HDR_SZ + 24
         } else {
-            std::mem::size_of::<fuse_init_out>()
+            OUT_HDR_SZ + std::mem::size_of::<fuse_init_out>()
         };
-        let out_len = OUT_HDR_SZ + body_len;
 
         // Zero the reply struct region: max_background / congestion_threshold
         // are never written explicitly and would otherwise carry stale
@@ -399,14 +395,10 @@ impl FuseSession {
         // SAFETY: aligned + sized as above.
         let io = unsafe { &mut *(out.0[OUT_HDR_SZ..].as_mut_ptr() as *mut fuse_init_out) };
         io.major = 7;
-        io.minor = minor.min(22);
-        if body_len >= 16 {
-            io.max_readahead = MAX_MSG_SZ as u32;
-            io.flags = flags & (FUSE_ASYNC_READ | FUSE_BIG_WRITES);
-        }
-        if body_len >= std::mem::size_of::<fuse_init_out>() {
-            io.max_write = MAX_MSG_SZ as u32;
-        }
+        io.minor = minor.min(26);
+        io.max_readahead = MAX_MSG_SZ as u32;
+        io.flags = flags & (FUSE_ASYNC_READ | FUSE_BIG_WRITES);
+        io.max_write = MAX_MSG_SZ as u32;
 
         self.reply(out, out_len);
     }
