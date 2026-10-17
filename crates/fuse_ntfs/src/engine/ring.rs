@@ -106,9 +106,9 @@ pub struct RingData {
     s_write: u64,
     have_data: bool,
     start: Instant,
-    // token bucket state (shared across reader threads)
-    pace_win_start_ms: u64,
-    pace_win_bytes: u64,
+    // token bucket state (shared across reader threads, matches audited C implementation)
+    pace_tok: i64,
+    pace_tok_ms: u64,
     // telemetry (drives the AGENTS.md §4 verification: near_starve=0, nulls=0)
     null_bytes: u64,
     served_bytes: u64,
@@ -142,8 +142,8 @@ impl RingData {
             s_write: 0,
             have_data: false,
             start: Instant::now(),
-            pace_win_start_ms: 0,
-            pace_win_bytes: 0,
+            pace_tok: 0,
+            pace_tok_ms: 0,
             null_bytes: 0,
             served_bytes: 0,
             near_starve: 0,
@@ -257,26 +257,35 @@ impl RingData {
         pos >= self.ring_old() && pos.saturating_add(len) <= self.s_write
     }
 
-    /// Token-bucket accounting: charges `n` served bytes to the current
-    /// window and returns the pacing sleep in milliseconds for the excess,
-    /// clamped to `MAX_SLEEP_SLICE_MS`. Zero means "no sleep needed".
+    /// Token-bucket accounting: charges `n` served bytes and returns the pacing sleep
+    /// in milliseconds for debt, clamped to `MAX_SLEEP_SLICE_MS`.
+    /// Zero means "no sleep needed" (e.g. lead >= 12MB or within burst allowance).
     pub fn pace_note(&mut self, n: u64, lead: u64, now_ms: u64) -> u64 {
         self.last_lead = lead;
-        let elapsed = now_ms.saturating_sub(self.pace_win_start_ms);
-        if elapsed >= PACE_WINDOW_MS {
-            // Window rollover: start a fresh window at the current instant.
-            self.pace_win_start_ms = now_ms;
-            self.pace_win_bytes = 0;
-        }
-        let win_elapsed = now_ms.saturating_sub(self.pace_win_start_ms);
-        let allowed = PaceTier::for_lead(lead).rate() * (win_elapsed + 1) / 1000;
-        self.pace_win_bytes = self.pace_win_bytes.saturating_add(n);
-        if self.pace_win_bytes <= allowed {
+        // If lead >= 12 MB, never throttle: let the TV fill its buffer at full USB speed
+        if lead >= 12 * 1024 * 1024 {
+            self.pace_tok_ms = now_ms;
             return 0;
         }
-        let excess = self.pace_win_bytes - allowed;
-        let sleep_ms = excess.saturating_mul(1000) / PaceTier::for_lead(lead).rate();
-        sleep_ms.min(MAX_SLEEP_SLICE_MS)
+        let rate_bps = PaceTier::for_lead(lead).rate();
+        if self.pace_tok_ms == 0 {
+            self.pace_tok = 0;
+            self.pace_tok_ms = now_ms;
+        }
+        let idle_ms = (now_ms.saturating_sub(self.pace_tok_ms)).min(60_000);
+        self.pace_tok += (idle_ms as i64 * rate_bps as i64) / 1000;
+        let burst = (rate_bps / 4) as i64; // 250 ms burst allowance
+        if self.pace_tok > burst {
+            self.pace_tok = burst;
+        }
+        self.pace_tok_ms = now_ms;
+        self.pace_tok -= n as i64;
+        if self.pace_tok < 0 {
+            let need_ms = ((-self.pace_tok) as u64 * 1000) / rate_bps;
+            need_ms.min(MAX_SLEEP_SLICE_MS)
+        } else {
+            0
+        }
     }
 
     // ---- telemetry mutators (called by the engine serve path) ----
@@ -501,13 +510,12 @@ mod tests {
     #[test]
     fn token_bucket_clamps_to_50ms() {
         let mut rd = RingData::with_capacity(188 * 4);
-        // Fast tier, deep cushion: allowed in the first ms window is tiny,
-        // so a big charge must request a large sleep — clamped to 50 ms.
-        let sleep = rd.pace_note(900_000, 16 * 1024 * 1024, 0);
+        // Mid tier, cushion < 12 MB: big charge requests a large sleep — clamped to 50 ms.
+        let sleep = rd.pace_note(900_000, 4 * 1024 * 1024, 0);
         assert_eq!(sleep, MAX_SLEEP_SLICE_MS);
-        // A small charge within the allowance sleeps zero.
+        // Deep cushion (>= 12 MB): never throttled (always 0 sleep).
         let mut rd2 = RingData::with_capacity(188 * 4);
-        assert_eq!(rd2.pace_note(1_000, 16 * 1024 * 1024, 0), 0);
+        assert_eq!(rd2.pace_note(900_000, 16 * 1024 * 1024, 0), 0);
     }
 
     #[test]

@@ -4,6 +4,7 @@
 //! `engine::MediaEngine` (see `super`). This module deliberately keeps the
 //! original code shape — its submodule declarations now live in the parent.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -23,6 +24,7 @@ pub struct AnchorState {
     pub epoch_seq: u64,
     pub probe_consec: u8,
     pub last_probe_off: u64,
+    pub last_read_ms: u64,
 }
 
 impl Default for AnchorState {
@@ -36,6 +38,7 @@ impl Default for AnchorState {
             epoch_seq: 0,
             probe_consec: 0,
             last_probe_off: u64::MAX,
+            last_read_ms: 0,
         }
     }
 }
@@ -152,7 +155,22 @@ impl StreamBackend for LiveEngine {
 
         let channel_switched = anchor.active && anchor.file_id != file_id;
         let out_of_window = !anchor.active || mapped_spos0 < ring_old0;
-        let mut need_reanchor = channel_switched || out_of_window;
+        let restart_at_zero = anchor.active
+            && foff == 0
+            && (now_ms0.saturating_sub(anchor.last_read_ms) > 1500 || anchor.last_fend > 131072);
+        let mut need_reanchor = channel_switched || out_of_window || restart_at_zero;
+        let was_cold = was_cold || restart_at_zero;
+
+        static LAST_LOG_MS: AtomicU64 = AtomicU64::new(0);
+        let last_log = LAST_LOG_MS.load(Ordering::Relaxed);
+        if now_ms0.saturating_sub(last_log) >= 1000 || need_reanchor || foff == 0 {
+            LAST_LOG_MS.store(now_ms0, Ordering::Relaxed);
+            eprintln!(
+                "[LIVE_TEL] foff={} sz={} s_write={}MB lead={}MB reanchor={} (cold={} zero={}) fend={}",
+                foff, dst.len(), cur_write0 / (1024 * 1024), cur_write0.saturating_sub(mapped_spos0) / (1024 * 1024),
+                need_reanchor, was_cold, restart_at_zero, anchor.last_fend
+            );
+        }
 
         let (sm_decision, target_spos_override) = {
             let mut sm = self.sm.lock().unwrap_or_else(|e| e.into_inner());
@@ -203,6 +221,7 @@ impl StreamBackend for LiveEngine {
             let target_spos = if channel_switched
                 || !anchor.active
                 || sm_decision == SmDecision::ConfirmedSeek
+                || restart_at_zero
             {
                 cur_write0.saturating_sub(LEADBACK)
             } else if let Some(resume_pos) = target_spos_override {
@@ -267,6 +286,7 @@ impl StreamBackend for LiveEngine {
             anchor.base_foff = crate::engine::ring::snap188(foff);
             anchor.base_spos = new_spos;
             anchor.last_fend = foff;
+            anchor.last_read_ms = now_ms0;
             drop(anchor);
         } else {
             drop(anchor);
@@ -371,6 +391,7 @@ impl StreamBackend for LiveEngine {
             if to_copy > 0 {
                 let mut a = self.anchor.lock().unwrap_or_else(|e| e.into_inner());
                 a.last_fend = fend;
+                a.last_read_ms = now_ms0;
             }
         }
 

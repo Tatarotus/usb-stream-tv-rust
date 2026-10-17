@@ -18,7 +18,7 @@
 
 use std::io;
 use std::os::unix::io::RawFd;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::contract::{StreamBackend, TS_PKT_SZ};
@@ -516,6 +516,16 @@ impl FuseSession {
         // fill), so no pre-zeroing of out_buf is required for FUSE_READ.
         let rdata = &mut out.0[OUT_HDR_SZ..OUT_HDR_SZ + size];
         let written = self.server.serve_read(inh.nodeid, rin.offset, rdata);
+
+        static TOTAL_READ: AtomicU64 = AtomicU64::new(0);
+        let total = TOTAL_READ.fetch_add(written as u64, Ordering::Relaxed);
+        let next_total = total.saturating_add(written as u64);
+        if next_total / (2 * 1024 * 1024) != total / (2 * 1024 * 1024) || rin.offset < 200_000 {
+            eprintln!(
+                "[FUSE_READ] total={}MB off={} sz={} (ino={})",
+                next_total / (1024 * 1024), rin.offset, size, inh.nodeid
+            );
+        }
 
         out.0[..OUT_HDR_SZ].fill(0);
         self.write_header(inh, out, OUT_HDR_SZ + written, 0);
