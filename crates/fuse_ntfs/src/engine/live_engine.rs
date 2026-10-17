@@ -151,7 +151,7 @@ impl StreamBackend for LiveEngine {
         };
 
         let channel_switched = anchor.active && anchor.file_id != file_id;
-        let out_of_window = !anchor.active || mapped_spos0 < ring_old0 || mapped_spos0 > cur_write0;
+        let out_of_window = !anchor.active || mapped_spos0 < ring_old0;
         let mut need_reanchor = channel_switched || out_of_window;
 
         let (sm_decision, target_spos_override) = {
@@ -178,6 +178,10 @@ impl StreamBackend for LiveEngine {
         match sm_decision {
             SmDecision::ProbeReject => {
                 drop(anchor);
+                let rejects = self.sm.lock().unwrap_or_else(|e| e.into_inner()).probe_rejects;
+                if rejects >= 4 {
+                    let _ = std::fs::File::create("/data/local/tmp/resync_usb");
+                }
                 let mut rd = self.ring.lock();
                 rd.note_null(dst.len() as u64);
                 drop(rd);
@@ -237,6 +241,9 @@ impl StreamBackend for LiveEngine {
                         .unwrap_or_else(|e| e.into_inner())
                         .calibrate(old_pos, old_fend, &win, win_base, now_ms0)
                 };
+                if !r.valid {
+                    let _ = std::fs::File::create("/data/local/tmp/resync_usb");
+                }
                 let raw: RawSample = {
                     let win_base = new_spos.max(ring_old0);
                     let win_end = new_spos.saturating_add(1024 * 1024).min(cur_write0).max(win_base);
@@ -361,8 +368,10 @@ impl StreamBackend for LiveEngine {
             let fend = foff.saturating_add(dst.len() as u64);
             let now_ms = self.ring.lock().now_ms();
             x.note_ckpt(fend, now_ms);
-            let mut a = self.anchor.lock().unwrap_or_else(|e| e.into_inner());
-            a.last_fend = fend;
+            if to_copy > 0 {
+                let mut a = self.anchor.lock().unwrap_or_else(|e| e.into_inner());
+                a.last_fend = fend;
+            }
         }
 
         // 7. Sleep unlocked if sleep_ms > 0 (clamped <= 50ms).

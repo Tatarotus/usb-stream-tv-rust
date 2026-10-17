@@ -513,7 +513,8 @@ class TestBuildFFmpegTranscodeCommand(unittest.TestCase):
         self.assertIn("-vf", cmd)
         vf_idx = cmd.index("-vf")
         vf_arg = cmd[vf_idx + 1]
-        self.assertTrue(vf_arg.startswith("subtitles="))
+        self.assertIn("subtitles=", vf_arg)
+        self.assertIn("scale=1920:1080", vf_arg)
         self.assertIn("FontSize=22", vf_arg)
 
         # Validação dos parâmetros de vídeo H.264

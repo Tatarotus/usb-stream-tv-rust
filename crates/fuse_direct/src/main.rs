@@ -30,6 +30,19 @@ const FILE_NAME: &str = "tv_stream.img";
 #[repr(C, align(8))]
 struct AlignedFuseBuf([u8; 128 * 1024 + 4096]);
 
+impl AlignedFuseBuf {
+    pub fn new_boxed() -> Box<Self> {
+        let layout = std::alloc::Layout::new::<Self>();
+        unsafe {
+            let ptr = std::alloc::alloc_zeroed(layout) as *mut Self;
+            if ptr.is_null() {
+                std::alloc::handle_alloc_error(layout);
+            }
+            Box::from_raw(ptr)
+        }
+    }
+}
+
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
 extern "C" fn on_signal(_: libc::c_int) {
@@ -221,8 +234,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("[✓] fuse_direct montado em {mnt}");
 
     // 128 KiB request/reply buffers, 8-byte aligned for ARMv7 LDRD/STRD
-    let mut in_buf = Box::new(AlignedFuseBuf([0u8; 128 * 1024 + 4096]));
-    let mut out_buf = Box::new(AlignedFuseBuf([0u8; 128 * 1024 + 4096]));
+    let mut in_buf = AlignedFuseBuf::new_boxed();
+    let mut out_buf = AlignedFuseBuf::new_boxed();
 
     while RUNNING.load(Ordering::SeqCst) {
         let n = unsafe {

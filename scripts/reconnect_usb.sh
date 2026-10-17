@@ -35,7 +35,7 @@ if [ -d "/sys/class/android_usb/android0" ]; then
     fi
 
     # Signal FUSE to flush old buffer and randomize Volume Serial
-    pkill -USR1 -f fuse_ntfs 2>/dev/null || touch /data/local/tmp/fuse_flush
+    touch /data/local/tmp/fuse_flush
 
     # Execute USB disconnect
     echo 0 > /sys/class/android_usb/android0/enable 2>/dev/null || true

@@ -29,9 +29,9 @@ use fuse_ntfs::vfs::catalog::Catalog;
 use fuse_ntfs::vfs::dispatcher;
 use fuse_ntfs::vfs::ntfs_mft::NtfsTemplate;
 
-const MNT_POINT: &str = "/data/local/tmp/ntfs_mnt";
+const MNT_POINT: &str = "/data/local/tmp/ntfs_lab/mnt";
 const DEF_TARGET: &str = "/data/local/tmp/live_pipe";
-const DEF_TEMPLATE: &str = "/data/local/tmp/ntfs_template.bin";
+const DEF_TEMPLATE: &str = "/data/local/tmp/ntfs_lab/ntfs_template.bin";
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
@@ -48,6 +48,7 @@ fn install_signals() {
         libc::sigaction(libc::SIGINT, &sa, std::ptr::null_mut());
         libc::sigaction(libc::SIGTERM, &sa, std::ptr::null_mut());
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+        libc::signal(libc::SIGUSR1, libc::SIG_IGN);
     }
 }
 
@@ -131,8 +132,10 @@ fn feeder_loop(fifo_path: String, engine: Arc<fuse_ntfs::engine::LiveEngine>) {
                 let mut tmp = vec![0u8; 64 * 1024];
                 loop {
                     match f.read(&mut tmp) {
-                        Ok(0) | Err(_) => break,
+                        Ok(0) => break,
                         Ok(_) => continue,
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(_) => break,
                     }
                 }
             }
@@ -177,8 +180,10 @@ fn feeder_loop(fifo_path: String, engine: Arc<fuse_ntfs::engine::LiveEngine>) {
                 let mut tmp = vec![0u8; 64 * 1024];
                 loop {
                     match fifo.read(&mut tmp) {
-                        Ok(0) | Err(_) => break,
+                        Ok(0) => break,
                         Ok(_) => continue,
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(_) => break,
                     }
                 }
                 unsafe {

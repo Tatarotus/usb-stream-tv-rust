@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use fat32::{FatTemplate, BPS, FILE_SEC};
-use ring::{fill_null, LiveRing};
+use ring::{fill_null, fill_null_at, LiveRing};
 use vod::VodEngine;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,7 +196,7 @@ impl DiskServer {
 
                         if reject_probe {
                             // Whole-read rejection: NULL packets, prev_fend untouched.
-                            fill_null(&mut dst[done..done + chunk]);
+                            fill_null_at(&mut dst[done..done + chunk], foff);
                             done += chunk;
                             cur_offset += chunk as u64;
                             continue;
@@ -211,7 +211,7 @@ impl DiskServer {
 
                             if !state.have_data {
                                 drop(state);
-                                fill_null(&mut dst[done + fo..done + fo + block_step]);
+                                fill_null_at(&mut dst[done + fo..done + fo + block_step], foff + fo as u64);
                                 fo += block_step;
                                 continue;
                             }
@@ -236,7 +236,7 @@ impl DiskServer {
 
                             if !state.base_valid {
                                 drop(state);
-                                fill_null(&mut dst[done + fo..done + fo + block_step]);
+                                fill_null_at(&mut dst[done + fo..done + fo + block_step], foff + fo as u64);
                                 fo += block_step;
                                 continue;
                             }
@@ -245,7 +245,7 @@ impl DiskServer {
                             if start < ring_old {
                                 // Overwritten by ring buffer: return NULL packets
                                 drop(state);
-                                fill_null(&mut dst[done + fo..done + fo + block_step]);
+                                fill_null_at(&mut dst[done + fo..done + fo + block_step], foff + fo as u64);
                                 fo += block_step;
                                 continue;
                             }
@@ -269,7 +269,7 @@ impl DiskServer {
                                 // past `start`: NULL packets for this block.
                                 if start >= state.s_write {
                                     drop(state);
-                                    fill_null(&mut dst[done + fo..done + fo + block_step]);
+                                    fill_null_at(&mut dst[done + fo..done + fo + block_step], foff + fo as u64);
                                     fo += block_step;
                                     continue;
                                 }
@@ -283,7 +283,7 @@ impl DiskServer {
                             fo += to_copy;
                         }
                     } else {
-                        fill_null(&mut dst[done..done + chunk]);
+                        fill_null_at(&mut dst[done..done + chunk], foff);
                     }
                 }
             }
@@ -388,7 +388,9 @@ mod tests {
             buf.fill(0);
             server.serve_disk(&mut buf, file_offset + probe, deadline);
 
-            assert_eq!(&buf[1..4], &[0x1F, 0xFF, 0x10]);
+            let mut expected = vec![0u8; TS_PKT_SZ];
+            ring::fill_null_at(&mut expected, probe);
+            assert_eq!(&buf[..], &expected[..]);
             let s = ring.state.lock().unwrap_or_else(|e| e.into_inner());
             assert_eq!(s.consec_small, 1);
             assert_eq!(s.last_probe_off, probe);

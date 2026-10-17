@@ -92,7 +92,7 @@ pub const PACE_WINDOW_MS: u64 = 250;
 /// Hard clamp on any single pacing sleep (AGENTS.md §2.2).
 pub const MAX_SLEEP_SLICE_MS: u64 = 50;
 /// Total cooperative live-edge wait budget per FUSE read.
-pub const EDGE_WAIT_BUDGET_MS: u64 = 50;
+pub const EDGE_WAIT_BUDGET_MS: u64 = 500;
 /// Below this cushion the reader is paced at the slow tier.
 pub const PACE_LEAD_SLOW: u64 = 2 * 1024 * 1024;
 /// At/above this cushion the reader is paced at the fast tier.
@@ -115,6 +115,7 @@ pub struct RingData {
     near_starve: u64,
     edge_waits: u64,
     overwritten_blocks: u64,
+    last_lead: u64,
 }
 
 impl Default for RingData {
@@ -148,6 +149,7 @@ impl RingData {
             near_starve: 0,
             edge_waits: 0,
             overwritten_blocks: 0,
+            last_lead: 0,
         }
     }
 
@@ -259,6 +261,7 @@ impl RingData {
     /// window and returns the pacing sleep in milliseconds for the excess,
     /// clamped to `MAX_SLEEP_SLICE_MS`. Zero means "no sleep needed".
     pub fn pace_note(&mut self, n: u64, lead: u64, now_ms: u64) -> u64 {
+        self.last_lead = lead;
         let elapsed = now_ms.saturating_sub(self.pace_win_start_ms);
         if elapsed >= PACE_WINDOW_MS {
             // Window rollover: start a fresh window at the current instant.
@@ -307,7 +310,7 @@ impl RingData {
             near_starve: self.near_starve,
             edge_waits: self.edge_waits,
             overwritten_blocks: self.overwritten_blocks,
-            pace_tier: PaceTier::for_lead(self.s_write.saturating_sub(self.ring_old())),
+            pace_tier: PaceTier::for_lead(self.last_lead),
         }
     }
 }

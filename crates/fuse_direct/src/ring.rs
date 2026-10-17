@@ -22,10 +22,15 @@ pub fn snap188(p: u64) -> u64 {
 }
 
 pub fn fill_null(dst: &mut [u8]) {
-    let mut off = 0;
+    fill_null_at(dst, 0);
+}
+
+pub fn fill_null_at(dst: &mut [u8], abs_off: u64) {
+    let mut off = 0usize;
     while off < dst.len() {
-        let chunk = (dst.len() - off).min(TS_PKT_SZ);
-        dst[off..off + chunk].copy_from_slice(&NULL_PKT[..chunk]);
+        let phase = ((abs_off + off as u64) % 188) as usize;
+        let chunk = (dst.len() - off).min(TS_PKT_SZ - phase);
+        dst[off..off + chunk].copy_from_slice(&NULL_PKT[phase..phase + chunk]);
         off += chunk;
     }
 }

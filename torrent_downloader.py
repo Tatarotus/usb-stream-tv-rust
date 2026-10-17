@@ -492,7 +492,7 @@ def can_stream_copy_video(video_path: str) -> bool:
     try:
         probe_cmd = [
             "ffprobe", "-v", "error", "-select_streams", "v:0",
-            "-show_entries", "stream=codec_name,level,pix_fmt,width,height,sample_aspect_ratio",
+            "-show_entries", "stream=codec_name,level,pix_fmt,width,height,sample_aspect_ratio,r_frame_rate",
             "-of", "json", video_path,
         ]
         res = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
@@ -505,6 +505,23 @@ def can_stream_copy_video(video_path: str) -> bool:
         h = int(st.get("height", 0) or 0)
         sar = (st.get("sample_aspect_ratio") or "").strip()
         is_compatible_sar = is_sar_samsung_compatible(sar)
+
+        # Parse r_frame_rate (e.g. "30/1", "60000/1001"); reject >31 fps (MStar can't do 1080p60)
+        fps = None
+        r_fps_raw = st.get("r_frame_rate")
+        if r_fps_raw:
+            try:
+                r_fps_str = str(r_fps_raw).strip()
+                if "/" in r_fps_str:
+                    num_str, den_str = r_fps_str.split("/", 1)
+                    den_val = float(den_str)
+                    if den_val != 0:
+                        fps = float(num_str) / den_val
+                else:
+                    fps = float(r_fps_str)
+            except (ValueError, ZeroDivisionError, TypeError):
+                fps = None
+
         if (
             codec in ("h264", "avc1")
             and pix in ("yuv420p", "yuvj420p", "")
@@ -512,6 +529,7 @@ def can_stream_copy_video(video_path: str) -> bool:
             and w <= 1920
             and h <= 1080
             and is_compatible_sar
+            and (fps is None or fps <= 31)
         ):
             return True
     except Exception:
@@ -567,7 +585,7 @@ def build_ffmpeg_transcode_command(
             "FontSize=22,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
             "BackColour=&H80000000,Outline=2,Shadow=1"
         )
-        vf_filter = f"subtitles='{escaped_srt}':force_style='{vf_style}'"
+        vf_filter = f"scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,subtitles='{escaped_srt}':force_style='{vf_style}'"
 
         return [
             "ffmpeg", "-y", "-i", video_path,
