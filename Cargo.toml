@@ -2,6 +2,7 @@
 members = [
     "crates/stream_fetcher",
     "crates/patch_trp",
+    "crates/sparse_unpack",
 ]
 resolver = "2"
 
