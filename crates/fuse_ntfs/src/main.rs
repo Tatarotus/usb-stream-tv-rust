@@ -21,6 +21,8 @@ use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 use fuse_ntfs::contract::StreamBackend;
 use fuse_ntfs::vfs::catalog::Catalog;
@@ -91,13 +93,127 @@ impl StreamBackend for NullBackend {
 /// constructor and forward it here; nothing else in the process lifecycle
 /// changes. `NullBackend` remains the documented fallback for maintenance
 /// builds where the engine is intentionally disabled.
-fn build_backend(target: &str, engine: bool) -> Arc<dyn StreamBackend> {
+fn build_backend(
+    target: &str,
+    engine: bool,
+    engine_handle: Option<Arc<fuse_ntfs::engine::LiveEngine>>,
+) -> Arc<dyn StreamBackend> {
     if engine {
         eprintln!("[✓] Backend: LiveEngine (ring latente até o feeder) — alvo: {target}");
-        Arc::new(fuse_ntfs::engine::LiveEngine::new())
+        engine_handle
+            .unwrap_or_else(|| Arc::new(fuse_ntfs::engine::LiveEngine::new()))
+            as Arc<dyn StreamBackend>
     } else {
         eprintln!("[!] Backend: NullBackend (engine desabilitado) — alvo: {target}");
         Arc::new(NullBackend)
+    }
+}
+
+fn feeder_loop(fifo_path: String, engine: Arc<fuse_ntfs::engine::LiveEngine>) {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::AsRawFd;
+
+    const FLUSH_PATH: &str = "/data/local/tmp/fuse_flush";
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut last_feed_log: u64 = 0;
+
+    while RUNNING.load(Ordering::SeqCst) {
+        // Flush trigger check (before opening / between reopens).
+        if std::path::Path::new(FLUSH_PATH).exists() {
+            let _ = std::fs::remove_file(FLUSH_PATH);
+            // Drain any currently available FIFO bytes (best-effort).
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&fifo_path)
+            {
+                let mut tmp = vec![0u8; 64 * 1024];
+                loop {
+                    match f.read(&mut tmp) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => continue,
+                    }
+                }
+            }
+            engine.flush();
+            last_feed_log = engine.ring.lock().s_write();
+        }
+
+        // Open FIFO with O_NONBLOCK first, then clear it for blocking reads.
+        let mut fifo = match std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&fifo_path)
+        {
+            Ok(f) => f,
+            Err(_) => {
+                thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+        };
+
+        unsafe {
+            let fd = fifo.as_raw_fd();
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            if flags >= 0 {
+                libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK);
+            }
+        }
+
+        let mut flushed = false;
+        while RUNNING.load(Ordering::SeqCst) {
+            // Flush trigger check during streaming.
+            if std::path::Path::new(FLUSH_PATH).exists() {
+                let _ = std::fs::remove_file(FLUSH_PATH);
+                // Drain the current FIFO (switch to non-blocking temporarily).
+                unsafe {
+                    let fd = fifo.as_raw_fd();
+                    let flags = libc::fcntl(fd, libc::F_GETFL);
+                    if flags >= 0 {
+                        libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+                    }
+                }
+                let mut tmp = vec![0u8; 64 * 1024];
+                loop {
+                    match fifo.read(&mut tmp) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => continue,
+                    }
+                }
+                unsafe {
+                    let fd = fifo.as_raw_fd();
+                    let flags = libc::fcntl(fd, libc::F_GETFL);
+                    if flags >= 0 {
+                        libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK);
+                    }
+                }
+                engine.flush();
+                last_feed_log = engine.ring.lock().s_write();
+                flushed = true;
+                break;
+            }
+
+            match fifo.read(&mut buf) {
+                Ok(0) => break, // EOF: re-open after 100ms
+                Ok(n) => {
+                    engine.ring.write_chunk(&buf[..n]);
+                    let s_write = engine.ring.lock().s_write();
+                    if s_write.saturating_sub(last_feed_log) >= 2 * 1024 * 1024 {
+                        eprintln!("[FEEDER] S_write={}MB", s_write / (1024 * 1024));
+                        last_feed_log = s_write;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+
+        if flushed {
+            continue;
+        }
+        // EOF or error: re-open after 100ms.
+        thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -149,7 +265,23 @@ fn main() {
     );
 
     // ---- backend wiring: live engine or null fallback ----
-    let backend = build_backend(target, engine_enabled);
+    let engine_handle: Option<Arc<fuse_ntfs::engine::LiveEngine>> = if engine_enabled {
+        Some(Arc::new(fuse_ntfs::engine::LiveEngine::new()))
+    } else {
+        None
+    };
+    let backend = build_backend(target, engine_enabled, engine_handle.clone());
+
+    // ---- spawn FIFO feeder when engine is enabled and target is not 'test' ----
+    if engine_enabled && target != "test" {
+        if let Some(engine) = engine_handle.clone() {
+            let fifo_path = target.to_string();
+            let _ = thread::Builder::new()
+                .name("feeder".into())
+                .stack_size(2 * 1024 * 1024)
+                .spawn(move || feeder_loop(fifo_path, engine));
+        }
+    }
 
     let server = Arc::new(fuse_ntfs::vfs::dispatcher::NtfsServer::new(
         template, catalog, backend,

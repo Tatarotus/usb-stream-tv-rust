@@ -265,7 +265,7 @@ impl StateMachine {
         SmDecision::Continue
     }
 
-    fn reset_gap_watch(&mut self) {
+    pub fn reset_gap_watch(&mut self) {
         self.chain_reads = 0;
         self.chain_bytes = 0;
     }

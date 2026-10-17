@@ -63,6 +63,23 @@ impl LiveEngine {
         }
     }
 
+    pub fn flush(&self) {
+        let seq = {
+            let mut anchor = self.anchor.lock().unwrap_or_else(|e| e.into_inner());
+            anchor.active = false;
+            anchor.epoch_seq = anchor.epoch_seq.wrapping_add(1);
+            anchor.epoch_seq
+        };
+        self.xform
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .reset_epoch(seq);
+        self.sm
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .reset_gap_watch();
+    }
+
     pub fn snap_anchor(&self, target_spos: u64) -> u64 {
         let (ring_old, s_write) = {
             let rd = self.ring.lock();
