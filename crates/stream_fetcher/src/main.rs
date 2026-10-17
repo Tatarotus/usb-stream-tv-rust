@@ -27,7 +27,7 @@ const IO_TIMEOUT_MS: i32 = 2000;
 const HEARTBEAT_PATH: &str = "/data/local/tmp/fetcher_heartbeat.ts";
 const LOCK_PATH: &str = "/data/local/tmp/stream_fetcher.lock";
 const F_SETPIPE_SZ: libc::c_int = 1031;
-const DEFAULT_FALLBACK_IP: &str = "129.146.5.64";
+const DEFAULT_FALLBACK_IP: Ipv4Addr = Ipv4Addr::new(129, 146, 5, 64);
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
@@ -98,16 +98,17 @@ impl Resolver {
         }
         if let Some(a) = self.cached {
             eprintln!("[!] Falha no DNS para {}, mantendo IP em cache: {}", host, a.ip());
+            self.fails = 0; // Cooldown: do not block in getaddrinfo() on every subsequent retry
             return a;
         }
-        let fb = std::env::var("SERVER_IP")
+        let fb_ip = std::env::var("SERVER_IP")
             .ok()
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| DEFAULT_FALLBACK_IP.to_string());
-        eprintln!("[!] Falha no DNS para {} sem cache prévio. Usando fallback: {}", host, fb);
-        let ip = fb.parse::<Ipv4Addr>().unwrap_or_else(|_| DEFAULT_FALLBACK_IP.parse().unwrap());
-        let a = SocketAddrV4::new(ip, port);
+            .and_then(|s| s.parse::<Ipv4Addr>().ok())
+            .unwrap_or(DEFAULT_FALLBACK_IP);
+        eprintln!("[!] Falha no DNS para {} sem cache prévio. Usando fallback: {}", host, fb_ip);
+        let a = SocketAddrV4::new(fb_ip, port);
         self.cached = Some(a);
+        self.fails = 0;
         a
     }
 
@@ -123,22 +124,54 @@ impl Resolver {
 struct FifoSink {
     fd: OwnedFd,
     last_hb: Option<Instant>,
+    hb_file: Option<File>,
 }
 
 impl FifoSink {
-    fn heartbeat(&mut self) {
-        let due = self.last_hb.map_or(true, |t| t.elapsed() >= Duration::from_secs(2));
-        if !due {
-            return;
-        }
-        // futimens(fd, NULL) = touch without rewriting data (no flash wear)
-        if let Ok(f) = OpenOptions::new()
+    fn new(fd: OwnedFd) -> Self {
+        let hb_file = OpenOptions::new()
             .create(true)
             .write(true)
             .mode(0o644)
             .open(HEARTBEAT_PATH)
-        {
-            unsafe { libc::futimens(f.as_raw_fd(), std::ptr::null()) };
+            .ok();
+        Self {
+            fd,
+            last_hb: None,
+            hb_file,
+        }
+    }
+
+    fn heartbeat(&mut self) {
+        let due = self.last_hb.map_or(true, |t| t.elapsed() >= Duration::from_secs(10));
+        if !due {
+            return;
+        }
+        // Touch heartbeat file to signal liveness to watchdog.
+        // Rate-limited to 10s to minimize eMMC ext4 journal commit wear on Tab 3.
+        // Raw SYS_utimensat is used because Bionic libc.so on Android 4.4 (API 19)
+        // does not export the `futimens` C wrapper (added in API 21).
+        if self.hb_file.is_none() {
+            self.hb_file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .mode(0o644)
+                .open(HEARTBEAT_PATH)
+                .ok();
+        }
+        if let Some(ref f) = self.hb_file {
+            let ret = unsafe {
+                libc::syscall(
+                    libc::SYS_utimensat,
+                    f.as_raw_fd(),
+                    std::ptr::null::<libc::c_char>(),
+                    std::ptr::null::<libc::timespec>(),
+                    0,
+                )
+            };
+            if ret < 0 {
+                eprintln!("[!] heartbeat SYS_utimensat: {}", last_errno());
+            }
         }
         self.last_hb = Some(Instant::now());
     }
@@ -188,7 +221,7 @@ impl Sink for FifoSink {
 
 // ----------------------------------------------------------------- helpers
 
-fn take_singleton_lock() -> Option<File> {
+fn take_singleton_lock() -> File {
     let f = OpenOptions::new()
         .create(true)
         .read(true)
@@ -203,15 +236,15 @@ fn take_singleton_lock() -> Option<File> {
                 std::process::exit(0);
             }
             let _ = f.set_len(0);
+            let s = format!("{}\n", std::process::id());
             let _ = unsafe {
-                let s = format!("{}\n", std::process::id());
                 libc::pwrite(f.as_raw_fd(), s.as_ptr() as *const libc::c_void, s.len(), 0)
             };
-            Some(f)
+            f
         }
         Err(e) => {
-            eprintln!("[!] Warning: open stream_fetcher.lock failed: {}", e);
-            None
+            eprintln!("[!] Fatal: open stream_fetcher.lock failed: {}. Exiting to prevent split-brain.", e);
+            std::process::exit(1);
         }
     }
 }
@@ -223,7 +256,13 @@ fn ensure_fifo(path: &str) {
         return;
     }
     let _ = std::fs::remove_file(path);
-    let c = CString::new(path).unwrap();
+    let c = match CString::new(path) {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("[!] Fatal: FIFO path contains interior NUL byte: {}", path);
+            std::process::exit(1);
+        }
+    };
     if unsafe { libc::mkfifo(c.as_ptr(), 0o660) } == 0 {
         println!("[✓] Self-created FIFO pipe: {}", path);
     } else {
@@ -233,11 +272,20 @@ fn ensure_fifo(path: &str) {
 
 /// Open the FIFO write-only + O_NONBLOCK, waiting for a reader (ENXIO).
 fn open_fifo(path: &str) -> Option<OwnedFd> {
-    let c = CString::new(path).unwrap();
+    let c = match CString::new(path) {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("[!] Fatal: FIFO path contains interior NUL byte: {}", path);
+            return None;
+        }
+    };
     while running() {
         let fd = unsafe { libc::open(c.as_ptr(), libc::O_WRONLY | libc::O_NONBLOCK | libc::O_CLOEXEC) };
         if fd >= 0 {
-            unsafe { libc::fcntl(fd, F_SETPIPE_SZ, 1024 * 1024) };
+            let res = unsafe { libc::fcntl(fd, F_SETPIPE_SZ, 1024 * 1024) };
+            if res < 0 {
+                let _ = unsafe { libc::fcntl(fd, F_SETPIPE_SZ, 512 * 1024) };
+            }
             return Some(unsafe { OwnedFd::from_raw_fd(fd) });
         }
         match last_errno() {
@@ -273,11 +321,34 @@ enum Header {
     Retry { pause_ms: u64 },
 }
 
+fn trim_ascii_bytes(mut b: &[u8]) -> &[u8] {
+    while let Some((&first, rest)) = b.split_first() {
+        if first == b' ' || first == b'\t' || first == b'\r' || first == b'\n' {
+            b = rest;
+        } else {
+            break;
+        }
+    }
+    while let Some((&last, rest)) = b.split_last() {
+        if last == b' ' || last == b'\t' || last == b'\r' || last == b'\n' {
+            b = rest;
+        } else {
+            break;
+        }
+    }
+    b
+}
+
 fn read_http_header(sock: &mut TcpStream) -> Header {
-    let mut buf = vec![0u8; 4096];
+    let mut buf = vec![0u8; 8192];
     let mut hlen = 0usize;
     let mut hdr_end: Option<usize> = None;
+    let start = Instant::now();
     while hlen < buf.len() && running() {
+        if start.elapsed() >= Duration::from_secs(4) {
+            eprintln!("[!] Total HTTP header read timeout exceeded (4.0s). Reconnecting...");
+            return Header::Retry { pause_ms: 250 };
+        }
         match poll_one(sock.as_raw_fd(), libc::POLLIN, IO_TIMEOUT_MS) {
             Err(e) if e.kind() == ErrorKind::Interrupted => continue,
             Err(_) | Ok(0) => break,
@@ -301,7 +372,7 @@ fn read_http_header(sock: &mut TcpStream) -> Header {
         Some(e) => e,
         None => {
             eprintln!("[!] Failed to read HTTP headers (timeout/EOF). Reconnecting...");
-            return Header::Retry { pause_ms: 0 };
+            return Header::Retry { pause_ms: 250 };
         }
     };
     let head = &buf[..end];
@@ -309,10 +380,19 @@ fn read_http_header(sock: &mut TcpStream) -> Header {
         eprintln!("[!] Bad HTTP response status (not 200 OK). Reconnecting...");
         return Header::Retry { pause_ms: 250 };
     }
-    let lower = head.to_ascii_lowercase();
-    if lower.windows(7).any(|w| w == b"chunked") {
-        eprintln!("[!] Servidor retornou Transfer-Encoding chunked para HTTP/1.0. Reconectando...");
-        return Header::Retry { pause_ms: 250 };
+    // Inspect headers specifically for Transfer-Encoding: chunked
+    for line in head.split(|&b| b == b'\n') {
+        let line = if line.ends_with(b"\r") { &line[..line.len() - 1] } else { line };
+        if let Some(colon) = line.iter().position(|&b| b == b':') {
+            let name = trim_ascii_bytes(&line[..colon]);
+            if name.eq_ignore_ascii_case(b"transfer-encoding") {
+                let val = line[colon + 1..].to_ascii_lowercase();
+                if val.windows(7).any(|w| w == b"chunked") {
+                    eprintln!("[!] Servidor retornou Transfer-Encoding chunked para HTTP/1.0. Reconectando...");
+                    return Header::Retry { pause_ms: 250 };
+                }
+            }
+        }
     }
     Header::Ok { body: buf[end + 4..hlen].to_vec() }
 }
@@ -358,7 +438,7 @@ fn main() {
             None => break,
         };
         println!("[✓] FIFO connected!");
-        let mut sink = FifoSink { fd, last_hb: None };
+        let mut sink = FifoSink::new(fd);
         aligner.reset();
 
         'conn: while running() {
@@ -370,30 +450,35 @@ fn main() {
                     eprintln!("[!] connect: {}", e);
                     resolver.fails += 1;
                     consecutive_fails += 1;
-                    sleep(Duration::from_millis(if consecutive_fails > 2 { 500 } else { 100 }));
+                    let pause = if consecutive_fails > 2 { 500 } else { 100 };
+                    sleep(Duration::from_millis(pause));
                     continue;
                 }
             };
-            consecutive_fails = 0;
 
             if let Err(e) = sock.write_all(request.as_bytes()) {
                 eprintln!("[!] send: {}", e);
                 resolver.fails += 1;
+                consecutive_fails += 1;
+                sleep(Duration::from_millis(100));
                 continue;
             }
             println!("[✓] HTTP request sent. Reading response headers...");
 
             let body = match read_http_header(&mut sock) {
-                Header::Ok { body } => body,
+                Header::Ok { body } => {
+                    consecutive_fails = 0;
+                    resolver.fails = 0;
+                    body
+                }
                 Header::Retry { pause_ms } => {
                     resolver.fails += 1;
-                    if pause_ms > 0 {
-                        sleep(Duration::from_millis(pause_ms));
-                    }
+                    consecutive_fails += 1;
+                    let sleep_ms = pause_ms.max(if consecutive_fails > 3 { 1000 } else { 250 });
+                    sleep(Duration::from_millis(sleep_ms));
                     continue;
                 }
             };
-            resolver.fails = 0;
             aligner.reset();
 
             if !body.is_empty() && aligner.feed(&body, &mut sink).is_err() {

@@ -10,6 +10,10 @@
 
 pub const TS_PKT_SZ: usize = 188;
 const SYNC: u8 = 0x47;
+/// Number of consecutive 0x47 sync bytes required to validate MPEG-TS framing.
+/// A 3-point check reduces false-latch probability in video payload entropy to 1 in 1.67e7.
+const SYNC_CONFIRM_PKTS: usize = 3;
+const MIN_RESYNC_SPAN: usize = (SYNC_CONFIRM_PKTS - 1) * TS_PKT_SZ + 1; // 377 bytes
 /// Upper bound of bytes appended to the accumulator per processing step.
 const MAX_PIECE: usize = 64 * 1024;
 
@@ -72,7 +76,10 @@ impl TsAligner {
                     }
                     None => {
                         let remain = self.acc.len() - p;
-                        let dropped = remain - (remain % TS_PKT_SZ);
+                        // Retain up to MIN_RESYNC_SPAN - 1 (376 bytes) so a valid 3-packet sequence
+                        // split across chunk boundaries can be verified on the next feed().
+                        let keep = remain.min(MIN_RESYNC_SPAN - 1);
+                        let dropped = remain - keep;
                         self.total_resync_drops += dropped as u64;
                         p += dropped;
                         break;
@@ -80,21 +87,24 @@ impl TsAligner {
                 }
             }
         }
-        self.acc.drain(..p);
+        let new_len = self.acc.len() - p;
+        self.acc.copy_within(p.., 0);
+        self.acc.truncate(new_len);
         Ok(())
     }
 }
 
 fn find_resync(buf: &[u8], from: usize) -> Option<usize> {
-    for s in from..buf.len() {
-        if buf[s] == SYNC {
-            if s + TS_PKT_SZ < buf.len() {
-                if buf[s + TS_PKT_SZ] == SYNC {
-                    return Some(s);
-                }
-            } else {
-                return Some(s);
-            }
+    if buf.len() < from + MIN_RESYNC_SPAN {
+        return None;
+    }
+    let limit = buf.len() - (SYNC_CONFIRM_PKTS - 1) * TS_PKT_SZ;
+    for s in from..limit {
+        if buf[s] == SYNC
+            && buf[s + TS_PKT_SZ] == SYNC
+            && buf[s + 2 * TS_PKT_SZ] == SYNC
+        {
+            return Some(s);
         }
     }
     None
@@ -181,5 +191,43 @@ mod tests {
         assert_eq!(s.0.len(), TS_PKT_SZ);
         a.feed(&data[300..], &mut s).unwrap();
         assert_eq!(s.0, data);
+    }
+
+    #[test]
+    fn false_two_point_sync_is_rejected_until_three_points_confirmed() {
+        // Construct garbage with 2 false 0x47 bytes separated by 188 bytes, but 3rd is NOT 0x47.
+        // Followed by 5 valid packets.
+        let good = packets(5);
+        let mut data = vec![0xAAu8; 188 * 2];
+        data[10] = SYNC;
+        data[10 + TS_PKT_SZ] = SYNC;
+        // data[10 + 2 * TS_PKT_SZ] does not exist or is not 0x47
+        data.extend_from_slice(&good);
+
+        let mut a = TsAligner::new();
+        let mut s = VecSink(Vec::new());
+        a.feed(&data, &mut s).unwrap();
+
+        // Must output only the 5 valid packets, rejecting the false 2-point pair
+        assert_eq!(s.0, good);
+        assert_eq!(a.total_resync_drops, (188 * 2) as u64);
+    }
+
+    #[test]
+    fn unconfirmed_tail_does_not_falsely_latch_packet() {
+        // Feed 100 bytes of garbage ending with 0x47.
+        // Must NOT emit anything and NOT panic.
+        let mut data = vec![0x55u8; 100];
+        data[99] = SYNC;
+
+        let mut a = TsAligner::new();
+        let mut s = VecSink(Vec::new());
+        a.feed(&data, &mut s).unwrap();
+        assert_eq!(s.0.len(), 0);
+
+        // Now feed valid packets; aligner resyncs and outputs them cleanly
+        let good = packets(4);
+        a.feed(&good, &mut s).unwrap();
+        assert_eq!(s.0, good);
     }
 }
