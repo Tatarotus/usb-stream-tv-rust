@@ -6,6 +6,15 @@ ADB_TARGET="${1:-127.0.0.1:25555}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+if [ -f "$ROOT_DIR/target/armv7-unknown-linux-gnueabihf/release/fuse_ntfs" ]; then
+    BIN_DIR="$ROOT_DIR/target/armv7-unknown-linux-gnueabihf/release"
+elif [ -f "$ROOT_DIR/target/armv7-linux-androideabi/release/fuse_ntfs" ]; then
+    BIN_DIR="$ROOT_DIR/target/armv7-linux-androideabi/release"
+else
+    BIN_DIR="$ROOT_DIR/target/release"
+fi
+echo "[i] Using static ARMv7 binaries from: $BIN_DIR"
+
 echo "============================================================"
 echo " Deploying USB-Stream-TV to Tablet (${ADB_TARGET})"
 echo "============================================================"
@@ -29,7 +38,7 @@ echo "[3/6] Verificando template NTFS de 128 GiB no tablet..."
 TEMPLATE_SIZE=$(adb -s "$ADB_TARGET" shell "stat -c %s /data/local/tmp/ntfs_lab/ntfs_template.bin 2>/dev/null || echo 0" | tr -d '\r\n ')
 if [ "$TEMPLATE_SIZE" != "137438953472" ]; then
     echo "       Instalando template NTFS de 128 GiB (ext4 thin-provisioned ~69MB)..."
-    adb -s "$ADB_TARGET" push "$ROOT_DIR/src/tools/sparse_unpack_arm32" /data/local/tmp/sparse_unpack
+    adb -s "$ADB_TARGET" push "$BIN_DIR/sparse_unpack" /data/local/tmp/sparse_unpack
     adb -s "$ADB_TARGET" shell "chmod 755 /data/local/tmp/sparse_unpack"
     adb -s "$ADB_TARGET" push "$ROOT_DIR/templates/ntfs_template.sparse.gz" /data/local/tmp/ntfs_lab/
     adb -s "$ADB_TARGET" shell "su -c '
@@ -42,14 +51,14 @@ fi
 
 # 4. Transferir ferramentas para /data/local/tmp
 echo "[4/6] Enviando utilitário patch_trp..."
-adb -s "$ADB_TARGET" push "$ROOT_DIR/src/tools/patch_trp_arm32" /data/local/tmp/patch_trp
+adb -s "$ADB_TARGET" push "$BIN_DIR/patch_trp" /data/local/tmp/patch_trp
 adb -s "$ADB_TARGET" shell "chmod 755 /data/local/tmp/patch_trp"
 
 # 5. Instalar binários e scripts em /system/xbin (Root)
 echo "[5/6] Instalando executáveis e scripts em /system/xbin/..."
-adb -s "$ADB_TARGET" push "$ROOT_DIR/src/ntfs/fuse_ntfs_arm32" /data/local/tmp/fuse_ntfs
-adb -s "$ADB_TARGET" push "$ROOT_DIR/src/client/stream_fetcher_arm32" /data/local/tmp/stream_fetcher
-adb -s "$ADB_TARGET" push "$ROOT_DIR/src/client/fuse_direct_arm32" /data/local/tmp/fuse_direct
+adb -s "$ADB_TARGET" push "$BIN_DIR/fuse_ntfs" /data/local/tmp/fuse_ntfs
+adb -s "$ADB_TARGET" push "$BIN_DIR/stream_fetcher" /data/local/tmp/stream_fetcher
+adb -s "$ADB_TARGET" push "$BIN_DIR/fuse_direct" /data/local/tmp/fuse_direct
 
 for s in switch_tv_mode.sh switch_live.sh switch_vod.sh reconnect_usb.sh tv_watchdog.sh install-recovery-2.sh; do
     adb -s "$ADB_TARGET" push "$SCRIPT_DIR/$s" "/data/local/tmp/$s"
