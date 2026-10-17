@@ -1,0 +1,25 @@
+services:
+  usb-stream-tv:
+    build: .
+    container_name: usb-stream-tv
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./server.py:/app/server.py
+      - ./torrent_downloader.py:/app/torrent_downloader.py
+      - ./channels.json:/app/channels.json
+      - ./favorites.json:/app/favorites.json
+      - ./series_favorites.json:/app/series_favorites.json
+      - ./dashboard.html:/app/dashboard.html
+      - ./manifest.json:/app/manifest.json
+      - ./sw.js:/app/sw.js
+      - ./app-icon.png:/app/app-icon.png
+      - ./app-icon-512.png:/app/app-icon-512.png
+      - ./screenshot-desktop.png:/app/screenshot-desktop.png
+      - ./screenshot-mobile.png:/app/screenshot-mobile.png
+      - ./filmes:/app/filmes
+      - ./vod_cache:/app/vod_cache
+      - ./catalog_cache:/app/catalog_cache
+    ports:
+      - "${PORT:-8080}:8080"

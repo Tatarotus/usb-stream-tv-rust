@@ -1,0 +1,92 @@
+{
+  "name": "Controle da TV — Filmes & TV",
+  "short_name": "Controle TV",
+  "description": "Controle Remoto de Filmes e TV para Idosos",
+  "id": "/?source=pwa",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b0f19",
+  "theme_color": "#0b0f19",
+  "lang": "pt-BR",
+  "dir": "ltr",
+  "categories": [
+    "entertainment",
+    "utilities"
+  ],
+  "icons": [
+    {
+      "src": "/api/app-icon.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/api/app-icon.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/api/app-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/api/app-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "TV ao Vivo",
+      "short_name": "TV",
+      "description": "Assistir TV ao Vivo",
+      "url": "/",
+      "icons": [
+        {
+          "src": "/api/app-icon.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Filmes & Séries",
+      "short_name": "Catálogo",
+      "description": "Catálogo de Filmes e Séries",
+      "url": "/?tab=vod",
+      "icons": [
+        {
+          "src": "/api/app-icon.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    }
+  ],
+  "display_override": [
+    "standalone",
+    "minimal-ui"
+  ],
+  "launch_handler": {
+    "client_mode": [
+      "navigate-existing",
+      "auto"
+    ]
+  },
+  "share_target": {
+    "action": "https://tv.smre.run.place/",
+    "method": "GET",
+    "enctype": "application/x-www-form-urlencoded",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  }
+}

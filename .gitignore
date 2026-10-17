@@ -1,0 +1,39 @@
+# Arquivo de Credenciais e Configurações Privadas (NUNCA SUBIR PARA O GITHUB)
+.env
+.env.local
+.env.*.local
+
+# Logs e Dumps Temporários
+*.log
+*.log.gz
+*.debounce
+*.lock
+*.flag
+favorites.json
+series_favorites.json
+*.bak
+
+# Python Cache e Ambientes Virtuais
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+env/
+
+# Imagens Binárias Pesadas Descompactadas (usar sempre templates/*.sparse.gz)
+*.bin
+*.img
+scratch/
+
+# Diretórios de Cache de Mídia e Catálogo Locais
+filmes/
+vod_cache/
+catalog_cache/
+
+# SO e IDEs
+.DS_Store
+.idea/
+.vscode/
+.aider*
+

@@ -1,0 +1,714 @@
+{
+  "test-timer": {
+    "id": "test-timer",
+    "name": "Canal de Teste (Timer 15min)",
+    "quality": "720p",
+    "category": "TV Aberta",
+    "url": "/home/sam/Code/usb-stream-tv/test_timer_15m.mkv",
+    "logo": "⏱️",
+    "description": "Canal de teste com cronômetro contínuo na tela e bips de áudio a cada segundo para validação empírica de 7+ minutos."
+  },
+  "tv-gazeta-sp": {
+    "id": "tv-gazeta-sp",
+    "name": "TV Gazeta SP",
+    "quality": "1080p",
+    "category": "TV Aberta",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/208451.ts",
+    "logo": "https://i.postimg.cc/Nf62jC5p/gazetasp-FHD.png",
+    "description": "TV GAZETA SP FHD²",
+    "is_eco": false
+  },
+  "band-rio": {
+    "id": "band-rio",
+    "name": "Band Rio",
+    "quality": "1080p",
+    "category": "TV Aberta",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/207177.ts",
+    "logo": "https://i.postimg.cc/ydVLybSY/BAND-RJ-FHD.png",
+    "description": "BAND RJ FHD²",
+    "is_eco": false
+  },
+  "globo-rj": {
+    "id": "globo-rj",
+    "name": "Globo RJ",
+    "quality": "1080p",
+    "category": "TV Aberta",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/10006.ts",
+    "logo": "https://i.postimg.cc/KcVfzFbF/GLOBO_RJ_FHD.png",
+    "description": "GLOBO RIO DE JANEIRO (RJ) FHD¹",
+    "is_eco": false
+  },
+  "rede-tv-nacional": {
+    "id": "rede-tv-nacional",
+    "name": "RedeTV! Nacional",
+    "quality": "720p",
+    "category": "TV Aberta",
+    "url": "http://45.162.64.114/REDE_TV/index.m3u8",
+    "logo": "📺",
+    "description": "Rede nacional aberta. A Tarde é Sua, TV Fama, Operação de Risco, Mega Sonho e jornalismo RedeTV! News."
+  },
+  "redetv-parana": {
+    "id": "redetv-parana",
+    "name": "RedeTV! Paraná",
+    "quality": "1080p",
+    "category": "TV Aberta",
+    "url": "https://tv01.zas.media:1936/redetvparana/redetvparana/playlist.m3u8",
+    "logo": "📺",
+    "description": "Afiliada/regional RedeTV! no Paraná. Retransmite grade nacional RedeTV! (A Tarde é Sua, TV Fama, etc) + local."
+  },
+  "rede-brasil": {
+    "id": "rede-brasil",
+    "name": "Rede Brasil (RBTV)",
+    "quality": "1080p",
+    "category": "TV Aberta",
+    "url": "https://redebrasil.nuvemplay.live/hls/stream.m3u8",
+    "logo": "📺",
+    "description": "TV aberta nacional com foco em nostalgia, desenhos clássicos, séries, filmes e programas de auditório."
+  },
+  "rede-ngt": {
+    "id": "rede-ngt",
+    "name": "Rede NGT",
+    "quality": "1080p",
+    "category": "TV Aberta",
+    "url": "https://isaocorp.cloudecast.com/ngt/index.m3u8",
+    "logo": "📺",
+    "description": "Nova Geração de Televisão. TV aberta paulista/nacional, variedades, jornalismo local e programas independentes."
+  },
+  "cnt-rio": {
+    "id": "cnt-rio",
+    "name": "Rede CNT Rio",
+    "quality": "720p",
+    "category": "TV Aberta",
+    "url": "http://45.162.64.114/CNT/index.m3u8",
+    "logo": "📺",
+    "description": "Central Nacional de Televisão. Jornalismo, variedades e programas independentes."
+  },
+  "sbt-interior": {
+    "id": "sbt-interior",
+    "name": "SBT Interior",
+    "quality": "720p",
+    "category": "TV Aberta",
+    "url": "https://cdn.jmvstream.com/w/LVW-10801/LVW10801_Xvg4R0u57n/playlist.m3u8",
+    "logo": "📺",
+    "description": "Sinal interior SBT via JMVStream. Grade SBT nacional + regional."
+  },
+  "tv-cultura-sp": {
+    "id": "tv-cultura-sp",
+    "name": "TV Cultura",
+    "quality": "720p",
+    "category": "TV Aberta",
+    "url": "http://45.162.64.114/TV_CULTURA/index.m3u8",
+    "logo": "🏛️",
+    "description": "TV pública paulista referência em cultura e educação. Roda Viva, Jornal da Cultura, Cocoricó, música erudita."
+  },
+  "terraviva": {
+    "id": "terraviva",
+    "name": "Terra Viva (Band Agro)",
+    "quality": "720p",
+    "category": "TV Aberta",
+    "url": "http://45.162.64.114/TERRAVIVA/index.m3u8",
+    "logo": "🌱",
+    "description": "Agro do Grupo Bandeirantes. Jornal Terra Viva, leilões e campo."
+  },
+  "tv-a-critica": {
+    "id": "tv-a-critica",
+    "name": "TV A Crítica (Manaus)",
+    "quality": "1080p",
+    "category": "TV Aberta",
+    "url": "https://cdn.live.br1.jmvstream.com/w/LVW-20715/LVW20715_50E3x2MCm2/playlist.m3u8",
+    "logo": "📺",
+    "description": "Emissora amazônica histórica, afiliada à RedeTV!/conteúdo regional Norte. Folclore, jornalismo local."
+  },
+  "amazon-sat": {
+    "id": "amazon-sat",
+    "name": "Amazon Sat",
+    "quality": "1080p",
+    "category": "TV Aberta",
+    "url": "https://amazonsat.brasilstream.com.br/hls/amazonsat/index.m3u8",
+    "logo": "🌳",
+    "description": "Emissora pública/cultural da Amazônia. Jornalismo do Norte, cultura regional, meio ambiente."
+  },
+  "tcm10-hd": {
+    "id": "tcm10-hd",
+    "name": "TCM 10 HD",
+    "quality": "1080p",
+    "category": "TV Aberta",
+    "url": "https://live.tcm10.com.br/tcm10hd/stream.m3u8",
+    "logo": "📺",
+    "description": "TV regional acreana. Jornalismo local e retransmissão de conteúdo nacional."
+  },
+  "record-news": {
+    "id": "record-news",
+    "name": "Record News",
+    "quality": "1080p",
+    "category": "Notícias",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/206111.ts",
+    "logo": "https://i.postimg.cc/pVcYbLmR/recordnews-FHD.png",
+    "description": "RECORD NEWS FHD¹",
+    "is_eco": false
+  },
+  "record-news-pluto": {
+    "id": "record-news-pluto",
+    "name": "Record News (FAST)",
+    "quality": "720p",
+    "category": "Notícias",
+    "url": "https://jmp2.uk/plu-6102e04e9ab1db0007a980a1.m3u8",
+    "logo": "📰",
+    "description": "Versão FAST da Record News na Pluto/Samsung. Jornalismo 24h."
+  },
+  "sbt-news": {
+    "id": "sbt-news",
+    "name": "SBT News",
+    "quality": "1080p",
+    "category": "Notícias",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/3030726.ts",
+    "logo": "https://i.postimg.cc/vTrY9Dp6/SBTews_FHD.png",
+    "description": "SBT NEWS FHD¹",
+    "is_eco": false
+  },
+  "canal-uol": {
+    "id": "canal-uol",
+    "name": "Canal UOL",
+    "quality": "720p",
+    "category": "Notícias",
+    "url": "https://video24.mais.uol.com.br/live/6146.m3u8",
+    "logo": "📰",
+    "description": "Streaming ao vivo UOL. Notícias, esporte (UOL Esporte), entrevistas e programas originais."
+  },
+  "studio-universal-br": {
+    "id": "studio-universal-br",
+    "name": "Studio Universal",
+    "quality": "1080p",
+    "category": "Filmes & Séries",
+    "url": "http://187.102.210.46/universo/index.m3u8",
+    "logo": "🎬",
+    "description": "Filmes Universal 24h. Sessões com áudio original + PT. Versão FAST paga."
+  },
+  "axn-brasil": {
+    "id": "axn-brasil",
+    "name": "AXN Brasil",
+    "quality": "720p",
+    "category": "Filmes & Séries",
+    "url": "http://170.83.16.50/AXN/index.m3u8",
+    "logo": "💥",
+    "description": "Canal pago de ação e séries (NCIS, Hawaii Five-0, filmes). Versão BR em português."
+  },
+  "sony-channel-br": {
+    "id": "sony-channel-br",
+    "name": "Sony Channel",
+    "quality": "720p",
+    "category": "Filmes & Séries",
+    "url": "http://170.83.16.50/SONY_CHANNEL/index.m3u8",
+    "logo": "🍿",
+    "description": "Séries e filmes Sony (Grey's Anatomy, The Good Doctor). Grade paga dublado/legendado."
+  },
+  "tnt-novelas-br": {
+    "id": "tnt-novelas-br",
+    "name": "TNT Novelas",
+    "quality": "720p",
+    "category": "Filmes & Séries",
+    "url": "http://45.162.64.114/TNT_NOVELAS/index.m3u8",
+    "logo": "🎭",
+    "description": "Novelas turcas, mexicanas e brasileiras 24h (Warner Bros. Discovery). Drama e romance."
+  },
+  "ae-latin-br": {
+    "id": "ae-latin-br",
+    "name": "A&E Brasil",
+    "quality": "720p",
+    "category": "Filmes & Séries",
+    "url": "http://170.83.16.50/AeE/index.m3u8",
+    "logo": "🔍",
+    "description": "Reality policial, investigação e true crime (NCIS, 60 Dias, Acumuladores). Áudio PT-BR."
+  },
+  "loading-tv": {
+    "id": "loading-tv",
+    "name": "Loading TV",
+    "quality": "720p",
+    "category": "Filmes & Séries",
+    "url": "https://stmv1.srvif.com/loadingtv/loadingtv/playlist.m3u8",
+    "logo": "🎮",
+    "description": "Canal geek/otaku brasileiro. Animes, cultura pop, games e esports."
+  },
+  "sportv3-mirror": {
+    "id": "sportv3-mirror",
+    "name": "SporTV 3",
+    "quality": "720p",
+    "category": "Esportes",
+    "url": "http://170.83.49.66:8083/SPORTV3HD/index.m3u8",
+    "logo": "⚽",
+    "description": "Esporte Grupo Globo: vôlei, lutas, e-sports e reprises. Mirror público 720p, não é o app oficial."
+  },
+  "espn-mirror-a07z": {
+    "id": "espn-mirror-a07z",
+    "name": "ESPN",
+    "quality": "1080p",
+    "category": "Esportes",
+    "url": "http://181.78.197.59:8000/play/a07z/index.m3u8",
+    "logo": "🏈",
+    "description": "Esporte EUA/BR: futebol internacional, NBA, NFL. Mirror 1080p-listed, sem DRM."
+  },
+  "espn4-mirror-a07n": {
+    "id": "espn4-mirror-a07n",
+    "name": "ESPN 4",
+    "quality": "1080p",
+    "category": "Esportes",
+    "url": "http://181.78.197.59:8000/play/a07n/index.m3u8",
+    "logo": "🎾",
+    "description": "ESPN 4 alternativo: tênis, futebol europeu, esportes americanos."
+  },
+  "tv-brasil-ebc": {
+    "id": "tv-brasil-ebc",
+    "name": "TV Brasil (EBC)",
+    "quality": "720p",
+    "category": "TV Pública / Educativa",
+    "url": "http://45.162.64.114/TV_BRASIL/index.m3u8",
+    "logo": "🏛️",
+    "description": "TV pública federal (Empresa Brasil de Comunicação). Jornalismo público, cultura, esporte e cidadania."
+  },
+  "tv-camara": {
+    "id": "tv-camara",
+    "name": "TV Câmara",
+    "quality": "1080p",
+    "category": "TV Pública / Educativa",
+    "url": "https://stream3.camara.gov.br/tv1/manifest.m3u8",
+    "logo": "⚖️",
+    "description": "Canal público oficial da Câmara dos Deputados. Sessões ao vivo, debates legislativos, jornal da Câmara."
+  },
+  "tv-senado": {
+    "id": "tv-senado",
+    "name": "TV Senado",
+    "quality": "HD",
+    "category": "TV Pública / Educativa",
+    "url": "http://45.162.64.114/TV_SENADO/index.m3u8",
+    "logo": "⚖️",
+    "description": "Canal público do Senado Federal. Plenário ao vivo, comissões, Cidadania e jornalismo legislativo."
+  },
+  "tv-justica": {
+    "id": "tv-justica",
+    "name": "TV Justiça (STF)",
+    "quality": "720p",
+    "category": "TV Pública / Educativa",
+    "url": "http://45.162.64.114/TV_JUSTICA/index.m3u8",
+    "logo": "⚖️",
+    "description": "Canal do Supremo Tribunal Federal. Julgamentos ao vivo, Saber Direito, jornal da Justiça."
+  },
+  "tve-rs": {
+    "id": "tve-rs",
+    "name": "TVE Rio Grande do Sul",
+    "quality": "1080p",
+    "category": "TV Pública / Educativa",
+    "url": "https://streaming.procergs.com.br:8443/tve/stve/playlist.m3u8",
+    "logo": "🏛️",
+    "description": "TV Educativa do Rio Grande do Sul (Fundação Piratini). Cultura gaúcha, jornalismo público e educação."
+  },
+  "tve-bahia-mirror": {
+    "id": "tve-bahia-mirror",
+    "name": "TVE Bahia",
+    "quality": "1080p",
+    "category": "TV Pública / Educativa",
+    "url": "http://streaming.procergs.com.br:1935/tve/stve/playlist.m3u8",
+    "logo": "🏛️",
+    "description": "Mesmo stream-list que TVE RS no database atual - conteúdo TVE. Incluído porque anuncia 1080p e responde 200."
+  },
+  "canal-futura": {
+    "id": "canal-futura",
+    "name": "Canal Futura (Globo)",
+    "quality": "720p",
+    "category": "TV Pública / Educativa",
+    "url": "http://45.162.64.114/FUTURA/index.m3u8",
+    "logo": "🎓",
+    "description": "Canal educativo. Documentários, educação básica, jornalismo jovem e projetos sociais."
+  },
+  "tv-ufop": {
+    "id": "tv-ufop",
+    "name": "TV UFOP",
+    "quality": "1080p",
+    "category": "TV Pública / Educativa",
+    "url": "https://app.tvufop.com.br/hls/tvufop.m3u8",
+    "logo": "🎓",
+    "description": "TV universitária da UFOP (Ouro Preto/Mariana). Educação, ciência, cultura mineira."
+  },
+  "nick-classico-pluto": {
+    "id": "nick-classico-pluto",
+    "name": "Nickelodeon Clássico",
+    "quality": "720p",
+    "category": "Infantil",
+    "url": "https://jmp2.uk/plu-6824ce10c5d53e1351ceb8d1.m3u8",
+    "logo": "🧸",
+    "description": "Desenhos clássicos Nick (Rugrats, Hey Arnold). FAST oficial com token rotativo incluso na URL."
+  },
+  "tv-aparecida": {
+    "id": "tv-aparecida",
+    "name": "TV Aparecida",
+    "quality": "720p",
+    "category": "Religiosos",
+    "url": "http://45.162.64.114/TV_APARECIDA/index.m3u8",
+    "logo": "🙏",
+    "description": "TV católica do Santuário Nacional de Aparecida. Missas, novenas, jornalismo e entretenimento família."
+  },
+  "rede-vida": {
+    "id": "rede-vida",
+    "name": "Rede Vida",
+    "quality": "720p",
+    "category": "Religiosos",
+    "url": "http://168.197.104.22/REDE_VIDA/index.m3u8",
+    "logo": "🙏",
+    "description": "Rede católica nacional. Missas, programas de evangelização, jornalismo e variedades."
+  },
+  "tv-cancao-nova": {
+    "id": "tv-cancao-nova",
+    "name": "TV Canção Nova",
+    "quality": "720p",
+    "category": "Religiosos",
+    "url": "http://45.162.64.114/CANCAO_NOVA/index.m3u8",
+    "logo": "🙏",
+    "description": "TV católica (Comunidade Canção Nova, Cachoeira Paulista). Pregações, PHN, jornalismo Canção Nova Notícias."
+  },
+  "rit-tv": {
+    "id": "rit-tv",
+    "name": "RIT TV",
+    "quality": "1080p",
+    "category": "Religiosos",
+    "url": "https://acesso.ecast.site:3648/live/ritlive.m3u8",
+    "logo": "🙏",
+    "description": "Rede Internacional de Televisão (Igreja Internacional da Graça). Programação religiosa, talk e variedades cristãs."
+  },
+  "rede-gospel": {
+    "id": "rede-gospel",
+    "name": "Rede Gospel",
+    "quality": "1080p",
+    "category": "Religiosos",
+    "url": "https://cdn.live.br1.jmvstream.com/w/LVW-8719/LVW8719_AcLVAxWy5J/playlist.m3u8",
+    "logo": "🙏",
+    "description": "TV gospel (Igreja Renascer). Cultos, clipes gospel e variedades cristãs."
+  },
+  "tv-mana-brasil": {
+    "id": "tv-mana-brasil",
+    "name": "TV Maná Brasil",
+    "quality": "1080p",
+    "category": "Religiosos",
+    "url": "https://w1.manasat.com/tvmana-brasil/smil:tvmana-brasil.smil/playlist.m3u8",
+    "logo": "🙏",
+    "description": "Canal gospel/evangélico em português, grade religiosa 24h."
+  },
+  "globo-rj-alto-litoral-regio-dos-lagos": {
+    "id": "globo-rj-alto-litoral-regio-dos-lagos",
+    "name": "Globo RJ Alto Litoral (Região dos Lagos)",
+    "quality": "1080p",
+    "category": "TV Aberta",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/10017.ts",
+    "logo": "https://i.postimg.cc/KcVfzFbF/GLOBO_RJ_FHD.png",
+    "description": "GLOBO RJ ALTO LITORAL (RJ) FHD¹",
+    "is_eco": false
+  },
+  "sbt-rio": {
+    "id": "sbt-rio",
+    "name": "SBT Rio",
+    "quality": "1080p",
+    "category": "TV Aberta",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/207198.ts",
+    "logo": "https://i.postimg.cc/8CrPrCTd/SBT-RJ-FHD.png",
+    "description": "SBT RJ FHD¹",
+    "is_eco": false
+  },
+  "record-rio": {
+    "id": "record-rio",
+    "name": "Record Rio",
+    "quality": "1080p",
+    "category": "TV Aberta",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/214639.ts",
+    "logo": "https://i.postimg.cc/kXjLYpRD/RECORD-RJ-FHD.png",
+    "description": "RECORD TV RIO FHD¹",
+    "is_eco": false
+  },
+  "record-rio-fhd2": {
+    "id": "record-rio-fhd2",
+    "name": "Record Rio FHD2",
+    "quality": "1080p",
+    "category": "TV Aberta",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/214640.ts",
+    "logo": "https://i.postimg.cc/kXjLYpRD/RECORD-RJ-FHD.png",
+    "description": "RECORD TV RIO FHD²",
+    "is_eco": false
+  },
+  "tv-brasil": {
+    "id": "tv-brasil",
+    "name": "TV Brasil",
+    "quality": "1080p",
+    "category": "TV Aberta",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/208441.ts",
+    "logo": "https://i.postimg.cc/Wb8pyBDL/tvbrasil_FHD.png",
+    "description": "TV BRASIL FHD¹",
+    "is_eco": false
+  },
+  "sbt-nova-friburgo-rj": {
+    "id": "sbt-nova-friburgo-rj",
+    "name": "SBT Nova Friburgo (RJ)",
+    "quality": "HD",
+    "category": "TV Aberta",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/3917701.ts",
+    "logo": "https://i.postimg.cc/W44B2zX7/SBT-RJ-HD².png",
+    "description": "SBT NOVA FRIBURGO RJ HD²",
+    "is_eco": false
+  },
+  "record-interior-rj": {
+    "id": "record-interior-rj",
+    "name": "Record Interior RJ",
+    "quality": "HD",
+    "category": "TV Aberta",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/680104.ts",
+    "logo": "https://i.postimg.cc/mgJJB1ws/RECORD-RJ-HD.png",
+    "description": "RECORD TV INTERIOR RJ HD¹",
+    "is_eco": false
+  },
+  "band-interior-rj": {
+    "id": "band-interior-rj",
+    "name": "Band Interior RJ",
+    "quality": "HD",
+    "category": "TV Aberta",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/3917940.ts",
+    "logo": "https://i.postimg.cc/W44B2zX7/SBT-RJ-HD².png",
+    "description": "BAND INTERIOR RJ HD²",
+    "is_eco": false
+  },
+  "sbt-sp": {
+    "id": "sbt-sp",
+    "name": "SBT SP",
+    "quality": "1080p",
+    "category": "TV Aberta",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/207192.ts",
+    "logo": "https://i.postimg.cc/d0KFwwgH/SBT_SP_FHD.png",
+    "description": "SBT SP FHD¹",
+    "is_eco": false
+  },
+  "record-sp": {
+    "id": "record-sp",
+    "name": "Record SP",
+    "quality": "1080p",
+    "category": "TV Aberta",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/214634.ts",
+    "logo": "https://i.postimg.cc/25ncYcyQ/RECORD_SP_FHD.png",
+    "description": "RECORD TV SP FHD¹",
+    "is_eco": false
+  },
+  "band-sp": {
+    "id": "band-sp",
+    "name": "Band SP",
+    "quality": "1080p",
+    "category": "TV Aberta",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/207171.ts",
+    "logo": "https://i.postimg.cc/VL34V6bh/BAND-SP-FHD.png",
+    "description": "BAND SP FHD¹",
+    "is_eco": false
+  },
+  "redetv": {
+    "id": "redetv",
+    "name": "RedeTV!",
+    "quality": "1080p",
+    "category": "TV Aberta",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/208423.ts",
+    "logo": "https://i.postimg.cc/YqzjH4sP/redetv-FHD.png",
+    "description": "REDE TV FHD¹",
+    "is_eco": false
+  },
+  "tv-cultura": {
+    "id": "tv-cultura",
+    "name": "TV Cultura",
+    "quality": "1080p",
+    "category": "TV Aberta",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/208430.ts",
+    "logo": "https://i.postimg.cc/7Pcf98TB/cultura-FHD.png",
+    "description": "TV CULTURA FHD¹",
+    "is_eco": false
+  },
+  "globonews": {
+    "id": "globonews",
+    "name": "GloboNews",
+    "quality": "1080p",
+    "category": "Notícias",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/206097.ts",
+    "logo": "https://i.postimg.cc/sD267LhD/globonews-FHD.png",
+    "description": "GLOBO NEWS FHD¹",
+    "is_eco": false
+  },
+  "cnn-brasil": {
+    "id": "cnn-brasil",
+    "name": "CNN Brasil",
+    "quality": "1080p",
+    "category": "Notícias",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/206087.ts",
+    "logo": "https://i.postimg.cc/FzN6Mszj/cnnbFHD.png",
+    "description": "CNN BRASIL FHD¹",
+    "is_eco": false
+  },
+  "bandnews": {
+    "id": "bandnews",
+    "name": "BandNews",
+    "quality": "1080p",
+    "category": "Notícias",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/206080.ts",
+    "logo": "https://i.postimg.cc/ryGXQ7s1/bandnews-FHD.png",
+    "description": "BAND NEWS FHD¹",
+    "is_eco": false
+  },
+  "jovem-pan-news": {
+    "id": "jovem-pan-news",
+    "name": "Jovem Pan News",
+    "quality": "1080p",
+    "category": "Notícias",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/206104.ts",
+    "logo": "https://i.postimg.cc/m2hjtFvP/jovempn-FHD.png",
+    "description": "JOVEM PAN NEWS FHD¹",
+    "is_eco": false
+  },
+  "sportv": {
+    "id": "sportv",
+    "name": "Sportv",
+    "quality": "1080p",
+    "category": "Esportes",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/205555.ts",
+    "logo": "https://i.postimg.cc/bNmQzDKr/SporTV_FHD.png",
+    "description": "SPORTV FHD¹",
+    "is_eco": false
+  },
+  "hbo": {
+    "id": "hbo",
+    "name": "HBO",
+    "quality": "1080p",
+    "category": "Filmes & Séries",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/365180.ts",
+    "logo": "https://i.postimg.cc/ZqBBzx4p/HBOfhd.png",
+    "description": "HBO FHD¹",
+    "is_eco": false
+  },
+  "hbo-2": {
+    "id": "hbo-2",
+    "name": "HBO 2",
+    "quality": "1080p",
+    "category": "Filmes & Séries",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/365188.ts",
+    "logo": "https://i.postimg.cc/LsXkYPR8/HBO2fhd.png",
+    "description": "HBO 2 FHD¹",
+    "is_eco": false
+  },
+  "hbo-family": {
+    "id": "hbo-family",
+    "name": "HBO Family",
+    "quality": "1080p",
+    "category": "Filmes & Séries",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/365196.ts",
+    "logo": "https://i.postimg.cc/BvXDQGc8/HBOFAMILYfhd.png",
+    "description": "HBO FAMILY FHD¹",
+    "is_eco": false
+  },
+  "hbo-mundi": {
+    "id": "hbo-mundi",
+    "name": "HBO Mundi",
+    "quality": "1080p",
+    "category": "Filmes & Séries",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/365204.ts",
+    "logo": "https://i.postimg.cc/jdxDSbRs/HBOMUNDIfhd.png",
+    "description": "HBO MUNDI FHD¹",
+    "is_eco": false
+  },
+  "hbo-plus": {
+    "id": "hbo-plus",
+    "name": "HBO Plus",
+    "quality": "1080p",
+    "category": "Filmes & Séries",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/365212.ts",
+    "logo": "https://i.postimg.cc/6qRf6NKV/HBO-fhd.png",
+    "description": "HBO PLUS FHD¹",
+    "is_eco": false
+  },
+  "hbo-pop": {
+    "id": "hbo-pop",
+    "name": "HBO Pop",
+    "quality": "1080p",
+    "category": "Filmes & Séries",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/365220.ts",
+    "logo": "https://i.postimg.cc/br3NtZqq/HBOPOPfhd.png",
+    "description": "HBO POP FHD¹",
+    "is_eco": false
+  },
+  "hbo-signature": {
+    "id": "hbo-signature",
+    "name": "HBO Signature",
+    "quality": "1080p",
+    "category": "Filmes & Séries",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/365228.ts",
+    "logo": "https://i.postimg.cc/L5C2sGVX/HBOSIGfhd.png",
+    "description": "HBO SIGNATURE FHD¹",
+    "is_eco": false
+  },
+  "hbo-xtreme": {
+    "id": "hbo-xtreme",
+    "name": "HBO Xtreme",
+    "quality": "1080p",
+    "category": "Filmes & Séries",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/365236.ts",
+    "logo": "https://i.postimg.cc/qqRHWjdd/HBOXfhd.png",
+    "description": "HBO XTREME FHD¹",
+    "is_eco": false
+  },
+  "telecine-action": {
+    "id": "telecine-action",
+    "name": "Telecine Action",
+    "quality": "1080p",
+    "category": "Filmes & Séries",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/365244.ts",
+    "logo": "https://i.postimg.cc/dtqbW3m3/TCACTIONFHD.png",
+    "description": "TELECINE ACTION FHD¹",
+    "is_eco": false
+  },
+  "telecine-premium": {
+    "id": "telecine-premium",
+    "name": "Telecine Premium",
+    "quality": "1080p",
+    "category": "Filmes & Séries",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/365276.ts",
+    "logo": "https://i.postimg.cc/y6T5SB4H/TCPREMIUMFHD.png",
+    "description": "TELECINE PREMIUM FHD¹",
+    "is_eco": false
+  },
+  "telecine-pipoca": {
+    "id": "telecine-pipoca",
+    "name": "Telecine Pipoca",
+    "quality": "1080p",
+    "category": "Filmes & Séries",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/365268.ts",
+    "logo": "https://i.postimg.cc/3Nyv7Y2v/TELECINEpipocaFHD.png",
+    "description": "TELECINE PIPOCA FHD¹",
+    "is_eco": false
+  },
+  "telecine-fun": {
+    "id": "telecine-fun",
+    "name": "Telecine Fun",
+    "quality": "1080p",
+    "category": "Filmes & Séries",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/365260.ts",
+    "logo": "https://i.postimg.cc/Kj4nznh4/TELECINEFUNFHD.png",
+    "description": "TELECINE FUN FHD¹",
+    "is_eco": false
+  },
+  "telecine-cult": {
+    "id": "telecine-cult",
+    "name": "Telecine Cult",
+    "quality": "1080p",
+    "category": "Filmes & Séries",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/365252.ts",
+    "logo": "https://i.postimg.cc/j2jh7pPx/TELECINECUTFHD.png",
+    "description": "TELECINE CULT FHD¹",
+    "is_eco": false
+  },
+  "telecine-touch": {
+    "id": "telecine-touch",
+    "name": "Telecine Touch",
+    "quality": "1080p",
+    "category": "Filmes & Séries",
+    "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/365284.ts",
+    "logo": "https://i.postimg.cc/6qHYbWt4/TCTOUCHFHD.png",
+    "description": "TELECINE TOUCH FHD¹",
+    "is_eco": false
+  }
+}
