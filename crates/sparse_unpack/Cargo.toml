@@ -3,10 +3,3 @@ name = "sparse_unpack"
 version = "3.0.0"
 edition = "2021"
 description = "USB-Stream-TV: Sparse ext4 template image unpacker"
-
-[profile.release]
-opt-level = "s"
-lto = true
-codegen-units = 1
-panic = "abort"
-strip = true

@@ -1,0 +1,57 @@
+//! Shared contract between the FUSE VFS layer and the streaming backends.
+//!
+//! This module is the stable seam between the NTFS virtual-filesystem
+//! dispatcher (`vfs`) and the live/VOD ingest engine (`engine`). Both sides
+//! depend only on the constants and trait defined here, so the engine can be
+//! developed, audited, and replaced independently of the kernel ABI layer.
+
+/// Size in bytes of one MPEG-TS transport stream packet.
+pub const TS_PKT_SZ: usize = 188;
+
+/// Capacity of the live ring buffer in bytes (128 MiB). The ring is circular
+/// and self-recovering: the network feeder never throttles, and a reader that
+/// falls behind `ring_old` is transparently re-anchored to the live target.
+pub const RINGSZ: usize = 128 * 1024 * 1024;
+
+/// Distance behind the live write head (`g_s_write`) where playback anchors.
+/// 16 MiB absorbs network jitter without stalling the Samsung MStar SCSI bus.
+pub const LEADBACK: u64 = 16 * 1024 * 1024;
+
+/// Minimum lead the reader must hold over the live edge before a confirmed
+/// resume (bookmark / jump) is allowed to re-anchor the stream.
+pub const RESUME_MIN_LEAD: u64 = 2 * 1024 * 1024;
+
+/// File offset at/above which reads are treated as probe candidates.
+pub const PROBE_ISOLATION_FOFF: u64 = 8 * 1024 * 1024;
+
+/// Margin past the active end beyond which a read is an isolated probe.
+pub const PROBE_OVERFALL: u64 = 2 * 1024 * 1024;
+
+/// Margin added on top of the resume target when re-anchoring, so the reader
+/// restarts slightly behind the requested bookmark and never outruns it.
+pub const RESUME_TARGET_MARGIN: u64 = 2 * 1024 * 1024;
+
+/// Backend abstraction implemented by the streaming engine.
+///
+/// * `serve_live` feeds the live channel identified by `file_id`.
+/// * `serve_vod` feeds an on-demand stream identified by its HTTP URL.
+///
+/// Both methods must fully populate `dst` (padding with MPEG-TS null packets
+/// when the source is exhausted) so the 27 MHz STC PLL of the 2013 MStar
+/// decoder never starves on a short reply.
+pub trait StreamBackend: Send + Sync {
+    /// Fills `dst` with live MPEG-TS bytes for `file_id`, starting at the
+    /// stream offset `foff`. Returns the number of bytes written.
+    fn serve_live(&self, file_id: u32, foff: u64, dst: &mut [u8], deadline_ms: u64) -> usize;
+
+    /// Fills `dst` with VOD bytes for `url`, starting at `foff`.
+    /// Returns the number of bytes written, or an I/O error when the source
+    /// cannot be reached (the caller then falls back to null packets).
+    fn serve_vod(
+        &self,
+        url: &str,
+        foff: u64,
+        dst: &mut [u8],
+        deadline_ms: u64,
+    ) -> Result<usize, std::io::Error>;
+}

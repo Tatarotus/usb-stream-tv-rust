@@ -7,10 +7,3 @@ description = "USB-Stream-TV: Direct FUSE FAT32 daemon for Live TV and Cloud VOD
 [dependencies]
 libc = "0.2"
 socket2 = { version = "0.5", features = ["all"] }
-
-[profile.release]
-opt-level = "s"
-lto = true
-codegen-units = 1
-panic = "abort"
-strip = true

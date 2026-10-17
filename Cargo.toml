@@ -4,6 +4,7 @@ members = [
     "crates/patch_trp",
     "crates/sparse_unpack",
     "crates/fuse_direct",
+    "crates/fuse_ntfs",
 ]
 resolver = "2"
 

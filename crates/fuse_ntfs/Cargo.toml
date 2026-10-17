@@ -1,0 +1,8 @@
+[package]
+name = "fuse_ntfs"
+version = "3.0.0"
+edition = "2021"
+description = "USB-Stream-TV: High-performance raw /dev/fuse live NTFS engine"
+
+[dependencies]
+libc = "0.2"

@@ -350,4 +350,88 @@ mod tests {
         assert_eq!(buf[TS_PKT_SZ * 2], 0x47);
         assert_eq!(buf[TS_PKT_SZ * 3], 0x47);
     }
+
+    #[test]
+    fn test_anti_probe_sequential_tracking() {
+        const RING_BYTES: usize = 13 * 1024 * 1024;
+        let mut sample_ts = vec![0u8; RING_BYTES];
+        let mut off = 0;
+        while off < sample_ts.len() {
+            sample_ts[off] = 0x47;
+            sample_ts[off + 1] = 0x40; // pusi=1, pid=0x0000 (PAT)
+            sample_ts[off + 2] = 0x00;
+            sample_ts[off + 3] = 0x10;
+            sample_ts[off + 4] = 0x00; // pointer_field = 0
+            sample_ts[off + 5] = 0x00; // table_id = 0x00 (PAT)
+            off += TS_PKT_SZ;
+        }
+
+        let ring = Arc::new(LiveRing::new());
+        ring.write_chunk(&sample_ts);
+
+        {
+            let mut s = ring.state.lock().unwrap_or_else(|e| e.into_inner());
+            s.base = 0;
+            s.base_valid = true;
+            s.prev_fend = 8388748;
+            s.consec_small = 0;
+            s.last_probe_off = u64::MAX;
+        }
+
+        let server = DiskServer::new_live(FatTemplate::new(), Arc::clone(&ring));
+        let file_offset = FILE_SEC * BPS;
+        let deadline = Instant::now() + std::time::Duration::from_secs(1);
+        let mut buf = vec![0u8; TS_PKT_SZ];
+
+        for i in 1..=4u64 {
+            let probe = 8 * 1024 * 1024 + 2 * 1024 * 1024 + i * 1024 * 1024;
+            buf.fill(0);
+            server.serve_disk(&mut buf, file_offset + probe, deadline);
+
+            assert_eq!(&buf[1..4], &[0x1F, 0xFF, 0x10]);
+            let s = ring.state.lock().unwrap_or_else(|e| e.into_inner());
+            assert_eq!(s.consec_small, 1);
+            assert_eq!(s.last_probe_off, probe);
+            assert_eq!(s.base, 0);
+            assert_eq!(s.prev_fend, 8388748);
+        }
+
+        server.serve_disk(&mut buf, file_offset + 8388748, deadline);
+        assert_eq!(buf[0], 0x47);
+        {
+            let s = ring.state.lock().unwrap_or_else(|e| e.into_inner());
+            assert_eq!(s.consec_small, 0);
+            assert_eq!(s.last_probe_off, 14 * 1024 * 1024);
+            assert_eq!(s.prev_fend, 8388748 + TS_PKT_SZ as u64);
+        }
+
+        let chain_start = 13 * 1024 * 1024;
+        server.serve_disk(&mut buf, file_offset + chain_start, deadline);
+        {
+            let s = ring.state.lock().unwrap_or_else(|e| e.into_inner());
+            assert_eq!(s.consec_small, 1);
+            assert_eq!(s.base, 0);
+        }
+
+        server.serve_disk(&mut buf, file_offset + chain_start + 4096, deadline);
+        {
+            let s = ring.state.lock().unwrap_or_else(|e| e.into_inner());
+            assert_eq!(s.consec_small, 2);
+            assert_eq!(s.base, 0);
+        }
+
+        buf.fill(0);
+        server.serve_disk(&mut buf, file_offset + chain_start + 8192, deadline);
+        {
+            let s = ring.state.lock().unwrap_or_else(|e| e.into_inner());
+            assert_eq!(s.consec_small, 0);
+            assert_eq!(s.last_probe_off, u64::MAX);
+            assert_eq!(s.prev_fend, u64::MAX);
+            assert_eq!(
+                s.base,
+                ring::snap188(RING_BYTES as u64 - ring::LEADBACK)
+            );
+            assert!(s.base_valid);
+        }
+    }
 }
