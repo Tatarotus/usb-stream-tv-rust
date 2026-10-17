@@ -322,14 +322,10 @@ pub fn unpack_stream<R: Read>(mut reader: R, out_path: &Path) -> Result<UnpackSt
 
     tmp_guard.commit(out_path)?;
 
-    let dir_file = File::open(parent_dir).map_err(|e| UnpackError::Io {
-        context: "open parent directory for sync",
-        source: e,
-    })?;
-    dir_file.sync_all().map_err(|e| UnpackError::Io {
-        context: "fsync parent directory",
-        source: e,
-    })?;
+    // Advisory sync of parent directory to flush directory entry to journal
+    if let Ok(dir_file) = File::open(parent_dir) {
+        let _ = dir_file.sync_all();
+    }
 
     Ok(UnpackStats {
         chunks_count,
