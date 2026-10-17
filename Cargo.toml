@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/stream_fetcher",
+    "crates/patch_trp",
 ]
 resolver = "2"
 
