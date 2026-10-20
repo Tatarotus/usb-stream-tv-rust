@@ -1,0 +1,12 @@
+# RC-Live ARM binary hashes (frozen release values)
+#
+# Target : armv7-unknown-linux-gnueabihf (statically linked)
+# Revision: 16d5991c6868fca4b109fd0ee38b11106b10af58 (tag rc-001-live-16d5991)
+# Format  : sha256  name   (path: target/armv7-unknown-linux-gnueabihf/release/name)
+#
+# Verify with: scripts/verify_rc_live_release.sh
+909e2f066efb4ef2d64034546f11131c52216c920858e6bfec12b71ec3bae898  fuse_ntfs
+a6eb746872834a119a91537889b4b2d8d68ada58a206712d759df80d9a020f46  fuse_direct
+e2c203e0d809d12cdb07155c800fc80c76e9680c8485b55c4ffe59057644806d  stream_fetcher
+3afd258f51ac45fccc3f35d262fbf5141b6090a710a23c9819619704ecf8015d  patch_trp
+e52a389f8281e330895fa3c372dc0ecc8d99ad0d51d122f147f4e4679cfe8f19  sparse_unpack
