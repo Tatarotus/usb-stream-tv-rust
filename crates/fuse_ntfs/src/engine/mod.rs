@@ -1,5 +1,6 @@
 //! Streaming engine: ring buffer, snapper, Caminho C transform, state machine, and live engine.
 
+pub mod feeder_phase;
 pub mod live_engine;
 pub mod ring;
 pub mod snapper;

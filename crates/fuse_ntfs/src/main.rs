@@ -25,6 +25,9 @@ use std::thread;
 use std::time::Duration;
 
 use fuse_ntfs::contract::StreamBackend;
+use fuse_ntfs::observability::{
+    self, BootClock, Component, Event, EventKind, Observer, Reason, StderrSink, Worker,
+};
 use fuse_ntfs::vfs::catalog::Catalog;
 use fuse_ntfs::vfs::dispatcher;
 use fuse_ntfs::vfs::ntfs_mft::NtfsTemplate;
@@ -110,14 +113,26 @@ fn build_backend(
     }
 }
 
-fn feeder_loop(fifo_path: String, engine: Arc<fuse_ntfs::engine::LiveEngine>) {
+/// Emits one feeder lifecycle observation; never blocks the feeder thread.
+fn feeder_event(obs: &Observer, kind: EventKind, why: Reason) {
+    obs.emit(Event::new(Component::Feeder, kind).reason(why));
+}
+
+fn feeder_loop(fifo_path: String, engine: Arc<fuse_ntfs::engine::LiveEngine>, obs: Observer) {
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
     use std::os::unix::io::AsRawFd;
 
+    use fuse_ntfs::engine::feeder_phase::FeederPhase;
+
     const FLUSH_PATH: &str = "/data/local/tmp/fuse_flush";
     let mut buf = vec![0u8; 64 * 1024];
     let mut last_feed_log: u64 = 0;
+    // Idle is inferred only from the existing poll-timeout path.
+    let mut last_data = std::time::Instant::now();
+    let mut was_idle = false;
+    // TASK-004: only complete, packet-aligned bytes are published to the ring.
+    let mut aligner = FeederPhase::new();
 
     while RUNNING.load(Ordering::SeqCst) {
         // Flush trigger check (before opening / between reopens).
@@ -139,7 +154,9 @@ fn feeder_loop(fifo_path: String, engine: Arc<fuse_ntfs::engine::LiveEngine>) {
                     }
                 }
             }
+            feeder_event(&obs, EventKind::FifoFlushObserved, Reason::Flush);
             engine.flush();
+            aligner.reset();
             last_feed_log = engine.ring.lock().s_write();
         }
 
@@ -150,7 +167,13 @@ fn feeder_loop(fifo_path: String, engine: Arc<fuse_ntfs::engine::LiveEngine>) {
             .open(&fifo_path)
         {
             Ok(f) => f,
-            Err(_) => {
+            Err(e) => {
+                obs.emit(
+                    Event::new(Component::Feeder, EventKind::FifoOpenError)
+                        .reason(Reason::ReadError)
+                        .errno(e.raw_os_error().unwrap_or(0)),
+                );
+                aligner.reset();
                 thread::sleep(Duration::from_millis(100));
                 continue;
             }
@@ -193,16 +216,55 @@ fn feeder_loop(fifo_path: String, engine: Arc<fuse_ntfs::engine::LiveEngine>) {
                         libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK);
                     }
                 }
+                feeder_event(&obs, EventKind::FifoFlushObserved, Reason::Flush);
                 engine.flush();
+                aligner.reset();
                 last_feed_log = engine.ring.lock().s_write();
                 flushed = true;
                 break;
             }
 
+            let mut pfd = libc::pollfd {
+                fd: fifo.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ret = unsafe { libc::poll(&mut pfd, 1, 250) };
+            if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                aligner.reset();
+                break;
+            }
+            if ret == 0 {
+                // Timeout: loop back to check RUNNING and FLUSH_PATH.
+                if !was_idle && last_data.elapsed() >= Duration::from_millis(1000) {
+                    was_idle = true;
+                    feeder_event(&obs, EventKind::FifoIdle, Reason::Idle);
+                }
+                continue;
+            }
+
             match fifo.read(&mut buf) {
-                Ok(0) => break, // EOF: re-open after 100ms
+                Ok(0) => {
+                    // EOF: re-open after 100ms. A new producer may restart at
+                    // any TS phase.
+                    aligner.reset();
+                    feeder_event(&obs, EventKind::FifoEof, Reason::Eof);
+                    break;
+                }
                 Ok(n) => {
-                    engine.ring.write_chunk(&buf[..n]);
+                    last_data = std::time::Instant::now();
+                    if was_idle {
+                        was_idle = false;
+                        feeder_event(&obs, EventKind::FifoDataResumed, Reason::DataResumed);
+                    }
+                    let aligned = aligner.push(&buf[..n]);
+                    if !aligned.is_empty() {
+                        engine.ring.write_chunk(&aligned);
+                    }
                     let s_write = engine.ring.lock().s_write();
                     if s_write.saturating_sub(last_feed_log) >= 2 * 1024 * 1024 {
                         eprintln!("[FEEDER] S_write={}MB", s_write / (1024 * 1024));
@@ -210,7 +272,15 @@ fn feeder_loop(fifo_path: String, engine: Arc<fuse_ntfs::engine::LiveEngine>) {
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => break,
+                Err(e) => {
+                    obs.emit(
+                        Event::new(Component::Feeder, EventKind::FifoReadError)
+                            .reason(Reason::ReadError)
+                            .errno(e.raw_os_error().unwrap_or(0)),
+                    );
+                    aligner.reset();
+                    break;
+                }
             }
         }
 
@@ -224,6 +294,18 @@ fn feeder_loop(fifo_path: String, engine: Arc<fuse_ntfs::engine::LiveEngine>) {
 
 fn main() {
     install_signals();
+
+    // ---- bounded observability: validated config read once, never per read ----
+    let started = observability::Config::from_env()
+        .and_then(|cfg| Observer::start(cfg, Arc::new(BootClock), Box::new(StderrSink)));
+    let (obs, obs_worker) = match started {
+        Ok(s) => (s.observer, s.worker),
+        Err(e) => {
+            eprintln!("[!] Observação desabilitada: {e}");
+            (Observer::disabled(), Worker::idle())
+        }
+    };
+    obs.emit(Event::new(Component::Process, EventKind::ProcessStart));
 
     let args: Vec<String> = env::args().collect();
     // Optional `--no-engine` flag demotes to the null backend (maintenance
@@ -271,7 +353,9 @@ fn main() {
 
     // ---- backend wiring: live engine or null fallback ----
     let engine_handle: Option<Arc<fuse_ntfs::engine::LiveEngine>> = if engine_enabled {
-        Some(Arc::new(fuse_ntfs::engine::LiveEngine::new()))
+        Some(Arc::new(fuse_ntfs::engine::LiveEngine::with_observer(
+            obs.clone(),
+        )))
     } else {
         None
     };
@@ -281,16 +365,18 @@ fn main() {
     if engine_enabled && target != "test" {
         if let Some(engine) = engine_handle.clone() {
             let fifo_path = target.to_string();
+            let feeder_obs = obs.clone();
             let _ = thread::Builder::new()
                 .name("feeder".into())
                 .stack_size(2 * 1024 * 1024)
-                .spawn(move || feeder_loop(fifo_path, engine));
+                .spawn(move || feeder_loop(fifo_path, engine, feeder_obs));
         }
     }
 
-    let server = Arc::new(fuse_ntfs::vfs::dispatcher::NtfsServer::new(
-        template, catalog, backend,
-    ));
+    let server = Arc::new(
+        fuse_ntfs::vfs::dispatcher::NtfsServer::new(template, catalog, backend)
+            .with_observer(obs.clone()),
+    );
 
     // ---- mount /dev/fuse ----
     let _ = fs::create_dir_all(mnt);
@@ -367,4 +453,7 @@ fn main() {
         libc::umount2(c_mnt.as_ptr(), libc::MNT_DETACH);
         libc::close(fuse_fd);
     }
+    obs.emit(Event::new(Component::Process, EventKind::ProcessStop));
+    // Best-effort: never blocks teardown on a stuck stderr writer.
+    let _ = obs_worker.shutdown(50);
 }
