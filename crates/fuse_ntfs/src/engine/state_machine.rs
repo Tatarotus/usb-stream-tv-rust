@@ -24,7 +24,7 @@
 //!   position still maps inside the ring continues from the nearest PAT
 //!   (timeshift continuity) instead of jumping to the live edge.
 
-use crate::contract::RESUME_MIN_LEAD;
+use crate::contract::{PROBE_ISOLATION_FOFF, RESUME_MIN_LEAD};
 use crate::engine::ring::snap188;
 
 /// Idle gap after which a non-adjacent read is treated as a resume attempt.
@@ -45,6 +45,8 @@ pub const PROBE_CONFIRM_K: usize = 3;
 pub const PROBE_FUTURE_MARGIN: u64 = 2 * 1024 * 1024;
 /// SCSI block sizes whose consecutive landing continues the probe chain.
 pub const PROBE_SEQ_STEPS: [u64; 2] = [4096, 8192];
+/// NEW (TASK-002): consecutive overwritten requests needed to confirm recovery.
+pub const OVW_CONFIRM_COUNT: u8 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SmPhase {
@@ -62,9 +64,10 @@ pub enum SmPhase {
 pub enum SmDecision {
     /// Sequential read: serve from the current anchor.
     Continue,
-    /// Transient probe: NULL-fill, no state change (chain untouched).
+    /// Transient/overwritten probe: NULL-fill, no state change (chain untouched).
+    /// A probe never authorizes a USB/gadget action; recovery is operator-only.
     ProbeReject,
-    /// Confirmed sequential seek (`K >= 3` probe blocks): re-anchor to live.
+    /// Confirmed sequential seek inside window: re-anchor to live.
     ConfirmedSeek,
     /// 2-step resume confirmed: re-anchor with continuity splice.
     ResumeAfterGap,
@@ -88,6 +91,21 @@ impl SmCtx {
     }
 }
 
+/// NEW (TASK-002) tracker inputs: request identity/offset, observed stream
+/// mapping (`mapped_start`/`ring_old`) and the engine's eligibility ruling
+/// (it ruled out cold/restart/channel/adjacent re-anchor reasons).
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct OvwCtx {
+    pub(super) file_id: u32,
+    pub(super) epoch: u64,
+    pub(super) foff: u64,
+    pub(super) len: u64,
+    pub(super) now_ms: u64,
+    pub(super) mapped_start: u64,
+    pub(super) ring_old: u64,
+    pub(super) base_eligible: bool,
+}
+
 pub struct StateMachine {
     phase: SmPhase,
     /// Idle gap threshold for resume detection (mirrors `FUSE_RESUME_GAP_MS`).
@@ -100,12 +118,23 @@ pub struct StateMachine {
     chain_bytes: u64,
     probe_chain: usize,
     probe_last_off: u64,
+    jump_count: u64,
+    jump_bytes: u64,
+    jump_last: u64,
+    // NEW (TASK-002): bounded wholly-overwritten confirmation (29 bytes, O(1)).
+    ovw_file_id: u32,
+    ovw_epoch: u64,
+    ovw_next_fend: u64,
+    ovw_count: u8,
+    ovw_last_ms: u64,
     // telemetry
     pub gap_detects: u64,
     pub resumes: u64,
     pub confirmed_seeks: u64,
     pub probe_rejects: u64,
     pub transitions: u64,
+    /// NEW (TASK-002): confirmations consumed by the overwritten tracker.
+    pub ovw_confirms: u64,
 }
 
 impl Default for StateMachine {
@@ -132,11 +161,20 @@ impl StateMachine {
             chain_bytes: 0,
             probe_chain: 0,
             probe_last_off: u64::MAX,
+            jump_count: 0,
+            jump_bytes: 0,
+            jump_last: u64::MAX,
+            ovw_file_id: 0,
+            ovw_epoch: 0,
+            ovw_next_fend: 0,
+            ovw_count: 0,
+            ovw_last_ms: 0,
             gap_detects: 0,
             resumes: 0,
             confirmed_seeks: 0,
             probe_rejects: 0,
             transitions: 0,
+            ovw_confirms: 0,
         }
     }
 
@@ -156,7 +194,24 @@ impl StateMachine {
         self.chain_bytes = 0;
         self.probe_chain = 0;
         self.probe_last_off = u64::MAX;
+        self.jump_count = 0;
+        self.jump_bytes = 0;
+        self.jump_last = u64::MAX;
+        self.clear_overwritten_pending();
         self.transitions += 1;
+    }
+
+    /// Resets probe debouncing and jump state.
+    pub fn reset_probe_state(&mut self) {
+        self.probe_chain = 0;
+        self.probe_last_off = u64::MAX;
+        self.jump_count = 0;
+        self.jump_bytes = 0;
+        self.jump_last = u64::MAX;
+        self.gap_jump_foff = 0;
+        self.chain_reads = 0;
+        self.chain_bytes = 0;
+        self.clear_overwritten_pending();
     }
 
     /// True while the opening grace suppresses resume detection.
@@ -189,42 +244,53 @@ impl StateMachine {
         }
 
         // ---- probe classification (beyond 8 MiB, outside the ring window)
+        // Probes outside the window NEVER escalate to ConfirmedSeek or a
+        // gadget action. Behind probes are bounded NULL-only rejections; USB
+        // recovery is an explicit operator policy (TASK-005).
         if let Some(s_probe) = ctx.probe_pos {
-            let is_future = s_probe >= ctx.s_write.saturating_add(PROBE_FUTURE_MARGIN);
-            let is_behind = s_probe < ctx.ring_old;
-            if is_future || is_behind {
-                // A probe landing one SCSI block past the previous probe is a
-                // sequential re-scan of the same neighbourhood and continues
-                // the debounce chain; anything else restarts it at 1.
-                let sequential = self.probe_last_off == u64::MAX
-                    || PROBE_SEQ_STEPS
-                        .iter()
-                        .any(|&step| foff == self.probe_last_off.saturating_add(step));
-                if sequential || self.probe_chain == 0 {
-                    self.probe_chain += 1;
-                } else {
-                    self.probe_chain = 1;
-                }
-                self.probe_last_off = foff;
-                if self.probe_chain < PROBE_CONFIRM_K {
-                    // PR INVARIANT: the idle-gap timer (last_read_ms) must NOT
-                    // be touched by probes, otherwise a long probe storm during
-                    // the Return idle would mask the resume gap (65 s in the
-                    // production log).
-                    self.probe_rejects += 1;
-                    return SmDecision::ProbeReject;
-                }
-                // K >= 3: a real sequential seek — re-anchor to the live edge.
-                self.probe_chain = 0;
-                self.probe_last_off = u64::MAX;
-                self.set_phase(SmPhase::Live);
-                self.confirmed_seeks += 1;
-                return SmDecision::ConfirmedSeek;
+            let is_future = s_probe >= ctx.s_write.saturating_add(PROBE_FUTURE_MARGIN) && !adjacent;
+            let is_behind = s_probe < ctx.ring_old && !adjacent;
+            if is_behind {
+                self.probe_rejects += 1;
+                return SmDecision::ProbeReject;
+            }
+
+            if is_future {
+                self.probe_rejects += 1;
+                return SmDecision::ProbeReject;
             }
         }
+
         if adjacent {
             self.probe_chain = 0;
             self.probe_last_off = u64::MAX;
+            self.jump_count = 0;
+            self.jump_bytes = 0;
+            self.jump_last = u64::MAX;
+        }
+
+        // ---- in-window seek detection (C parity: !adjacent && !opening_grace && jump_count >= 4 && jump_bytes >= 1MB)
+        let is_grace = self.opening_grace_active(foff, now_ms);
+        if !adjacent && !is_grace {
+            let seq_jump = self.jump_last != u64::MAX
+                && foff >= self.jump_last
+                && foff.saturating_sub(self.jump_last) <= 131072;
+            if seq_jump || self.jump_count == 0 {
+                self.jump_count += 1;
+                self.jump_bytes = self.jump_bytes.saturating_add(len);
+            } else {
+                self.jump_count = 1;
+                self.jump_bytes = len;
+            }
+            self.jump_last = foff.saturating_add(len);
+            if self.jump_count >= 4 && self.jump_bytes >= 1024 * 1024 {
+                self.jump_count = 0;
+                self.jump_bytes = 0;
+                self.jump_last = u64::MAX;
+                self.confirmed_seeks += 1;
+                self.set_phase(SmPhase::Live);
+                return SmDecision::ConfirmedSeek;
+            }
         }
 
         // ---- 2-step return resume
@@ -289,6 +355,52 @@ impl StateMachine {
         let jump = foff.max(ctx.prev_fend) - foff.min(ctx.prev_fend);
         gap > self.gap_ms && jump > RESUME_JUMP
     }
+
+    /// NEW (TASK-002): clears the bounded overwritten-request chain.
+    pub(super) fn clear_overwritten_pending(&mut self) {
+        (
+            self.ovw_file_id,
+            self.ovw_epoch,
+            self.ovw_next_fend,
+            self.ovw_count,
+        ) = (0, 0, 0, 0);
+        self.ovw_last_ms = 0;
+    }
+
+    /// NEW (TASK-002): bounded confirmation of wholly-overwritten requests.
+    /// `true` is returned only for the 3rd consecutive eligible block
+    /// (`OVW_CONFIRM_COUNT`), consumed here; any other read (ineligible,
+    /// retried, gapped, zero-length, overflowed, other file/epoch) clears the
+    /// chain: fresh attempt = 1. R1: the 8 MiB floor bounds the virtual range
+    /// only; the stream side is bounded by `ring_old` (nonidentity mappings).
+    pub(super) fn note_overwritten_request(&mut self, c: OvwCtx) -> bool {
+        let (vs, se) = (c.foff.checked_add(c.len), c.mapped_start.checked_add(c.len));
+        let eligible = c.base_eligible
+            && c.len > 0
+            && c.mapped_start < c.ring_old
+            && vs.is_some_and(|e| e <= PROBE_ISOLATION_FOFF)
+            && se.is_some_and(|e| e <= c.ring_old);
+        if !eligible {
+            self.clear_overwritten_pending();
+            return false;
+        }
+        let continues = self.ovw_count > 0
+            && self.ovw_file_id == c.file_id
+            && self.ovw_epoch == c.epoch
+            && c.foff == self.ovw_next_fend
+            && c.now_ms.saturating_sub(self.ovw_last_ms) <= self.gap_ms;
+        if continues && self.ovw_count + 1 >= OVW_CONFIRM_COUNT {
+            self.clear_overwritten_pending();
+            self.ovw_confirms += 1;
+            return true;
+        }
+        self.ovw_file_id = c.file_id;
+        self.ovw_epoch = c.epoch;
+        self.ovw_count = if continues { self.ovw_count + 1 } else { 1 };
+        self.ovw_next_fend = c.foff + c.len; // eligible ⇒ checked add succeeded
+        self.ovw_last_ms = c.now_ms;
+        false
+    }
 }
 
 /// Position-preserving continuous anchor selection.
@@ -305,6 +417,9 @@ pub fn select_resume_anchor(mapped: u64, ring_old: u64, s_write: u64) -> Option<
     let floor = s_write.saturating_sub(RESUME_MIN_LEAD);
     Some(snap188(mapped.min(floor)))
 }
+
+#[cfg(test)]
+mod overwritten_tests;
 
 #[cfg(test)]
 mod tests {
@@ -404,25 +519,68 @@ mod tests {
     }
 
     #[test]
-    fn probe_isolation_k3_debounce() {
+    fn future_probes_never_escalate_to_confirmed_seek() {
         let mut sm = StateMachine::new();
         sm.note_open(0);
         let s_write = 400 * 1024 * 1024u64;
         let ring_old = s_write - 128 * 1024 * 1024;
-        // Playback chain at 300 MB; probes arrive at 800 MB..128 GB (mapped
-        // far beyond the writer head => future probes).
         let fend = 300_000_000u64;
         let future = |f: u64| Some(s_write + 2 * 1024 * 1024 + f);
 
-        let c1 = ctx(true, fend, future(800_000_000), s_write, ring_old);
-        assert_eq!(sm.evaluate(800_000_000, 16384, 1_000, &c1), SmDecision::ProbeReject);
-        let c2 = ctx(true, fend, future(800_004_096), s_write, ring_old);
-        assert_eq!(sm.evaluate(800_004_096, 16384, 1_100, &c2), SmDecision::ProbeReject);
-        // K = 3: a real sequential seek.
-        let c3 = ctx(true, fend, future(800_008_192), s_write, ring_old);
-        assert_eq!(sm.evaluate(800_008_192, 16384, 1_200, &c3), SmDecision::ConfirmedSeek);
-        // The chain cursor must NOT have moved (engine-side invariant).
-        assert_eq!(fend, 300_000_000);
+        for i in 0..10 {
+            let foff = 800_000_000 + i * 4096;
+            let c = ctx(true, fend, future(foff), s_write, ring_old);
+            assert_eq!(
+                sm.evaluate(foff, 16384, 1_000 + i * 100, &c),
+                SmDecision::ProbeReject
+            );
+        }
+    }
+
+    #[test]
+    fn behind_probes_never_escalate_to_gadget_action() {
+        let mut sm = StateMachine::new();
+        sm.note_open(0);
+        let s_write = 400 * 1024 * 1024u64;
+        let ring_old = 300 * 1024 * 1024;
+        let c = ctx(true, 399_000_000, Some(ring_old - 1024), s_write, ring_old);
+
+        // No count, marker, epoch change or gadget authority: every probe is
+        // the same bounded NULL-only rejection.
+        for i in 0..12u64 {
+            let foff = 50_000_000 + i * 16_384;
+            assert_eq!(
+                sm.evaluate(foff, 16384, 1_000 + i * 100, &c),
+                SmDecision::ProbeReject,
+                "behind probe {i} must not escalate"
+            );
+        }
+        assert_eq!(sm.probe_rejects, 12);
+    }
+
+    #[test]
+    fn in_window_jump_confirms_seek() {
+        let mut sm = StateMachine::new();
+        sm.note_open(0);
+        let s_write = 400 * 1024 * 1024u64;
+        let ring_old = 200 * 1024 * 1024;
+        // Non-adjacent jumps inside the window (after grace expiry)
+        let fend = 10_016_384u64;
+        let c0 = ctx(true, 10_000_000, None, s_write, ring_old);
+        assert_eq!(sm.evaluate(10_000_000, 16384, 12_000, &c0), SmDecision::Continue);
+
+        let jump_base = 50_000_000u64;
+        // 4 consecutive reads totalling >= 1 MB, jumping away from anchor at 10MB
+        let read_sz = 256 * 1024u64;
+        let c_jump = ctx(true, fend, None, s_write, ring_old);
+        for i in 0..3 {
+            let foff = jump_base + i * read_sz;
+            assert_eq!(sm.evaluate(foff, read_sz, 12_000 + i * 50, &c_jump), SmDecision::Continue);
+        }
+        assert_eq!(
+            sm.evaluate(jump_base + 3 * read_sz, read_sz, 12_200, &c_jump),
+            SmDecision::ConfirmedSeek
+        );
     }
 
     #[test]
@@ -449,9 +607,21 @@ mod tests {
         sm.note_open(0);
         let s_write = 400 * 1024 * 1024u64;
         let ring_old = 300 * 1024 * 1024;
-        // Mapped behind ring_old (overwritten region).
+        // Non-adjacent probe mapped behind ring_old (overwritten region).
         let c = ctx(true, 399_000_000, Some(ring_old - 1024), s_write, ring_old);
-        assert_eq!(sm.evaluate(399_000_000, 16384, 1_000, &c), SmDecision::ProbeReject);
+        assert_eq!(sm.evaluate(50_000_000, 16384, 1_000, &c), SmDecision::ProbeReject);
+    }
+
+    #[test]
+    fn adjacent_read_behind_ring_is_not_rejected_as_probe() {
+        let mut sm = StateMachine::new();
+        sm.note_open(0);
+        let s_write = 400 * 1024 * 1024u64;
+        let ring_old = 300 * 1024 * 1024;
+        // Adjacent sequential read falling behind ring buffer must NOT be rejected
+        // as a probe; it must return Continue so live_engine re-anchors.
+        let c = ctx(true, 50_000_000, Some(ring_old - 1024), s_write, ring_old);
+        assert_eq!(sm.evaluate(50_000_000, 16384, 1_000, &c), SmDecision::Continue);
     }
 
     #[test]
@@ -534,4 +704,5 @@ mod tests {
             SmDecision::ResumeAfterGap
         );
     }
+
 }

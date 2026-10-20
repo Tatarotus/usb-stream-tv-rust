@@ -4,7 +4,6 @@
 
 BB=/system/xbin/busybox
 SELF="/system/xbin/tv_watchdog.sh"
-[ ! -x "$SELF" ] && SELF="/data/local/tmp/tv_watchdog.sh"
 BASE=/data/local/tmp
 STATE=$BASE/tvwd
 LOGF=$BASE/tv_watchdog.log
@@ -12,14 +11,113 @@ LOCKF=$BASE/tv_watchdog.lock
 SERVER="http://tv.smre.run.place"
 USBD=/sys/class/android_usb/android0
 CHISEL_BIN=/system/xbin/chisel
-[ ! -x "$CHISEL_BIN" ] && CHISEL_BIN=$BASE/chisel
 CHISEL_LOG=$BASE/chisel.log
 TOKEN_FILE=$BASE/tablet.token
 TOKEN=""
-[ -f "$TOKEN_FILE" ] && TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null | $BB tr -d '\r\n ')
 
 log() {
     echo "$($BB date '+%m-%d %H:%M:%S') $*" >> "$LOGF"
+}
+
+# ------------------------------------------------- observacao limitada (TASK-003)
+# Linhas USBTV_OBS sao numericas/enumeradas, limitadas a 1 por categoria por
+# segundo. Falha de log nunca altera decisoes. Ver
+# docs/architecture/OBSERVABILITY_EVENT_CONTRACT.md.
+OBS_LOG=${OBS_LOG:-$LOGF}
+OBS_SEQ=0
+OBS_LAST_MARKER=""
+OBS_LAST_DECISION=""
+OBS_LAST_GADGET=""
+GADGET_LAST=""
+GADGET_PENDING=""
+obs_uptime_ms() { # decimais de /proc/uptime -> "<seg><centesimos>0"; 1 se invalido
+    _u=$(cat /proc/uptime 2>/dev/null) || return 1
+    _u=${_u%% *}
+    case "$_u" in ''|*[!0-9.]*) return 1 ;; esac
+    _s=${_u%%.*}
+    _f=${_u#*.}
+    [ "$_f" = "$_u" ] && _f=""
+    _f="${_f}00"
+    _c=$(printf '%s' "$_f" | cut -c1-2)
+    case "$_s" in ''|*[!0-9]*) return 1 ;; esac
+    case "$_c" in ''|*[!0-9]*) return 1 ;; esac
+    [ ${#_c} -eq 1 ] && _c="0$_c"
+    _ms="$_s$_c""0"
+    case "$_ms" in ''|*[!0-9]*) return 1 ;; esac
+    [ ${#_ms} -le 20 ] || return 1
+    printf '%s' "$_ms"
+}
+
+obs_gate() { # $1=categoria -> 0 se ainda nao emitiu neste segundo
+    _now=$(cat /proc/uptime 2>/dev/null | cut -d. -f1)
+    case "$_now" in *[!0-9]*|"") _now=0 ;; esac
+    case "$1" in
+        marker)
+            [ "$OBS_LAST_MARKER" = "$_now" ] && return 1
+            OBS_LAST_MARKER=$_now ;;
+        decision)
+            [ "$OBS_LAST_DECISION" = "$_now" ] && return 1
+            OBS_LAST_DECISION=$_now ;;
+        gadget)
+            [ "$OBS_LAST_GADGET" = "$_now" ] && return 1
+            OBS_LAST_GADGET=$_now ;;
+    esac
+    return 0
+}
+
+obs_event() { # $1=evento $2=reason $3=extras opcionais ("chave=valor ...")
+    OBS_SEQ=$((OBS_SEQ + 1))
+    if _boot=$(obs_uptime_ms); then
+        _clock=boottime; _prec=10
+    else
+        # Resolução da fonte não muda; apenas a leitura desta linha falhou.
+        _clock=unavailable; _boot=unknown; _prec=10
+    fi
+    { echo "USBTV_OBS version=1 component=watchdog event=$1 pid=$$ instance=$$.unknown event_seq=$OBS_SEQ clock=$_clock boot_ms=$_boot precision_ms=$_prec reason=$2${3:+ $3}" >> "$OBS_LOG"; } 2>/dev/null || true
+}
+
+gadget_observe() { # leitura somente; emite apenas em mudanca (allowlist)
+    # O kernel android_usb escreve o estado em MAIUSCULAS ("CONFIGURED"); a
+    # allowlist cobre as duas caixas e normaliza para minusculas, de modo que a
+    # mesma condicao nunca vire "other" nem gere churn de token.
+    _st=$(cat "$USBD/state" 2>/dev/null)
+    case "$_st" in
+        configured|CONFIGURED) _st=configured ;;
+        connected|CONNECTED) _st=connected ;;
+        disconnected|DISCONNECTED) _st=disconnected ;;
+        "") _st=unknown ;;
+        *) _st=other ;;
+    esac
+    _en=$(cat "$USBD/enable" 2>/dev/null)
+    case "$_en" in 0|1) ;; *) _en=unknown ;; esac
+    # Classificacao pelo CONTEUDO lido: o atributo e legivel mesmo vazio (sem
+    # backing file), e -s confundiria "vazio" com "ilegivel".
+    _lun=$USBD/f_mass_storage/lun0/file
+    if _lunv=$(cat "$_lun" 2>/dev/null); then
+        case "$_lunv" in
+            "") _lp=empty ;;
+            *) _lp=present ;;
+        esac
+    else
+        _lp=read_error
+    fi
+    _tok="$_st/$_en/$_lp"
+    # A previously gated state stays pending and is retried on the next sample,
+    # so a refused transition is never silently discarded.
+    [ -n "$GADGET_PENDING" ] && [ "$_tok" = "$GADGET_PENDING" ] && _tok="$GADGET_PENDING"
+    [ "$_tok" = "$GADGET_LAST" ] && { GADGET_PENDING=""; return 0; }
+    if ! obs_gate gadget; then
+        GADGET_PENDING="$_tok"
+        return 0
+    fi
+    GADGET_PENDING=""
+    GADGET_LAST="$_tok"
+    if [ "$_st" = unknown ] || [ "$_en" = unknown ] || [ "$_lp" = read_error ]; then
+        obs_event gadget_observation gadget_unknown "gadget_state=$_st gadget_enable=$_en lun=$_lp"
+    else
+        obs_event gadget_observation gadget_changed "gadget_state=$_st gadget_enable=$_en lun=$_lp"
+    fi
+    return 0
 }
 
 cooldown_ok() { # $1=chave $2=segundos
@@ -204,6 +302,67 @@ housekeeping() {
     return 0
 }
 
+# Recicla o stack live SOMENTE quando um operador cria explicitamente o
+# marcador. Desde TASK-005 o FUSE nao cria mais este marcador: falha de fonte,
+# starvation ou probe de leitura nunca autorizam reconfigurar o gadget.
+# Decisao intacta: marcador -> modo live -> binario de troca -> cooldown 120s ->
+# breaker 3/15min. $1=primario executavel $2=fallback; retorna 1 sem marcador,
+# 2 modo suprimido, 3 binario ausente, 4 cooldown, 5 breaker, 0 lancado.
+resync_cycle() {
+    [ -f "$BASE/resync_usb" ] || return 1
+    obs_gate marker && obs_event resync_marker_observed none
+    if [ -f "$BASE/vod_mode.flag" ] || [ -f "$BASE/favorites_mode.flag" ]; then
+        obs_gate decision && obs_event resync_decision mode_suppressed
+        return 2
+    fi
+    rm -f "$BASE/resync_usb"
+    _sw=""
+    [ -x "$1" ] && _sw="$1"
+    [ -z "$_sw" ] && [ -x "$2" ] && _sw="$2"
+    if [ -z "$_sw" ]; then
+        log "resync_usb ignorado: switch_tv_mode.sh ausente/nao executavel"
+        obs_gate decision && obs_event resync_decision missing_switch
+        return 3
+    fi
+    if ! cooldown_ok resync 120; then
+        obs_gate decision && obs_event resync_decision cooldown
+        return 4
+    fi
+    now=$(cat /proc/uptime 2>/dev/null | cut -d. -f1)
+    case "$now" in *[!0-9]*) now=0 ;; esac
+    n=0; first=0
+    [ -f "$STATE/rs.count" ] && n=$(cat "$STATE/rs.count" 2>/dev/null)
+    [ -f "$STATE/rs.first" ] && first=$(cat "$STATE/rs.first" 2>/dev/null)
+    case "$n" in *[!0-9]*) n=0 ;; esac
+    case "$first" in *[!0-9]*) first=0 ;; esac
+    if [ $((now - first)) -gt 900 ]; then n=0; first=$now; echo "$now" > "$STATE/rs.first"; fi
+    if [ "$n" -ge 3 ]; then
+        log "resync breaker: 3 em 15min, adiando ciclo USB"
+        obs_gate decision && obs_event resync_decision breaker
+        return 5
+    fi
+    echo $((n + 1)) > "$STATE/rs.count"
+    log "resync_usb pedido explicito do operador - reciclando stack live (anti-cache)"
+    obs_gate decision && obs_event resync_decision launch
+    $BB setsid $BB sh "$_sw" live >> "$LOGF" 2>&1 &
+    return 0
+}
+
+# ------------------------------------------------ importacao apenas (host test)
+# Nenhum efeito colateral: sem token, lock, estado, rede ou loop. Tambem sem
+# sondagem de filesystem: os testes -x ficam DEPOIS deste guard.
+if [ "${USBTV_WATCHDOG_FUNCTIONS_ONLY:-0}" = "1" ]; then
+    return 0 2>/dev/null || true
+    exit 0
+fi
+
+# Sondagem de executaveis so no modo daemon (nenhum acesso ao disco ao importar).
+[ ! -x "$SELF" ] && SELF="$BASE/tv_watchdog.sh"
+[ ! -x "$CHISEL_BIN" ] && CHISEL_BIN=$BASE/chisel
+
+# ---------------------------------------------------------- estado de execucao
+[ -f "$TOKEN_FILE" ] && TOKEN=$(cat "$TOKEN_FILE" 2>/dev/null | $BB tr -d '\r\n ')
+
 # ------------------------------------------------------- modo worker (--worker)
 if [ "$1" = "--worker" ]; then
     run_cmd "$2" "$3"
@@ -263,43 +422,19 @@ while true; do
         fi
     fi
 
-    # 3. Supervisionar túnel Chisel
+    # 3. Supervisionar túnel Chisel + amostra read-only do gadget (1x por loop)
     supervise_chisel
+    gadget_observe
 
     # 4. Polling de comandos da Web
     poll_and_dispatch
     flush_unacked
 
-    # 4b. Ressincronia USB pedida pelo FUSE (T6, Prompt 9, revisto pós-auditoria):
-    # a emenda seria fútil (conteúdo antigo sumiu do anel e sem checkpoint), então
-    # recicla o stack live (anti-cache triple-tier: a TV purga a RAM e reabre
-    # limpo no ao vivo). Só no modo live. Breaker: no máximo 3 a cada 15 min
-    # (oscilação de upstream não pode ciclar o USB sem parar); cooldown 120 s.
-    if [ -f "$BASE/resync_usb" ] && [ ! -f "$BASE/vod_mode.flag" ] && [ ! -f "$BASE/favorites_mode.flag" ]; then
-        rm -f "$BASE/resync_usb"
-        SW_BIN=""
-        [ -x /system/xbin/switch_tv_mode.sh ] && SW_BIN="/system/xbin/switch_tv_mode.sh"
-        [ -z "$SW_BIN" ] && [ -x "$BASE/switch_tv_mode.sh" ] && SW_BIN="$BASE/switch_tv_mode.sh"
-        if [ -z "$SW_BIN" ]; then
-            log "resync_usb ignorado: switch_tv_mode.sh ausente/nao executavel"
-        elif cooldown_ok resync 120; then
-            now=$(cat /proc/uptime 2>/dev/null | cut -d. -f1)
-            case "$now" in *[!0-9]*) now=0 ;; esac
-            n=0; first=0
-            [ -f "$STATE/rs.count" ] && n=$(cat "$STATE/rs.count" 2>/dev/null)
-            [ -f "$STATE/rs.first" ] && first=$(cat "$STATE/rs.first" 2>/dev/null)
-            case "$n" in *[!0-9]*) n=0 ;; esac
-            case "$first" in *[!0-9]*) first=0 ;; esac
-            if [ $((now - first)) -gt 900 ]; then n=0; first=$now; echo "$now" > "$STATE/rs.first"; fi
-            if [ "$n" -ge 3 ]; then
-                log "resync breaker: 3 em 15min, adiando ciclo USB"
-            else
-                echo $((n + 1)) > "$STATE/rs.count"
-                log "resync_usb pedido pelo FUSE - reciclando stack live (anti-cache)"
-                $BB setsid $BB sh "$SW_BIN" live >> "$LOGF" 2>&1 &
-            fi
-        fi
-    fi
+    # 4b. Ressincronia USB explicita do operador (TASK-005). O FUSE nao cria
+    # mais o marcador automaticamente: falha de fonte/starvation permanece
+    # in-band e nunca recicla o gadget. O caminho manual mantem o anti-cache
+    # triple-tier, somente em modo live, com breaker 3/15 min e cooldown 120 s.
+    resync_cycle /system/xbin/switch_tv_mode.sh "$BASE/switch_tv_mode.sh"
 
     # 5. Housekeeping periódico a cada ~60 ticks (60s)
     if [ $((TICK % 60)) -eq 0 ]; then
