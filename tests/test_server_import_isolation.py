@@ -7,6 +7,7 @@ interpreter, not merely after another test already imported server.
 import os
 import subprocess
 import sys
+import tempfile
 import textwrap
 import unittest
 from unittest import mock
@@ -75,6 +76,68 @@ class TestServerImportIsolation(unittest.TestCase):
             % (proc.stdout, proc.stderr),
         )
         self.assertIn("IMPORT_ISOLATION_OK", proc.stdout)
+
+    def test_import_with_empty_catalog_defers_sync_without_side_effects(self):
+        """RC-001 ITERATION 2 regression: a clean checkout with an empty
+        catalog cache must not start a thread or touch the network at import.
+        The initial sync is deferred and must run exactly once, on an explicit
+        runtime start."""
+        empty_cache = tempfile.mkdtemp(prefix="rc001-empty-catalog-")
+        script = textwrap.dedent(
+            """
+            import threading
+            import urllib.request
+
+            side_effects = []
+
+            def fail_thread_start(self):
+                side_effects.append("thread")
+                raise AssertionError("thread started during import")
+
+            def fail_urlopen(*args, **kwargs):
+                side_effects.append("urlopen")
+                raise AssertionError("network during import")
+
+            threading.Thread.start = fail_thread_start
+            urllib.request.urlopen = fail_urlopen
+
+            import server
+
+            assert server.CATALOG_MGR._needs_initial_sync is True, (
+                "empty catalog did not schedule a deferred sync"
+            )
+            assert side_effects == [], "import side effects: %r" % (side_effects,)
+
+            started = []
+            server.CATALOG_MGR.sync_all_async = lambda: started.append("sync")
+            server.CATALOG_MGR.start_background_sync()
+            server.CATALOG_MGR.start_background_sync()
+            assert started == ["sync"], (
+                "deferred sync must run exactly once: %r" % (started,)
+            )
+            assert server.CATALOG_MGR._needs_initial_sync is False
+            print("EMPTY_CATALOG_DEFERRAL_OK")
+            """
+        )
+        env = os.environ.copy()
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env["PYTHONPATH"] = REPO_ROOT + os.pathsep + env.get("PYTHONPATH", "")
+        env["CATALOG_CACHE_DIR"] = empty_cache
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(
+            proc.returncode,
+            0,
+            "empty-catalog import regression failed\nSTDOUT:\n%s\nSTDERR:\n%s"
+            % (proc.stdout, proc.stderr),
+        )
+        self.assertIn("EMPTY_CATALOG_DEFERRAL_OK", proc.stdout)
 
     def test_run_starts_hub_before_serving(self):
         import server
