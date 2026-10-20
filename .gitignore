@@ -8,6 +8,7 @@
 *.log.gz
 *.debounce
 *.lock
+!Cargo.lock
 *.flag
 favorites.json
 series_favorites.json
