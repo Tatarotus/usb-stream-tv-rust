@@ -150,3 +150,35 @@ caches, media directories, `favorites.json`, `series_favorites.json` and
 
 This record captures the reconciliation required before RC packaging. It does
 not modify any frozen audit, handoff, contract, parser or Phase A artifact.
+
+## 8. Post-baseline defect correction
+
+Isolated host testing (no `catalog_cache/` present) exposed a real TASK-010
+regression: `CatalogManager.load_from_disk()` called `sync_all_async()` at
+import time whenever the live/movie caches were empty. That started a thread
+during import, and in a cacheless checkout also attempted network access. The
+earlier TASK-010 suite passed only because the developer workspace already had
+a populated `catalog_cache/`.
+
+Correction, within the TASK-010 import/startup isolation scope:
+
+```text
+server.py: 53552fc9a000f6f2a9c9e2477d3429ed4906265a0d8fd62bbf6fb622302be517
+```
+
+- `load_from_disk()` now records `_needs_initial_sync` instead of starting a
+  thread, so import remains free of threads, processes and sockets.
+- New `CatalogManager.start_background_sync()` performs the deferred initial
+  sync exactly once.
+- `run()` calls it explicitly after the HTTP server is constructed and before
+  serving, preserving server runtime behavior. Placing it after construction
+  also means the TASK-010 `test_run_starts_hub_before_serving` mock (which makes
+  server construction raise) never starts the sync. `StreamHub.start()` is
+  unchanged, so the TASK-010 thread-count contract (two worker threads) still
+  holds.
+
+The TASK-006/A slate/switching logic is unchanged. `tests/test_server_slate_switch.py`
+hash remains `c2bc0fb0...` and all 230 pre-existing tests plus the 7 new RC-001
+integration tests pass. The frozen `b1c6b14a...` Phase A hash is superseded for
+`server.py` only by the correction above; the audit/handoff documents that cite
+it remain historical.

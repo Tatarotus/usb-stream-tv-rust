@@ -778,6 +778,7 @@ class CatalogManager:
         self.series_info_cache = {}
         self.is_syncing = False
         self.last_sync = 0
+        self._needs_initial_sync = False
         self.load_from_disk()
 
     def _clean_title(self, name):
@@ -858,9 +859,19 @@ class CatalogManager:
             self.build_cover_lookups()
             self.sort_catalog_items()
 
-            # Se os arquivos ainda não existirem, inicia sincronização em background
-            if not self.items["live"] and not self.items["movie"]:
-                self.sync_all_async()
+            # Import must remain pure: defer the initial background sync until
+            # an explicit runtime start. The deferral preserves the original
+            # run() behavior without creating a thread or touching the network
+            # during import.
+            self._needs_initial_sync = not self.items["live"] and not self.items["movie"]
+
+    def start_background_sync(self):
+        """Starts the deferred initial catalog sync once runtime begins."""
+        with self.lock:
+            if not self._needs_initial_sync:
+                return
+            self._needs_initial_sync = False
+        self.sync_all_async()
 
     def sync_all_async(self):
         with self.lock:
@@ -10806,6 +10817,12 @@ EMBEDDED_DASHBOARD_HTML = r"""<!DOCTYPE html>
 def run():
     HUB.start()
     server = ThreadedHTTPServer((HOST, PORT), RequestHandler)
+    # A sincronização inicial do catálogo é iniciada apenas no runtime
+    # explícito; o import do módulo permanece livre de threads e rede.
+    try:
+        CATALOG_MGR.start_background_sync()
+    except Exception as e:
+        print(f"[!] Erro ao iniciar sincronização do catálogo: {e}")
     print("==================================================")
     print(f" [✓] Servidor Multi-Canal Ativo em http://{HOST}:{PORT}")
     print("==================================================")
