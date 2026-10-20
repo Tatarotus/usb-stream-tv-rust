@@ -69,7 +69,7 @@ allowlist:
 
 ```text
 files: 94
-manifest_sha256: c4b9143361fef28e887d5d9e52ac485a4d394e82f74e2c5ed509df8462f85f50
+manifest_sha256: 68a3e2a41f6e868133fa8d68fd378f0dbe34a8f16681ba34965fb356ee7d75b8
 ```
 
 `sha256sum -c docs/release/RC_LIVE_RUNTIME_MANIFEST.sha256` → all OK.
