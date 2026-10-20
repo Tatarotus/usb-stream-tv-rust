@@ -1,0 +1,20 @@
+# RC-Live ARM binary hashes (ITER#5 release-candidate values)
+#
+# Target : armv7-unknown-linux-gnueabihf (statically linked)
+# Revision: rc-001-live-iter5
+# Format  : sha256  name   (path: target/armv7-unknown-linux-gnueabihf/release/name)
+#
+# Verify with: scripts/verify_rc_live_release.sh rc-001-live-iter5
+#
+# ITER#5 changes documentation only. No Rust source, no script and no host file
+# differs from ITER#4, so all five binaries are byte-identical to ITER#4/ITER#3
+# (see RC_LIVE_ARM_SHA256_iter4.txt) and four of them are byte-identical to the
+# frozen 16d5991 release (see RC_LIVE_ARM_SHA256.txt). The update procedure was
+# corrected per the ITER#4 review: the read-only preflight and its gate now come
+# before anything is interrupted, and process detection is name-based (pidof)
+# instead of a self-matching `pgrep -f`.
+d5a973d6c9194d33c8654767d00e7b6073ca65b30107a717a6a9baa143399f55  fuse_ntfs
+a6eb746872834a119a91537889b4b2d8d68ada58a206712d759df80d9a020f46  fuse_direct
+e2c203e0d809d12cdb07155c800fc80c76e9680c8485b55c4ffe59057644806d  stream_fetcher
+3afd258f51ac45fccc3f35d262fbf5141b6090a710a23c9819619704ecf8015d  patch_trp
+e52a389f8281e330895fa3c372dc0ecc8d99ad0d51d122f147f4e4679cfe8f19  sparse_unpack
