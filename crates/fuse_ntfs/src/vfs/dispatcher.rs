@@ -873,6 +873,16 @@ mod tests {
         assert!(sub_names.contains(&"TV AO VIVO 2.tp"));
     }
 
+    /// ITER#2 regression (#7): a directory listing must never expose a
+    /// zero-length name (the kernel treats that as a corrupt dirent).
+    #[test]
+    fn readdir_has_no_empty_name_entry() {
+        let (srv, _b) = server();
+        for (ino, name, _typ) in srv.readdir_entries(ROOT_INO) {
+            assert!(!name.is_empty(), "empty dirent name for ino {ino}");
+        }
+    }
+
     #[test]
     fn test_resolve_lookup_bounds() {
         let (srv, _b) = server();

@@ -199,14 +199,19 @@ impl RingData {
         // monotonic write cursor advances by the *original* length so the
         // live edge lands at the end of the feed.
         let orig_len = data.len();
+        let mut skip = 0usize;
         let data = if data.len() as u64 > self.capacity {
-            let skip = data.len() - self.capacity as usize;
+            skip = data.len() - self.capacity as usize;
             &data[skip..]
         } else {
             data
         };
         let count = data.len();
-        let off = self.phys(self.s_write);
+        // Place the retained bytes at their own stream positions: the first
+        // kept byte sits `skip` bytes past the current write cursor. Using
+        // `phys(s_write)` here would rotate the resident window whenever the
+        // overshoot is not a whole capacity (ITER#2 fix #9).
+        let off = self.phys(self.s_write.saturating_add(skip as u64));
 
         if off + count <= self.capacity as usize {
             self.buffer[off..off + count].copy_from_slice(data);
@@ -239,6 +244,23 @@ impl RingData {
             dst[..first].copy_from_slice(&self.buffer[off..]);
             dst[first..].copy_from_slice(&self.buffer[..count - first]);
         }
+    }
+
+    /// Atomic residency-checked copy for the delivery loop: copies
+    /// `dst.len()` bytes from monotonic position `pos` only when the whole
+    /// range is still resident, in a single critical section. The caller must
+    /// hold the ring lock (so the check and the copy cannot be interleaved
+    /// with an overwriting `append`). Returns `false` and leaves `dst`
+    /// untouched when any byte was overwritten (ITER#2 fix #4).
+    pub fn copy_resident(&self, pos: u64, dst: &mut [u8]) -> bool {
+        if dst.is_empty() {
+            return true;
+        }
+        if !self.contains(pos, dst.len() as u64) {
+            return false;
+        }
+        self.read_at(pos, dst);
+        true
     }
 
     /// Copies a scan window `[base, base + out.len())` clamped to ring
@@ -570,5 +592,50 @@ mod tests {
         rd.append(&[]);
         assert_eq!(rd.s_write(), 0);
         assert!(!rd.have_data());
+    }
+
+    /// ITER#2 regression (#9): when a feed is larger than the ring, the
+    /// retained suffix must be placed at its *own* stream positions, not at the
+    /// pre-feed cursor. The existing `feed_larger_than_ring_keeps_live_edge`
+    /// case only passes because its overshoot is a whole capacity.
+    #[test]
+    fn feed_larger_than_ring_positions_suffix_correctly() {
+        let mut rd = RingData::with_capacity(188 * 4);
+        let big: Vec<u8> = (0..(188 * 6)).map(|i| (10 + i % 200) as u8).collect();
+        rd.append(&big);
+        assert_eq!(rd.s_write(), 188 * 6);
+        assert_eq!(rd.ring_old(), 188 * 2);
+
+        let mut out = vec![0u8; 188 * 4];
+        rd.read_at(188 * 2, &mut out);
+        assert_eq!(
+            out,
+            &big[188 * 2..],
+            "resident window must be the stream tail, not a rotation"
+        );
+    }
+
+    /// ITER#2 regression (#4): the residency check and the copy must be a
+    /// single atomic step. A region overwritten between a snapshot and the
+    /// copy must be refused, never served as stale bytes.
+    #[test]
+    fn copy_resident_refuses_overwritten_region() {
+        let mut rd = RingData::with_capacity(188 * 4);
+        rd.append(&vec![0xAB; 188 * 4]);
+        let mut out = vec![0u8; 188];
+        assert!(rd.copy_resident(0, &mut out));
+        assert_eq!(out, vec![0xAB; 188]);
+
+        // Overwrite the whole ring: position 0 is no longer resident.
+        rd.append(&vec![0xCD; 188 * 4]);
+        let mut stale = vec![0xAB; 188];
+        assert!(
+            !rd.copy_resident(0, &mut stale),
+            "overwritten region must be refused"
+        );
+        assert_eq!(stale, vec![0xAB; 188], "destination must be untouched on refusal");
+        let mut live = vec![0u8; 188];
+        assert!(rd.copy_resident(188 * 4, &mut live), "live region is resident");
+        assert_eq!(live, vec![0xCD; 188]);
     }
 }

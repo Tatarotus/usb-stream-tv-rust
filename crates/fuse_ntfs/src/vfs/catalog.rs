@@ -85,7 +85,15 @@ impl Catalog {
         st.nodes.iter().find(|n| n.parent == parent && n.name == name).cloned()
     }
     pub fn children(&self, ino: u64) -> Vec<Node> {
-        self.lock().nodes.iter().filter(|n| n.parent == ino).cloned().collect()
+        // The root node carries `parent == ROOT_INO`, so a naive parent match
+        // lists the root as its own child with an empty name — an invalid FUSE
+        // dirent. Exclude the node itself (ITER#2 fix #7).
+        self.lock()
+            .nodes
+            .iter()
+            .filter(|n| n.parent == ino && n.ino != ino)
+            .cloned()
+            .collect()
     }
     pub fn len(&self) -> usize {
         self.lock().nodes.len()
@@ -196,6 +204,23 @@ mod tests {
         assert!(c.lookup(DIR_INO_CANAIS, FILE_NAME).is_none());
         assert!(c.lookup(ROOT_INO, "nao-existe").is_none());
         assert!(c.node(9999).is_none());
+    }
+
+    /// ITER#2 regression (#7): the root node has `parent == ROOT_INO`, so a
+    /// naive `parent == ino` filter lists it as its own child with an empty
+    /// name, which surfaces as an invalid zero-length FUSE dirent.
+    #[test]
+    fn root_is_not_listed_as_its_own_child() {
+        let c = cat();
+        let kids = c.children(ROOT_INO);
+        assert!(
+            kids.iter().all(|n| n.ino != ROOT_INO),
+            "root must not appear among its own children"
+        );
+        assert!(
+            kids.iter().all(|n| !n.name.is_empty()),
+            "no child may have an empty name"
+        );
     }
 
     #[test]

@@ -826,7 +826,13 @@ impl TsXformState {
             let pkt = &win[p..p + TS_PKT_SZ];
             if pkt[0] == 0x47 && ts_pid(pkt) != NULL_PID {
                 let pid = ts_pid(pkt);
-                s.set_cc(pid, ts_cc(pkt));
+                // Continuity counters only advance across payload-bearing
+                // packets; an adaptation-only packet repeats the previous
+                // payload CC, so sampling it would add a spurious +1 at the
+                // seam (ITER#2 fix #6).
+                if ts_payload_off(pkt).is_some() {
+                    s.set_cc(pid, ts_cc(pkt));
+                }
                 if s.pcr.is_none() {
                     s.pcr = ts_pcr(pkt);
                 }
@@ -893,6 +899,16 @@ mod tests {
         p[4] = 0x07; // AF length
         p[5] = 0x10; // PCR flag
         ts_write_pcr(pcr, &mut p);
+        p
+    }
+
+    /// Adaptation-only packet (afc = 2, no payload): its continuity counter
+    /// must repeat the previous payload-bearing value, never increment.
+    fn af_only_pkt(pid: u16, cc: u8) -> [u8; TS_PKT_SZ] {
+        let mut p = pkt(pid, cc);
+        p[3] = 0x20 | (cc & 0x0F); // afc = 2 (adaptation field only)
+        p[4] = 0x01; // adaptation_field_length (flags only)
+        p[5] = 0x00;
         p
     }
 
@@ -998,6 +1014,36 @@ mod tests {
         let mut p2 = pkt(0x101, 9);
         x.apply_block(&mut p2[..], 188, false, |_, _| true);
         assert_eq!(p2[3] & 0x0F, 9, "untracked PID keeps raw CC");
+    }
+
+    /// ITER#2 regression (#6): the splice CC offset must be derived from the
+    /// first *payload-bearing* CC at the new anchor. An adaptation-only packet
+    /// (no payload) repeats the previous payload-bearing CC, so treating its
+    /// raw CC as the reference introduces a spurious +1.
+    #[test]
+    fn seam_cc_reference_ignores_adaptation_only_packets() {
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&af_only_pkt(0x100, 4)); // payload-less, raw CC = 4
+        stream.extend_from_slice(&pes_pkt(0x100, 5, 1_000)); // payload, raw CC = 5
+
+        let raw = TsXformState::collect_raw(&stream, 0, 0, 188 * 2);
+        assert_eq!(
+            raw.cc_of(0x100),
+            Some(5),
+            "raw CC sample must come from the first payload-bearing packet"
+        );
+
+        let mut x = TsXformState::new();
+        let mut r = XformRef::invalid();
+        r.valid = true;
+        r.pts = 1_000_000;
+        r.set_cc(0x100, 5); // last delivered CC = 5
+        x.begin_splice_epoch(1, &r, &raw);
+
+        // A payload-less packet must repeat the delivered CC (5), not become 6.
+        let mut af = af_only_pkt(0x100, 4);
+        x.apply_block(&mut af[..], 0, false, |_, _| true);
+        assert_eq!(af[3] & 0x0F, 5, "payload-less packet must not increment the CC");
     }
 
     // -- Tail carry across read boundaries ------------------------------------

@@ -415,10 +415,27 @@ impl StreamBackend for LiveEngine {
                 continue;
             }
             let n = (s_write - pos).min(left) as usize;
+            {
+                // The residency snapshot above released the ring lock; the
+                // feeder may have overwritten this range in the meantime.
+                // Re-check and copy in one critical section so stale bytes are
+                // never served (ITER#2 fix #4). On overwrite, stop the
+                // contiguous run and NULL-fill the remainder, exactly like the
+                // `pos < ring_old` branch.
+                let mut rd = self.ring.lock();
+                if !rd.copy_resident(pos, &mut dst[filled..filled + n]) {
+                    rd.note_starve();
+                    rd.note_null((dst.len() - filled) as u64);
+                    drop(rd);
+                    crate::engine::ring::fill_null_at(&mut dst[filled..], pos);
+                    self.obs_underrun((dst.len() - filled) as u64);
+                    starved = true;
+                    break;
+                }
+            }
             if to_copy == 0 {
                 first_copy_pos = pos;
             }
-            self.ring.lock().read_at(pos, &mut dst[filled..filled + n]);
             filled += n;
             to_copy += n;
         }

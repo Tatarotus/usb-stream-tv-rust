@@ -525,7 +525,13 @@ pub fn extents_from_runs(runs: &[RunPiece]) -> Vec<DiskExtent> {
             let disk_start = lcn.saturating_mul(CLUSTER_SIZE as u64);
             let disk_end = disk_start.saturating_add(len_bytes);
             match extents.last_mut() {
-                Some(last) if last.disk_end_byte == disk_start => {
+                // Coalesce only when the pieces are contiguous on BOTH axes:
+                // physically adjacent AND contiguous in file offset. A sparse
+                // hole advances `file_start` without a disk extent, so physical
+                // adjacency alone must not swallow the hole (ITER#2 fix #8).
+                Some(last)
+                    if last.disk_end_byte == disk_start && last.file_end() == file_start =>
+                {
                     last.disk_end_byte = disk_end;
                 }
                 _ => extents.push(DiskExtent { disk_start_byte: disk_start, disk_end_byte: disk_end, file_start }),
@@ -1014,6 +1020,33 @@ mod tests {
         assert_eq!(extents[1].disk_start_byte, 500 * CLUSTER_SIZE as u64);
         assert_eq!(extents[1].disk_end_byte, 502 * CLUSTER_SIZE as u64);
         assert_eq!(extents[1].file_start, 0);
+    }
+
+    /// ITER#2 regression (#8): coalescing must not merge physically-adjacent
+    /// runs that a sparse hole separates in VCN order, because `file_start` is
+    /// not contiguous across the hole — merging would map hole offsets onto
+    /// the post-hole data.
+    #[test]
+    fn extents_do_not_coalesce_across_sparse_holes() {
+        let runs = vec![
+            RunPiece { vcn: 0, length_clusters: 1, lcn: Some(23) },
+            RunPiece { vcn: 1, length_clusters: 2, lcn: Some(24) },
+            RunPiece { vcn: 3, length_clusters: 3, lcn: None }, // sparse hole
+            RunPiece { vcn: 6, length_clusters: 1, lcn: Some(26) }, // disk-adjacent to 23..26
+        ];
+        let extents = extents_from_runs(&runs);
+        assert_eq!(
+            extents.len(),
+            2,
+            "a sparse hole must split physically adjacent runs"
+        );
+        // Sorted by disk offset.
+        assert_eq!(extents[0].disk_start_byte, 23 * CLUSTER_SIZE as u64);
+        assert_eq!(extents[0].disk_end_byte, 26 * CLUSTER_SIZE as u64);
+        assert_eq!(extents[0].file_start, 0);
+        assert_eq!(extents[1].disk_start_byte, 26 * CLUSTER_SIZE as u64);
+        assert_eq!(extents[1].disk_end_byte, 27 * CLUSTER_SIZE as u64);
+        assert_eq!(extents[1].file_start, 6 * CLUSTER_SIZE as u64);
     }
 
     #[test]
