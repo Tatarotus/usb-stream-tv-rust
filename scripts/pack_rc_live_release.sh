@@ -38,7 +38,12 @@ fi
 COMMIT="$(git -C "${REPO_ROOT}" rev-parse --verify "${REVISION}^{commit}")"
 SHORT="$(git -C "${REPO_ROOT}" rev-parse --short "${COMMIT}")"
 TARGET="armv7-unknown-linux-gnueabihf"
-BIN_DIR="${REPO_ROOT}/target/${TARGET}/release"
+
+# Iteration number, when the revision follows the rc-001-live-iter<N> convention.
+# Used only to point the generated release notes at the right evidence record.
+ITERN="$(printf '%s' "${REVISION}" | sed -n 's/.*rc-001-live-iter\([0-9][0-9]*\).*/\1/p')"
+EVID=""
+[ -n "${ITERN}" ] && EVID="docs/release/RC_LIVE_ITER${ITERN}_EVIDENCE.md"
 
 # Host runtime files (package path -> repo path).
 HOST_FILES=(
@@ -80,13 +85,51 @@ copy_from_git() { # <repo-path> <dest>
 }
 
 echo "==> building and verifying ${REVISION} (${COMMIT})"
-"${REPO_ROOT}/scripts/verify_rc_live_release.sh" "${REVISION}" >/dev/null
+VERIFY_OUT="$("${REPO_ROOT}/scripts/verify_rc_live_release.sh" "${REVISION}")" || {
+    printf '%s\n' "${VERIFY_OUT}"; exit 1; }
+printf '%s\n' "${VERIFY_OUT}" | sed -n 's/^==> /    /p'
+BIN_DIR="$(printf '%s\n' "${VERIFY_OUT}" | sed -n 's/^==> binaries: //p' | tail -1)"
+EXPECTED="$(printf '%s\n' "${VERIFY_OUT}" | sed -n 's/^==> record: //p' | tail -1)"
+if [ -z "${BIN_DIR}" ] || [ ! -d "${BIN_DIR}" ]; then
+    echo "could not resolve the verified binary directory from verify_rc_live_release.sh" >&2
+    exit 1
+fi
+if [ -z "${EXPECTED}" ]; then
+    echo "could not resolve the hash record from verify_rc_live_release.sh" >&2
+    exit 1
+fi
+if [ ! -f "${EXPECTED}" ]; then
+    # The verifier matched a record that lived inside its temporary worktree,
+    # which it removes on exit. That record came from the revision's own tree, so
+    # its path under docs/release/ is exact: read it back from the commit instead
+    # of trusting a path that no longer exists.
+    record_rel="docs/release/$(basename "${EXPECTED}")"
+    if ! git -C "${REPO_ROOT}" cat-file -e "${COMMIT}:${record_rel}" 2>/dev/null; then
+        echo "hash record ${EXPECTED} is gone and absent from ${COMMIT}:${record_rel}" >&2
+        exit 1
+    fi
+    EXPECTED_TMP="$(mktemp)"
+    trap 'rm -f "${EXPECTED_TMP}"' EXIT
+    git -C "${REPO_ROOT}" show "${COMMIT}:${record_rel}" > "${EXPECTED_TMP}"
+    EXPECTED="${EXPECTED_TMP}"
+    echo "==> record recovered from ${COMMIT}:${record_rel} (it lived in the temporary worktree)"
+fi
 
 echo "==> staging ${OUT_DIR}"
 mkdir -p "${OUT_DIR}"/{armv7,host,scripts,source,docs,rollback}
 
+# Copy from the directory the verification actually built into, then prove the
+# copied binaries are the ones the record names. Never trust a fixed path: the
+# verified tree may be an isolated worktree with its own target directory.
 for b in fuse_ntfs fuse_direct stream_fetcher patch_trp sparse_unpack; do
     install -m 0755 "${BIN_DIR}/${b}" "${OUT_DIR}/armv7/${b}"
+    expected="$(awk -v n="${b}" '$2 == n { print $1 }' "${EXPECTED}")"
+    actual="$(sha256sum "${OUT_DIR}/armv7/${b}" | cut -d' ' -f1)"
+    if [ -z "${expected}" ] || [ "${expected}" != "${actual}" ]; then
+        echo "binary does not match the record: ${b} (expected ${expected:-<missing>}, got ${actual})" >&2
+        exit 1
+    fi
+    echo "    verified ${b}  ${actual}"
 done
 
 echo "==> source/ (pinned Rust workspace inputs)"
@@ -183,9 +226,13 @@ EOF
     echo
     echo "## Scope"
     echo
-    echo "Iteration-3 consolidation of the audited ITER#2 fixes (#4/#6/#7/#8/#9),"
-    echo "a corrected verification script, a regenerated runtime manifest, and a"
-    echo "transport test covering H.264/AC-3 plus the real \`SeamlessRestamper\`."
+    if [ -n "${ITERN}" ]; then
+        echo "Iteration-${ITERN} candidate for RC-001 / RC-Live, cut from the"
+        echo "audited RC-Live review loop. Full evidence record: \`${EVID}\`."
+    else
+        echo "RC-001 / RC-Live candidate. See \`docs/release/\` for the evidence"
+        echo "record that accompanies this revision."
+    fi
     echo
     echo "## Artifact hashes (ARM32 static EABI5)"
     echo
@@ -197,7 +244,11 @@ EOF
     echo
     echo "## Test evidence"
     echo
-    echo "See \`docs/release/RC_LIVE_ITER3_EVIDENCE.md\` and \`RC_MANIFEST.json\`."
+    if [ -n "${ITERN}" ]; then
+        echo "See \`${EVID}\` and \`RC_MANIFEST.json\`."
+    else
+        echo "See \`docs/release/\` and \`RC_MANIFEST.json\`."
+    fi
     echo
     echo "## Known remaining risks"
     echo

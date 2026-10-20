@@ -1,7 +1,7 @@
 # RC-Live — selective update and rollback procedure
 
 This is a **procedure for an operator**, not a script the RC package runs. It is
-written for the ITER#3 candidate (`rc-001-live-iter3`). Every device step
+written for the ITER#4 candidate (`rc-001-live-iter4`). Every device step
 requires explicit operator approval; nothing here is executed automatically and
 nothing here has been run yet.
 
@@ -12,7 +12,7 @@ binary, script and the 128 GiB template. For this candidate that is far more
 than needed and increases the blast radius. The only changed component versus
 the currently installed state is one binary:
 
-| component | installed / frozen | ITER#3 candidate | changed? |
+| component | installed / frozen | ITER#4 candidate | changed? |
 |-----------|--------------------|------------------|----------|
 | `fuse_ntfs` (`/system/xbin`) | `909e2f066efb4ef2d64034546f11131c52216c920858e6bfec12b71ec3bae898` | `d5a973d6c9194d33c8654767d00e7b6073ca65b30107a717a6a9baa143399f55` | **yes** |
 | `stream_fetcher` | `e2c203e0d809d12cdb07155c800fc80c76e9680c8485b55c4ffe59057644806d` | same | no |
@@ -23,61 +23,87 @@ the currently installed state is one binary:
 
 So the update is **one file on the tablet and nothing on the server**.
 
-## 0. Pre-flight — capture the real installed state (rollback proof)
+## What `switch_tv_mode.sh live` actually does (do not misread it)
 
-Run before changing anything, and keep the output with the release evidence.
-This is what turns "we have a rollback package" into "we proved we can restore
-what is actually deployed".
+The `live|tv` branch is **not** a no-reset restart. Reading
+`scripts/switch_tv_mode.sh`, it calls `cleanup_stack()`, which:
+
+- writes `0` to `/sys/class/android_usb/android0/enable` (disables the gadget),
+- detaches `.../f_mass_storage/lun0/file`,
+- lazily unmounts `/data/local/tmp/ntfs_lab/mnt` and `/data/local/tmp/vfat_mnt`,
+- `killall -9 stream_fetcher fuse_ntfs fuse_direct fuse_direct_arm32`.
+
+It then recreates the FIFO, may re-run `/data/local/tmp/patch_trp` on the live
+template, starts `fuse_ntfs` and exactly one `stream_fetcher`, waits for a
+≥ 8 MB pre-buffer, flips the USB inquiry string between `LIVETV1`/`LIVETV2`,
+detaches and re-attaches `lun0/file`, and re-enables the gadget.
+
+That is a **planned, controlled re-enumeration of the USB mass-storage path**
+(the TV deliberately sees the device disappear and come back), not a
+maintenance-free operation. Keep it distinct from a **spontaneous** gadget reset
+that appears with no mode switch in progress — that one is a defect signal.
+
+## 0. Stop the service before replacing anything
+
+Never copy over `/system/xbin/fuse_ntfs` while an instance may be running. There
+is no `stop` mode, so stop explicitly with the same primitives `cleanup_stack()`
+uses, then prove it stopped.
 
 ```sh
 ADB=...            # tablet serial / ip:port
 DEST=./rc001-backup-$(date -u +%Y%m%dT%H%M%SZ)
 mkdir -p "$DEST"
 
-# a. What is installed right now (hashes are the ground truth).
+# 0.1 Record the current state and installed hashes (ground truth for rollback).
+adb -s "$ADB" shell "su -c '/system/xbin/switch_tv_mode.sh status'" | tee "$DEST/status.before.txt"
 adb -s "$ADB" shell "su -c 'sha256sum /system/xbin/fuse_ntfs /system/xbin/stream_fetcher \
     /system/xbin/fuse_direct /system/xbin/patch_trp'" | tee "$DEST/tablet-installed.sha256"
 
-# b. Keep a byte copy of the installed binary, not just its hash.
-adb -s "$ADB" shell "su -c 'cp /system/xbin/fuse_ntfs /data/local/tmp/fuse_ntfs.bak && chmod 644 /data/local/tmp/fuse_ntfs.bak'"
-adb -s "$ADB" pull /data/local/tmp/fuse_ntfs.bak "$DEST/fuse_ntfs.installed"
-sha256sum "$DEST/fuse_ntfs.installed"      # must equal the hash from (a)
+# 0.2 Keep a byte copy of the installed binary, not just its hash.
+adb -s "$ADB" shell "su -c 'cp /system/xbin/fuse_ntfs /data/local/tmp/fuse_ntfs.pre-iter4 \
+    && chmod 755 /data/local/tmp/fuse_ntfs.pre-iter4'"
+adb -s "$ADB" pull /data/local/tmp/fuse_ntfs.pre-iter4 "$DEST/fuse_ntfs.installed"
+sha256sum "$DEST/fuse_ntfs.installed"      # must equal the hash from 0.1
 
-# c. Server side: the running server.py and the container/process identity.
-#    (Read-only: do not stop, rebuild or restart anything here.)
-adb -s "$ADB" shell "su -c 'pidof python3 || true'"
-# on the server host:
-sha256sum <app-dir>/server.py
-docker ps --format '{{.Names}}\t{{.Image}}'   # capture image+container names
+# 0.3 Stop the live path (planned disconnect) and confirm nothing is running.
+adb -s "$ADB" shell "su -c '
+    echo 0 > /sys/class/android_usb/android0/enable
+    sleep 1
+    echo \"\" > /sys/class/android_usb/android0/f_mass_storage/lun0/file
+    umount -l /data/local/tmp/ntfs_lab/mnt 2>/dev/null
+    killall -9 stream_fetcher fuse_ntfs fuse_direct 2>/dev/null
+    sleep 1
+    pgrep -f \"fuse_ntfs|stream_fetcher\" || echo STOPPED'"
 ```
 
-Acceptance for step 0: the hash from (a) equals the hash of the pulled copy in
-(b), and the server `server.py` hash equals `53552fc9…`. If the installed
-`fuse_ntfs` hash is **not** `909e2f06…`, stop — the device is not on the state
-this package assumes, and the rollback set must be re-derived.
+Acceptance for step 0: the hash from 0.1 equals the pulled copy in 0.2, the
+server `server.py` hash equals `53552fc9...`, and 0.3 prints `STOPPED`. If the
+installed `fuse_ntfs` hash is **not** `909e2f06...`, stop — the device is not on
+the state this package assumes and the rollback set must be re-derived.
 
 ## 1. Selective update — tablet, one binary
 
 ```sh
-PKG=/home/sam/Code/rc001-release/rc-001-live-iter3
+PKG=/home/sam/Code/rc001-release/rc-001-live-iter4
 
 # 1.1 Stage and verify on the device BEFORE touching /system.
 adb -s "$ADB" push "$PKG/armv7/fuse_ntfs" /data/local/tmp/fuse_ntfs.new
 adb -s "$ADB" shell "sha256sum /data/local/tmp/fuse_ntfs.new"
 # expect d5a973d6c9194d33c8654767d00e7b6073ca65b30107a717a6a9baa143399f55
 
-# 1.2 Replace only fuse_ntfs. Do NOT run deploy_tablet.sh.
+# 1.2 Replace only fuse_ntfs, with the service already stopped (step 0.3).
 adb -s "$ADB" shell "su -c '
     mount -o remount,rw /system || exit 1
-    cp /data/local/tmp/fuse_ntfs.bak /system/xbin/fuse_ntfs.pre-iter3 2>/dev/null || true
     cp /data/local/tmp/fuse_ntfs.new /system/xbin/fuse_ntfs
     chmod 755 /system/xbin/fuse_ntfs
     mount -o remount,ro /system
     sha256sum /system/xbin/fuse_ntfs'"
-# expect d5a973d6…
+# expect d5a973d6...
 
-# 1.3 Restart only the live mode path (no gadget reset, no erase).
+# 1.3 Start the live path: this performs the planned re-enumeration described
+#     above (disconnect, >=8MB pre-buffer, reconnect). The TV will blink once.
 adb -s "$ADB" shell "su -c '/system/xbin/switch_tv_mode.sh live'"
+adb -s "$ADB" shell "su -c '/system/xbin/switch_tv_mode.sh status'"
 ```
 
 Server: change nothing (its `server.py` is byte-identical). Do **not** redeploy
@@ -85,29 +111,39 @@ the server for this candidate.
 
 ## 2. Rollback — restore the installed binary
 
-```sh
-# 2.1 Preferred: the copy taken in step 0.
-adb -s "$ADB" push "$DEST/fuse_ntfs.installed" /data/local/tmp/fuse_ntfs.restore
-# or, equivalently, the pre-RC binary shipped in the package:
-adb -s "$ADB" push "$PKG/rollback/armv7-pre-rc/fuse_ntfs" /data/local/tmp/fuse_ntfs.restore
+Rollback uses the same stop-before-replace rule.
 
+```sh
+# 2.1 Stop the live path (step 0.3 again).
+adb -s "$ADB" shell "su -c '
+    echo 0 > /sys/class/android_usb/android0/enable
+    sleep 1
+    echo \"\" > /sys/class/android_usb/android0/f_mass_storage/lun0/file
+    umount -l /data/local/tmp/ntfs_lab/mnt 2>/dev/null
+    killall -9 stream_fetcher fuse_ntfs fuse_direct 2>/dev/null
+    sleep 1
+    pgrep -f \"fuse_ntfs|stream_fetcher\" || echo STOPPED'"
+
+# 2.2 Restore. Preferred source: the copy taken in step 0.
+adb -s "$ADB" push "$DEST/fuse_ntfs.installed" /data/local/tmp/fuse_ntfs.restore
+# equivalent, from the package:
+# adb -s "$ADB" push "$PKG/rollback/armv7-pre-rc/fuse_ntfs" /data/local/tmp/fuse_ntfs.restore
 adb -s "$ADB" shell "sha256sum /data/local/tmp/fuse_ntfs.restore"
 # expect 909e2f066efb4ef2d64034546f11131c52216c920858e6bfec12b71ec3bae898
 
-# 2.2 Restore.
 adb -s "$ADB" shell "su -c '
     mount -o remount,rw /system || exit 1
     cp /data/local/tmp/fuse_ntfs.restore /system/xbin/fuse_ntfs
     chmod 755 /system/xbin/fuse_ntfs
     mount -o remount,ro /system
     sha256sum /system/xbin/fuse_ntfs'"
-# expect 909e2f06…
+# expect 909e2f06...
 
-# 2.3 Restart the live mode path.
+# 2.3 Start the live path again.
 adb -s "$ADB" shell "su -c '/system/xbin/switch_tv_mode.sh live'"
 ```
 
-If step 1.2 stored `/system/xbin/fuse_ntfs.pre-iter3`, that is a second,
+The pre-iter4 copy kept at `/data/local/tmp/fuse_ntfs.pre-iter4` is a second,
 on-device rollback source; keep it until the candidate is accepted.
 
 ## 3. Escalation (only if the selective path is not enough)
@@ -118,19 +154,21 @@ on-device rollback source; keep it until the candidate is accepted.
 - Full tablet state: the operator's own pre-deployment backup, or
   `deploy_tablet.sh` from the frozen `rc-001-live-16d5991` package — explicitly
   **not** part of this procedure.
-- USB/gadget: only through the existing operator-controlled
-  `scripts/switch_tv_mode.sh` and the watchdog. Never reset the gadget from a
-  source-failure path.
+- USB/gadget: only through `scripts/switch_tv_mode.sh` and the watchdog. If a
+  mode switch fails, `fail_rollback()` re-attaches the backing image and
+  re-enables the gadget; never reset the gadget from a source-failure path.
 
 ## 4. Acceptance / stop conditions
 
 Accept only if, within the agreed short window:
 
-- `sha256sum /system/xbin/fuse_ntfs` equals `d5a973d6…`;
+- `sha256sum /system/xbin/fuse_ntfs` equals `d5a973d6...` and
+  `switch_tv_mode.sh status` reports the Live/FUSE/fetcher processes `ATIVO`;
 - live playback (`Canais TV` / `TV AO VIVO.trp`) is steady, with no decoder
   freeze;
-- no new SCSI/USB errors, no unsolicited disconnect, no gadget reset;
+- the single USB re-enumeration from step 1.3 is the only disconnect observed —
+  no further spontaneous disconnect or gadget reset;
 - no runaway RSS/FD/thread growth in `stream_fetcher`/`fuse_ntfs`.
 
-Roll back immediately on: persistent freeze, repeated SCSI/USB errors, a source
-failure that resets the gadget, or any provider/credential exposure.
+Roll back immediately on: persistent freeze, a **spontaneous** disconnect or
+gadget reset, repeated SCSI/USB errors, or any provider/credential exposure.

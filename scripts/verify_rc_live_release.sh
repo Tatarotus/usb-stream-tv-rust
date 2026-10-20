@@ -75,8 +75,10 @@ LABELS=" ${BUILD_REV} ${SHORT_REV} ${REVISION} ${REV_TAGS} "
 EXPECTED=""
 RECORD_COUNT=0
 # Records may live in the revision's own tree or in the current tree (the
-# frozen 16d5991 record was added after that tag was cut).
-for record_root in "${BUILD_ROOT}" "${REPO_ROOT}"; do
+# frozen 16d5991 record was added after that tag was cut). The current tree is
+# searched first so a record found inside a temporary worktree cannot be left
+# dangling for callers (e.g. the packaging script) after cleanup.
+for record_root in "${REPO_ROOT}" "${BUILD_ROOT}"; do
     for candidate in "${record_root}"/docs/release/RC_LIVE_ARM_SHA256*.txt; do
         [ -f "${candidate}" ] || continue
         RECORD_COUNT=$((RECORD_COUNT + 1))
@@ -97,6 +99,8 @@ if [ -z "${EXPECTED}" ]; then
         exit 1
     fi
 fi
+echo "==> record: ${EXPECTED}"
+echo "==> binaries: ${BIN_DIR}"
 echo "==> building ${TARGET} (offline) from ${BUILD_ROOT}"
 ( cd "${BUILD_ROOT}" && CARGO_TARGET_DIR="${TARGET_DIR}" cargo build \
     --workspace --release --target "${TARGET}" --offline )
