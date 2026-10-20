@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::contract::{StreamBackend, LEADBACK, PROBE_ISOLATION_FOFF};
-use crate::engine::ring::{Ring, EDGE_WAIT_BUDGET_MS, MAX_SLEEP_SLICE_MS, MIN_STREAM_START};
+use crate::engine::ring::{Ring, MAX_SLEEP_SLICE_MS, MIN_STREAM_START};
 use crate::engine::state_machine::{OvwCtx, SmCtx, SmDecision};
 use crate::observability::{Observer, Reason};
 mod observation;
@@ -17,11 +17,13 @@ use crate::engine::ts_xform::{TsXformState, XformRef, RawSample};
 
 mod anchor;
 mod commit;
+mod deliver;
 #[cfg(test)]
 mod phase_b_tests;
 #[cfg(test)]
 mod test_seam;
 pub use anchor::AnchorState;
+use deliver::Delivery;
 
 pub struct LiveEngine {
     pub ring: Arc<Ring>,
@@ -374,71 +376,13 @@ impl StreamBackend for LiveEngine {
         };
 
         // 3 & 4. Fragment delivery loop with edge wait.
-        let budget_end = Instant::now() + Duration::from_millis(EDGE_WAIT_BUDGET_MS);
-        let (mut filled, mut to_copy, mut prefix) = (0usize, 0usize, 0usize);
-        let mut first_copy_pos = mapped_spos;
-        let mut wait_ms = 0u64;
-        let mut starved = false;
-        while filled < dst.len() {
-            let pos = mapped_spos + filled as u64;
-            let (ring_old, s_write) = {
-                let rd = self.ring.lock();
-                (rd.ring_old(), rd.s_write())
-            };
-            let left = (dst.len() - filled) as u64;
-            if pos < ring_old {
-                let n = (ring_old - pos).min(left) as usize;
-                crate::engine::ring::fill_null_at(&mut dst[filled..filled + n], pos);
-                filled += n;
-                prefix += n;
-                continue;
-            }
-            if pos >= s_write {
-                let now = Instant::now();
-                let mut waited = false;
-                if now < budget_end {
-                    let remain = budget_end - now;
-                    self.ring.lock().note_edge_wait();
-                    let t0 = Instant::now();
-                    waited = self.ring.wait_edge(pos + 1, remain);
-                    wait_ms = wait_ms.saturating_add(t0.elapsed().as_millis() as u64);
-                }
-                if !waited {
-                    crate::engine::ring::fill_null_at(&mut dst[filled..], pos);
-                    let mut rd = self.ring.lock();
-                    rd.note_starve();
-                    rd.note_null((dst.len() - filled) as u64);
-                    self.obs_underrun((dst.len() - filled) as u64);
-                    starved = true;
-                    break;
-                }
-                continue;
-            }
-            let n = (s_write - pos).min(left) as usize;
-            {
-                // The residency snapshot above released the ring lock; the
-                // feeder may have overwritten this range in the meantime.
-                // Re-check and copy in one critical section so stale bytes are
-                // never served (ITER#2 fix #4). On overwrite, stop the
-                // contiguous run and NULL-fill the remainder, exactly like the
-                // `pos < ring_old` branch.
-                let mut rd = self.ring.lock();
-                if !rd.copy_resident(pos, &mut dst[filled..filled + n]) {
-                    rd.note_starve();
-                    rd.note_null((dst.len() - filled) as u64);
-                    drop(rd);
-                    crate::engine::ring::fill_null_at(&mut dst[filled..], pos);
-                    self.obs_underrun((dst.len() - filled) as u64);
-                    starved = true;
-                    break;
-                }
-            }
-            if to_copy == 0 {
-                first_copy_pos = pos;
-            }
-            filled += n;
-            to_copy += n;
-        }
+        let Delivery {
+            to_copy,
+            prefix,
+            first_copy_pos,
+            wait_ms,
+            starved,
+        } = self.deliver_fragments(dst, mapped_spos);
 
         // Telemetry.
         {

@@ -34,20 +34,67 @@ def _have_ffmpeg():
 pytestmark = pytest.mark.skipif(not _have_ffmpeg(), reason="ffmpeg not available")
 
 
-def _generate_ts(path, seconds=2):
-    """Produce a real, decodable MPEG-TS with ffmpeg (no network needed)."""
+def _generate_ts(path, seconds=2, codec="mpeg2"):
+    """Produce a real, decodable MPEG-TS with ffmpeg (no network needed).
+
+    ``codec`` selects the A/V profile:
+      * ``"mpeg2"`` — MPEG-2 video / MP2 audio (the legacy transport profile);
+      * ``"h264"``  — H.264 / AC-3 (closer to the transcode actually destined
+        for the Samsung set).
+
+    B-frames are disabled so video PTS advances monotonically, which lets the
+    restamper test assert forward-only timestamps without heuristics.
+    """
+    if codec == "h264":
+        codec_args = ["-c:v", "libx264", "-preset", "ultrafast", "-b:v", "800k",
+                      "-c:a", "ac3", "-b:a", "192k"]
+    else:
+        codec_args = ["-c:v", "mpeg2video", "-b:v", "800k", "-c:a", "mp2"]
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
         "-f", "lavfi", "-i", f"testsrc=size=320x240:rate=25:duration={seconds}",
         "-f", "lavfi", "-i", f"sine=frequency=1000:sample_rate=48000:duration={seconds}",
-        "-c:v", "mpeg2video", "-b:v", "800k",
-        "-c:a", "mp2",
+        *codec_args, "-bf", "0",
         "-f", "mpegts", str(path),
     ]
     subprocess.run(cmd, check=True, capture_output=True, timeout=60)
     data = path.read_bytes()
     assert data, "ffmpeg produced an empty TS"
     return data
+
+
+def _iter_video_pts(ts_bytes):
+    """Return the video PTS of every PES header in a 188-byte-aligned TS.
+
+    Mirrors the restamper's own classification: a packet is video when its PES
+    stream id (not its PID) is in 0xE0..0xEF and the header carries a PTS flag.
+    """
+    pts = []
+    for off in range(0, len(ts_bytes) - (TS_PACKET_SIZE - 1), TS_PACKET_SIZE):
+        if ts_bytes[off] != TS_SYNC_BYTE:
+            continue
+        pusi = (ts_bytes[off + 1] & 0x40) >> 6
+        if not pusi:
+            continue
+        afc = (ts_bytes[off + 3] & 0x30) >> 4
+        body = off + 4
+        if afc in (2, 3):
+            body += 1 + ts_bytes[off + 4]
+        if body + 14 > off + TS_PACKET_SIZE:
+            continue
+        if ts_bytes[body:body + 3] != b"\x00\x00\x01":
+            continue
+        sid = ts_bytes[body + 3]
+        if not (0xE0 <= sid <= 0xEF):
+            continue
+        if not (ts_bytes[body + 7] & 0x80):  # PTS flag
+            continue
+        b = ts_bytes[body + 9:body + 14]
+        pts.append(
+            ((b[0] & 0x0E) << 29) | (b[1] << 22) | ((b[2] & 0xFE) << 14)
+            | (b[3] << 7) | (b[4] >> 1)
+        )
+    return pts
 
 
 class _PassThroughRestamper:
@@ -145,8 +192,9 @@ def _make_hub():
     return hub
 
 
-def test_valid_ffmpeg_ts_survives_hub_and_decodes(tmp_path):
-    ts_bytes = _generate_ts(tmp_path / "valid.ts", seconds=2)
+@pytest.mark.parametrize("codec", ["mpeg2", "h264"])
+def test_valid_ffmpeg_ts_survives_hub_and_decodes(tmp_path, codec):
+    ts_bytes = _generate_ts(tmp_path / f"valid-{codec}.ts", seconds=2, codec=codec)
     assert len(ts_bytes) % TS_PACKET_SIZE == 0, "TS is not 188-byte packet aligned"
     assert ts_bytes[0] == TS_SYNC_BYTE, "TS does not start with a sync byte"
 
@@ -197,3 +245,47 @@ def test_valid_ffmpeg_ts_survives_hub_and_decodes(tmp_path):
         "published bytes did not decode: "
         + decode.stderr.decode("utf-8", "ignore")
     )
+
+
+def test_real_restamper_keeps_video_pts_forward_across_channel_switch(tmp_path):
+    """The production ``SeamlessRestamper`` must never step time backwards.
+
+    Two independently encoded H.264/AC-3 streams are normalised by the real
+    restamper; the second is preceded by ``start_new_channel()`` exactly as the
+    hub does on a switch. Video PTS must stay forward within each channel and
+    the new channel must anchor strictly above the previous one, and both
+    restamped outputs must still decode.
+    """
+    ts_a = _generate_ts(tmp_path / "chan-a.ts", seconds=2, codec="h264")
+    ts_b = _generate_ts(tmp_path / "chan-b.ts", seconds=2, codec="h264")
+
+    restamper = server.SeamlessRestamper()
+    out_a = restamper.process_chunk(ts_a)
+    restamper.start_new_channel()
+    out_b = restamper.process_chunk(ts_b)
+
+    assert out_a, "restamper dropped the whole first channel"
+    assert out_b, "restamper dropped the whole second channel"
+    assert len(out_a) % TS_PACKET_SIZE == 0, "restamped channel A lost alignment"
+    assert len(out_b) % TS_PACKET_SIZE == 0, "restamped channel B lost alignment"
+
+    pts_a = _iter_video_pts(out_a)
+    pts_b = _iter_video_pts(out_b)
+    assert pts_a, "no video PTS found in channel A"
+    assert pts_b, "no video PTS found in channel B"
+    assert pts_a == sorted(pts_a), "video PTS stepped backwards within channel A"
+    assert pts_b == sorted(pts_b), "video PTS stepped backwards within channel B"
+    assert pts_b[0] > pts_a[-1], (
+        f"channel switch went backwards: {pts_a[-1]} -> {pts_b[0]}"
+    )
+
+    for name, blob in (("A", out_a), ("B", out_b)):
+        decode = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", "pipe:0",
+             "-f", "null", "-"],
+            input=bytes(blob), capture_output=True, timeout=60,
+        )
+        assert decode.returncode == 0, (
+            f"restamped channel {name} did not decode: "
+            + decode.stderr.decode("utf-8", "ignore")
+        )
