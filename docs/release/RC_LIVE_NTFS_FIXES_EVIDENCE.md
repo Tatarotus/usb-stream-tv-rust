@@ -84,8 +84,24 @@ GREEN (after the fixes):
 - Serial execution (`--test-threads=1`) is required: the Phase-B pause seam is a
   single global and hangs if the lib tests run in parallel.
 
-ARM (`armv7-unknown-linux-gnueabihf`, `+crt-static`) rebuild hashes are recorded
-in the iteration-2 evidence for the release manifest.
+## ARM rebuild (host-only, `armv7-unknown-linux-gnueabihf`, `+crt-static`)
+
+Rebuilt at commit `5491aa3`. Only `fuse_ntfs` changed; the other four binaries
+are byte-identical to the frozen `16d5991` release (so the frozen hashes still
+verify for them).
+
+| binary | sha256 | vs frozen 16d5991 |
+|--------|--------|-------------------|
+| `fuse_ntfs` | `24a57dbbe161993b33a79628feaeb59f83e69bfd6bd36b373e3b29959431976d` | **changed** (expected) |
+| `fuse_direct` | `a6eb746872834a119a91537889b4b2d8d68ada58a206712d759df80d9a020f46` | identical |
+| `stream_fetcher` | `e2c203e0d809d12cdb07155c800fc80c76e9680c8485b55c4ffe59057644806d` | identical |
+| `patch_trp` | `3afd258f51ac45fccc3f35d262fbf5141b6090a710a23c9819619704ecf8015d` | identical |
+| `sparse_unpack` | `e52a389f8281e330895fa3c372dc0ecc8d99ad0d51d122f147f4e4679cfe8f19` | identical |
+
+The only build messages are the pre-existing static-`getaddrinfo` linker notes
+(`stream_fetcher`, `fuse_direct`); no Rust warnings. Because the ARM
+`fuse_ntfs` hash changes, the frozen release package/tag would need a re-baseline
+before any deploy.
 
 ## Deferred: #5 (single shared PTS across PIDs)
 
