@@ -18,10 +18,11 @@
 
 use std::io;
 use std::os::unix::io::RawFd;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::contract::{StreamBackend, TS_PKT_SZ};
+use crate::observability::{EventKind, Observer, Reason, UNSET};
 use crate::vfs::catalog::{Catalog, NodeKind};
 use crate::vfs::fuse_abi::*;
 use crate::vfs::ntfs_mft::{
@@ -30,9 +31,22 @@ use crate::vfs::ntfs_mft::{
 
 pub use crate::engine::ring::{fill_null, fill_null_at, NULL_PKT};
 
+mod observation;
+
 /// Default read deadline handed to the backend: the MStar SCSI bridge aborts
 /// a request after 3.5–4.0 s of silence.
 pub const DEFAULT_DEADLINE_MS: u64 = 3500;
+
+/// Observation label for an OPEN/RELEASE target (TASK-003).
+fn open_reason(nodeid: u64) -> Reason {
+    if nodeid == FILE_INO {
+        Reason::BackingImage
+    } else if nodeid == ROOT_INO {
+        Reason::OpenRoot
+    } else {
+        Reason::OpenNode
+    }
+}
 
 /// Size of the fixed reply header.
 pub const OUT_HDR_SZ: usize = std::mem::size_of::<fuse_out_header>();
@@ -46,6 +60,7 @@ pub struct NtfsServer {
     pub layout: VolumeLayout,
     pub backend: Arc<dyn StreamBackend>,
     pub deadline_ms: u64,
+    pub obs: Observer,
 }
 
 impl NtfsServer {
@@ -61,7 +76,15 @@ impl NtfsServer {
             layout,
             backend,
             deadline_ms: DEFAULT_DEADLINE_MS,
+            obs: Observer::disabled(),
         }
+    }
+
+    /// Attaches a bounded observation channel (TASK-003). Playback and reply
+    /// behavior are unchanged; the default is a disabled observer.
+    pub fn with_observer(mut self, obs: Observer) -> Self {
+        self.obs = obs;
+        self
     }
 
     /// Serves one FUSE_READ payload for `nodeid`, always fully populating
@@ -249,6 +272,9 @@ impl FuseSession {
         let mut in_buf = AlignedFuseBuf::new_boxed();
         let mut out_buf = AlignedFuseBuf::new_boxed();
 
+        // A cleared `running` flag is an orderly shutdown; only an unexpected
+        // device-read failure is unclean (reported before the error returns).
+        let mut exit = Reason::LoopClean;
         while running.load(Ordering::SeqCst) {
             let n = unsafe {
                 libc::read(
@@ -259,10 +285,21 @@ impl FuseSession {
             };
             if n < 0 {
                 let err = io::Error::last_os_error();
-                if err.kind() == io::ErrorKind::Interrupted {
-                    continue;
+                match err.raw_os_error() {
+                    Some(libc::EINTR) | Some(libc::EAGAIN) | Some(libc::ENOENT) => {
+                        continue;
+                    }
+                    Some(libc::ENODEV) => {
+                        // Filesystem was unmounted cleanly.
+                        exit = Reason::LoopClean;
+                        break;
+                    }
+                    _ => {
+                        self.report_device_error(err.raw_os_error().unwrap_or(0));
+                        self.report_loop_exit(Reason::LoopUnclean);
+                        return Err(err);
+                    }
                 }
-                return Err(err);
             }
             if (n as usize) < IN_HDR_SZ {
                 continue;
@@ -270,6 +307,7 @@ impl FuseSession {
             let payload_end = (n as usize).min(in_buf.0.len());
             self.dispatch(&in_buf.0[..payload_end], &mut out_buf);
         }
+        self.report_loop_exit(exit);
         Ok(())
     }
 
@@ -295,8 +333,9 @@ impl FuseSession {
             FUSE_LOOKUP => self.handle_lookup(inh, payload, out),
             FUSE_OPEN | FUSE_OPENDIR => self.handle_open(inh, out),
             FUSE_READ => self.handle_read(inh, payload, out),
+            FUSE_WRITE => self.handle_write(inh, payload, out),
             FUSE_READDIR => self.handle_readdir(inh, payload, out),
-            FUSE_RELEASE | FUSE_RELEASEDIR => self.reply_empty(inh, out),
+            FUSE_RELEASE | FUSE_RELEASEDIR => self.handle_release(inh, out),
             FUSE_STATFS => self.handle_statfs(inh, out),
             _ => self.reply_error(inh, out, -libc::ENOSYS),
         }
@@ -304,8 +343,15 @@ impl FuseSession {
 
     // ------------------------------------------------------------ helpers
 
-    /// Writes a successful reply of exactly `len` bytes.
-    fn reply(&self, out: &AlignedFuseBuf, len: usize) {
+    fn handle_release(&self, inh: &fuse_in_header, out: &mut AlignedFuseBuf) {
+        let why = open_reason(inh.nodeid);
+        self.report(EventKind::FuseRelease, why, inh, UNSET, UNSET);
+        self.reply_empty(inh, out);
+    }
+
+    /// Writes a successful reply of exactly `len` bytes, capturing the
+    /// transport errno and the originating request for diagnostics.
+    fn reply(&self, inh: &fuse_in_header, out: &AlignedFuseBuf, len: usize) {
         let w = unsafe {
             libc::write(
                 self.fd,
@@ -313,21 +359,30 @@ impl FuseSession {
                 len,
             )
         };
-        let _ = w;
+        if w < 0 || w as usize != len {
+            // errno is only meaningful for a failed write; a positive short
+            // write carries no new error code.
+            let errno = if w < 0 {
+                io::Error::last_os_error().raw_os_error().unwrap_or(0)
+            } else {
+                0
+            };
+            self.report_write_error(inh, w, len, errno);
+        }
     }
 
     /// Header-only positive reply.
     fn reply_empty(&self, inh: &fuse_in_header, out: &mut AlignedFuseBuf) {
         out.0[..OUT_HDR_SZ].fill(0);
         self.write_header(inh, out, OUT_HDR_SZ, 0);
-        self.reply(out, OUT_HDR_SZ);
+        self.reply(inh, out, OUT_HDR_SZ);
     }
 
     /// Header-only negative reply with an errno.
     fn reply_error(&self, inh: &fuse_in_header, out: &mut AlignedFuseBuf, errno: i32) {
         out.0[..OUT_HDR_SZ].fill(0);
         self.write_header(inh, out, OUT_HDR_SZ, errno);
-        self.reply(out, OUT_HDR_SZ);
+        self.reply(inh, out, OUT_HDR_SZ);
     }
 
     /// Fills the common reply header fields.
@@ -358,7 +413,7 @@ impl FuseSession {
         let ao = unsafe { &mut *(out.0[OUT_HDR_SZ..].as_mut_ptr() as *mut fuse_attr_out) };
         ao.attr_valid = 10;
         ao.attr = *attr;
-        self.reply(out, reply_len);
+        self.reply(inh, out, reply_len);
     }
 
     // ------------------------------------------------------------ handlers
@@ -400,7 +455,7 @@ impl FuseSession {
         io.flags = flags & (FUSE_ASYNC_READ | FUSE_BIG_WRITES);
         io.max_write = MAX_MSG_SZ as u32;
 
-        self.reply(out, out_len);
+        self.reply(inh, out, out_len);
     }
 
     fn handle_getattr(&self, inh: &fuse_in_header, out: &mut AlignedFuseBuf) {
@@ -461,17 +516,24 @@ impl FuseSession {
                     Self::fill_file_attr(&mut eo.attr, node.ino, node.size);
                 }
                 eo.attr.blksize = ntfs_mft::CLUSTER_SIZE as u32;
-                self.reply(out, reply_len);
+                self.reply(inh, out, reply_len);
             }
             None => self.reply_error(inh, out, -libc::ENOENT),
         }
     }
 
     fn handle_open(&self, inh: &fuse_in_header, out: &mut AlignedFuseBuf) {
+        let why = open_reason(inh.nodeid);
+        self.report(EventKind::FuseOpenRequest, why, inh, UNSET, UNSET);
+        if inh.opcode == FUSE_OPEN {
+            self.server.backend.on_open();
+        }
         let reply_len = OUT_HDR_SZ + std::mem::size_of::<fuse_open_out>();
 
         // Unknown nodes are rejected before granting a handle.
         if inh.nodeid != ROOT_INO && self.server.catalog.node(inh.nodeid).is_none() {
+            let why = Reason::OpenInvalidNode;
+            self.report(EventKind::FuseOpenResult, why, inh, UNSET, UNSET);
             self.reply_error(inh, out, -libc::ENOENT);
             return;
         }
@@ -496,7 +558,24 @@ impl FuseSession {
         } else {
             0
         };
-        self.reply(out, reply_len);
+        let why = open_reason(inh.nodeid);
+        self.report(EventKind::FuseOpenResult, why, inh, oo.fh, UNSET);
+        self.reply(inh, out, reply_len);
+    }
+
+    fn handle_write(&self, inh: &fuse_in_header, payload: &[u8], out: &mut AlignedFuseBuf) {
+        let size = if payload.len() >= std::mem::size_of::<fuse_write_in>() {
+            let win = unsafe { &*(payload.as_ptr() as *const fuse_write_in) };
+            win.size
+        } else {
+            0
+        };
+        let reply_len = OUT_HDR_SZ + std::mem::size_of::<fuse_write_out>();
+        out.0[..reply_len].fill(0);
+        self.write_header(inh, out, reply_len, 0);
+        let wout = unsafe { &mut *(out.0[OUT_HDR_SZ..].as_mut_ptr() as *mut fuse_write_out) };
+        wout.size = size;
+        self.reply(inh, out, reply_len);
     }
 
     fn handle_read(&self, inh: &fuse_in_header, payload: &[u8], out: &mut AlignedFuseBuf) {
@@ -517,19 +596,13 @@ impl FuseSession {
         let rdata = &mut out.0[OUT_HDR_SZ..OUT_HDR_SZ + size];
         let written = self.server.serve_read(inh.nodeid, rin.offset, rdata);
 
-        static TOTAL_READ: AtomicU64 = AtomicU64::new(0);
-        let total = TOTAL_READ.fetch_add(written as u64, Ordering::Relaxed);
-        let next_total = total.saturating_add(written as u64);
-        if next_total / (2 * 1024 * 1024) != total / (2 * 1024 * 1024) || rin.offset < 200_000 {
-            eprintln!(
-                "[FUSE_READ] total={}MB off={} sz={} (ino={})",
-                next_total / (1024 * 1024), rin.offset, size, inh.nodeid
-            );
-        }
+        // The result records the request's size, offset and handle as well as
+        // the bytes actually returned; a short reply stays observable.
+        self.report_read_result(inh, rin, written);
 
         out.0[..OUT_HDR_SZ].fill(0);
         self.write_header(inh, out, OUT_HDR_SZ + written, 0);
-        self.reply(out, OUT_HDR_SZ + written);
+        self.reply(inh, out, OUT_HDR_SZ + written);
     }
 
     fn handle_readdir(&self, inh: &fuse_in_header, payload: &[u8], out: &mut AlignedFuseBuf) {
@@ -580,7 +653,7 @@ impl FuseSession {
 
         let reply_len = OUT_HDR_SZ + used;
         self.write_header(inh, out, reply_len, 0);
-        self.reply(out, reply_len);
+        self.reply(inh, out, reply_len);
     }
 
     fn handle_statfs(&self, inh: &fuse_in_header, out: &mut AlignedFuseBuf) {
@@ -604,8 +677,13 @@ impl FuseSession {
         so.st.ffree = 0;
         so.st.namelen = 255;
 
-        self.reply(out, reply_len);
+        self.reply(inh, out, reply_len);
     }
+
+    // -------------------------------------------------- observation (TASK-003)
+    //
+    // The reporters live in `dispatcher/observation.rs`; this module keeps only
+    // the call sites, so the dispatch hot path stays readable and in budget.
 }
 
 /// Binds a session to a mounted `/dev/fuse` fd. Thin wrapper so `main` keeps
@@ -613,6 +691,9 @@ impl FuseSession {
 pub fn run(fd: RawFd, server: Arc<NtfsServer>, running: &AtomicBool) -> io::Result<()> {
     FuseSession::new(fd, server).run(running)
 }
+
+#[cfg(test)]
+mod observation_tests;
 
 #[cfg(test)]
 mod tests {

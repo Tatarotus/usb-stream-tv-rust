@@ -11,11 +11,13 @@
 //! Module map:
 //! * [`contract`] — constants + `StreamBackend` seam shared with the engine.
 //! * [`engine`] — live/VOD streaming engine (ring, anchors, probes).
+//! * [`observability`] — bounded, loss-accounted `USBTV_OBS` diagnostics.
 //! * [`vfs`] — kernel FUSE ABI, NTFS metadata layer, virtual catalog, and the
 //!   `/dev/fuse` protocol dispatcher.
 
 pub mod contract;
 pub mod engine;
+pub mod observability;
 pub mod vfs;
 
 pub use contract::{LEADBACK, RESUME_MIN_LEAD, RESUME_TARGET_MARGIN, RINGSZ, StreamBackend, TS_PKT_SZ};
