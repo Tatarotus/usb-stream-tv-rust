@@ -1829,7 +1829,7 @@ class StreamHub:
     - O restamper SeamlessRestamper garante continuidade estrita de PTS/DTS entre trocas de canal.
     - A transição do canal antigo para o novo só ocorre após o novo canal enviar os primeiros bytes válidos.
     """
-    def __init__(self):
+    def __init__(self, start_workers=True):
         self.lock = threading.RLock()
         self.switch_lock = threading.Lock()
         self.restamper = SeamlessRestamper()
@@ -1889,14 +1889,28 @@ class StreamHub:
         self.health_window = []  # list of (timestamp, byte_count)
         self.health_window_size = 5.0  # seconds
         self._load_slate()
-        
+
+        # Import de `server` deve ser livre de processo/thread/rede. O start
+        # explícito preserva o comportamento de produção via run().
+        self._started = False
+        self.reader_thread = None
+        self.keepalive_thread = None
+        if start_workers:
+            self.start()
+
+    def start(self):
+        """Inicia o produtor e as threads do hub uma única vez."""
+        if self._started:
+            return
+        self._started = True
+
         # Inicia transmissão do primeiro canal
         self._start_initial()
-        
+
         # Thread de leitura contínua e distribuição
         self.reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
         self.reader_thread.start()
-        
+
         # Thread de keepalive (envia TS NULL packets se o buffer upstream atrasar)
         self.keepalive_thread = threading.Thread(target=self._keepalive_loop, daemon=True)
         self.keepalive_thread.start()
@@ -2012,6 +2026,15 @@ class StreamHub:
                 print(f"[*] Zero ouvintes. Standby agendado para {int(STANDBY_TIMEOUT)}s...")
             print(f"[-] Cliente desconectado do Hub. Total de ouvintes: {len(self.subscribers)}")
 
+    def _mark_live_commit_locked(self):
+        """Marca o commit live; chamado sob self.lock pelo switch."""
+        self.slate_mode = False
+        self.slate_start_time = 0
+        self.stream_health = "ok"
+        # O primeiro chunk pode ser parcial e o restamper pode devolver vazio.
+        # O commit, não o processamento, é o novo marco de saúde.
+        self.last_chunk_time = time.time()
+
     def _broadcast(self, data):
         if not data:
             return
@@ -2022,20 +2045,23 @@ class StreamHub:
                 old = self.prebuffer_chunks.popleft()
                 self.prebuffer_bytes -= len(old)
 
-        for q in list(self.subscribers):
-            try:
-                q.put_nowait(data)
-            except queue.Full:
-                # Buffer cheio por lag transitório: descarta o chunk mais antigo
-                # para que o leitor avance sem travar, preservando a conexão do assinante!
-                try:
-                    q.get_nowait()
-                except queue.Empty:
-                    pass
+            # Enfileira no mesmo critical section do prebuffer. Sem isso, um
+            # slate iniciado antes do commit pode chegar à fila depois do
+            # primeiro chunk do novo canal.
+            for q in list(self.subscribers):
                 try:
                     q.put_nowait(data)
                 except queue.Full:
-                    pass
+                    # Buffer cheio por lag transitório: descarta o chunk mais antigo
+                    # para que o leitor avance sem travar, preservando a conexão do assinante!
+                    try:
+                        q.get_nowait()
+                    except queue.Empty:
+                        pass
+                    try:
+                        q.put_nowait(data)
+                    except queue.Full:
+                        pass
 
     def _handle_proc_exit(self, p, rc):
         if p != self.proc or self.switching or self.in_standby:
@@ -2179,7 +2205,10 @@ class StreamHub:
 
         while self.running:
             time.sleep(0.05)
-            if len(self.subscribers) == 0 or self.switching or self.in_standby:
+            # O switching não suprime mais o keepalive. Se o canal antigo
+            # congelar durante a aquisição do candidato, o slate/NULL continua
+            # segurando o decoder da TV até o commit.
+            if len(self.subscribers) == 0 or self.in_standby:
                 continue
 
             gap = time.time() - self.last_chunk_time
@@ -2195,24 +2224,39 @@ class StreamHub:
                 # ainda consta como vivo (ex: socket TCP congelado pela operadora sem EOF),
                 # força a finalização do FFmpeg para disparar reconexão imediata!
                 if self.slate_start_time and (time.time() - self.slate_start_time > 15.0):
-                    p = self.proc
-                    if p and p.poll() is None:
+                    with self.lock:
+                        if not self.slate_mode:
+                            continue
+                        # Durante a aquisição do candidato o processo antigo é
+                        # a garantia de make-before-break. O watchdog não pode
+                        # matá-lo até o switch terminar, mas o slate/NULL deve
+                        # continuar saindo normalmente.
+                        p = None if self.switching else self.proc
+                        stuck = bool(p and p.poll() is None)
+                        if stuck:
+                            # kill() sob o mesmo lock que observa switching:
+                            # nenhuma troca pode começar entre a checagem e o
+                            # sinal. A chamada é não bloqueante.
+                            try:
+                                p.kill()
+                            except Exception:
+                                pass
+                    if stuck:
                         print("[!] Upstream travado em Slate por >15s. Forçando reinício do FFmpeg...")
                         log_event("WATCHDOG_FFMPEG_KILL (stuck in slate >15s)")
-                        try:
-                            p.kill()
-                        except Exception:
-                            pass
 
                 if self.slate_chunks:
                     now = time.time()
                     if now - last_slate_broadcast >= next_slate_pace:
-                        # Re-ancora timestamps seamless a cada ciclo completo do slate (10s)
-                        if slate_idx > 0 and (slate_idx % len(self.slate_chunks) == 0):
-                            with self.lock:
-                                self.restamper.start_new_channel()
-                        chunk, dur = self.slate_chunks[slate_idx % len(self.slate_chunks)]
                         with self.lock:
+                            # Um commit pode ter ocorrido enquanto este tick
+                            # esperava o lock; não publique slate obsoleto.
+                            if not self.slate_mode or time.time() - self.last_chunk_time <= 0.6:
+                                continue
+                            # Re-ancora timestamps seamless a cada ciclo completo do slate (10s)
+                            if slate_idx > 0 and (slate_idx % len(self.slate_chunks) == 0):
+                                self.restamper.start_new_channel()
+                            chunk, dur = self.slate_chunks[slate_idx % len(self.slate_chunks)]
                             processed = self.restamper.process_chunk(chunk)
                             if processed:
                                 self._broadcast(processed)
@@ -2221,31 +2265,42 @@ class StreamHub:
                         next_slate_pace = dur
                 else:
                     with self.lock:
+                        if not self.slate_mode or time.time() - self.last_chunk_time <= 0.6:
+                            continue
                         self._broadcast(null_burst)
                 continue
 
             # Gap detectado: decidir entre NULL packets transitórios e Slate
             if gap < SLATE_GAP_THRESHOLD:
-                # Gap curto (< 3.0s): NULL packets para absorver jitter transitório
-                if self.stream_health == "ok":
-                    self.stream_health = "degraded"
+                # Gap curto: NULL packets para absorver jitter transitório
                 with self.lock:
+                    if time.time() - self.last_chunk_time <= 0.6:
+                        continue
+                    if self.stream_health == "ok":
+                        self.stream_health = "degraded"
                     self._broadcast(null_burst)
                 continue
 
             # Gap longo (>= SLATE_GAP_THRESHOLD): modo Slate!
             if self.slate_chunks:
-                print(f"[⚠] Gap de {gap:.1f}s detectado — entrando no modo Slate (Sem Sinal).")
-                log_event(f"SLATE_ENTER gap={gap:.1f}s")
                 with self.lock:
+                    gap = time.time() - self.last_chunk_time
+                    if gap <= 0.6:
+                        continue
+                    if gap < SLATE_GAP_THRESHOLD:
+                        # O gap encurtou enquanto esperávamos; o próximo tick decide.
+                        continue
+                    if self.slate_mode:
+                        continue
+                    print(f"[⚠] Gap de {gap:.1f}s detectado — entrando no modo Slate (Sem Sinal).")
+                    log_event(f"SLATE_ENTER gap={gap:.1f}s")
                     self.restamper.start_new_channel()
-                self.slate_mode = True
-                self.slate_start_time = time.time()
-                self.stream_health = "slate"
-                slate_idx = 0
-                now = time.time()
-                chunk, dur = self.slate_chunks[0]
-                with self.lock:
+                    self.slate_mode = True
+                    self.slate_start_time = time.time()
+                    self.stream_health = "slate"
+                    slate_idx = 0
+                    now = time.time()
+                    chunk, dur = self.slate_chunks[0]
                     processed = self.restamper.process_chunk(chunk)
                     if processed:
                         self._broadcast(processed)
@@ -2254,9 +2309,11 @@ class StreamHub:
                 next_slate_pace = dur
             else:
                 # Fallback sem slate: NULL packets legados
-                if self.stream_health != "slate":
-                    self.stream_health = "degraded"
                 with self.lock:
+                    if time.time() - self.last_chunk_time <= 0.6:
+                        continue
+                    if self.stream_health != "slate":
+                        self.stream_health = "degraded"
                     self._broadcast(null_burst)
 
     def switch_channel(self, channel_id=None, custom_url=None, custom_name=None, force=False, is_eco=None, no_reconnect=False):
@@ -2264,11 +2321,14 @@ class StreamHub:
             print("[~] Troca de canal anterior ainda em andamento. Aguarde...")
             return False
 
+        # Sinaliza a aquisição antes de criar a thread; o watchdog de slate
+        # consulta este flag sob o mesmo lock.
+        with self.lock:
+            self.switching = True
 
         def _do_switch():
             ch = None
             try:
-                self.switching = True
                 t_sw0 = time.time()
                 if channel_id:
                     ch = CH_MGR.get_channel(channel_id)
@@ -2277,7 +2337,6 @@ class StreamHub:
                     target_id = f"custom_{custom_url}"
                     target_name = custom_name or (ch["name"] if ch else "Canal Personalizado")
                     target_url = resolve_channel_url(custom_url)
-                    self.last_live_channel = target_id
                 elif channel_id:
                     if not ch:
                         print(f"[!] Canal id {channel_id} não encontrado na grade.")
@@ -2285,7 +2344,6 @@ class StreamHub:
                     target_id = ch["id"]
                     target_name = ch["name"]
                     target_url = resolve_channel_url(ch["url"])
-                    self.last_live_channel = target_id
                 else:
                     return
 
@@ -2399,6 +2457,7 @@ class StreamHub:
                     self.current_is_temporary = False
                     self.current_is_eco = target_is_eco
                     self.current_use_proxy = False
+                    self.last_live_channel = target_id
                     self.fallback_channel = None
                     self.youtube_meta = None
                     self.temporary_retries = 0
@@ -2407,6 +2466,10 @@ class StreamHub:
                     self.restamper.start_new_channel()
                     self.prebuffer_chunks.clear()
                     self.prebuffer_bytes = 0
+
+                    # O commit é live: qualquer slate/health antigo morre aqui,
+                    # sob o mesmo lock que publica o primeiro chunk.
+                    self._mark_live_commit_locked()
 
                     # Transmite o primeiro chunk do novo canal com timestamps contínuos
                     processed = self.restamper.process_chunk(first_chunk_data)
@@ -2426,10 +2489,17 @@ class StreamHub:
                 log_event(f"SWITCH_OK {target_id} total={(time.time() - t_sw0):.1f}s")
 
             finally:
-                self.switching = False
+                with self.lock:
+                    self.switching = False
                 self.switch_lock.release()
 
-        threading.Thread(target=_do_switch, daemon=True).start()
+        try:
+            threading.Thread(target=_do_switch, daemon=True).start()
+        except Exception:
+            with self.lock:
+                self.switching = False
+            self.switch_lock.release()
+            raise
         return True
 
     def switch_youtube(self, meta):
@@ -2442,10 +2512,13 @@ class StreamHub:
             print("[~] Troca de transmissão anterior ainda em andamento. Aguarde...")
             return False
 
+        # Sinaliza a aquisição antes de criar a thread; o watchdog de slate
+        # consulta este flag sob o mesmo lock.
+        with self.lock:
+            self.switching = True
+
         def _do_switch():
             try:
-                self.switching = True
-                self.temporary_retries = 0
                 yt_id = hashlib.md5(meta['original_url'].encode()).hexdigest()[:8]
                 target_id = f"youtube_{yt_id}"
                 target_name = f"YouTube: {meta['title']}"
@@ -2511,6 +2584,7 @@ class StreamHub:
                     self.current_is_eco = False
                     self.current_use_proxy = use_proxy
                     self.fallback_channel = return_channel
+                    self.temporary_retries = 0
                     self.youtube_meta = {
                         "title": meta["title"],
                         "duration": meta.get("duration"),
@@ -2524,6 +2598,10 @@ class StreamHub:
                     self.restamper.start_new_channel()
                     self.prebuffer_chunks.clear()
                     self.prebuffer_bytes = 0
+
+                    # O commit é live: qualquer slate/health antigo morre aqui,
+                    # sob o mesmo lock que publica o primeiro chunk.
+                    self._mark_live_commit_locked()
 
                     processed = self.restamper.process_chunk(first_chunk[0])
                     if processed:
@@ -2540,13 +2618,22 @@ class StreamHub:
                 print(f"[✓] YOUTUBE TRANSMITINDO NA TV COM SUCESSO! Novo conteúdo: {target_name}")
                 log_event(f"YOUTUBE_OK {target_id}")
             finally:
-                self.switching = False
+                with self.lock:
+                    self.switching = False
                 self.switch_lock.release()
 
-        threading.Thread(target=_do_switch, daemon=True).start()
+        try:
+            threading.Thread(target=_do_switch, daemon=True).start()
+        except Exception:
+            with self.lock:
+                self.switching = False
+            self.switch_lock.release()
+            raise
         return True
 
-HUB = StreamHub()
+# Unstarted at import: tests and discovery must not spawn ffmpeg/threads.
+# run() calls HUB.start() before serving; direct StreamHub() still starts.
+HUB = StreamHub(start_workers=False)
 
 def dispatch_device_cmd(cmd, dedupe_key=None):
     """Envia comando para o dispositivo ativo (Tablet via CommandBus ou Xiaomi)."""
@@ -10717,6 +10804,7 @@ EMBEDDED_DASHBOARD_HTML = r"""<!DOCTYPE html>
 """
 
 def run():
+    HUB.start()
     server = ThreadedHTTPServer((HOST, PORT), RequestHandler)
     print("==================================================")
     print(f" [✓] Servidor Multi-Canal Ativo em http://{HOST}:{PORT}")
