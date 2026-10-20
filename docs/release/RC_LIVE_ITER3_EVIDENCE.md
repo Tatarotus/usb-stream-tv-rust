@@ -16,9 +16,16 @@ The script resolved the requested revision to a commit but then built the
 - RED (before): at HEAD `335c855` the old script compared the current-tree
   `fuse_ntfs` (`24a57dbb…`, ITER#2) against the frozen `909e2f06…` and failed.
 - GREEN (after): when HEAD differs from the revision, the script creates a
-  temporary detached `git worktree` of that revision, builds it (with a shared
-  `CARGO_TARGET_DIR`), verifies, and removes the worktree on exit. When HEAD
-  equals the revision it builds in place.
+  temporary detached `git worktree` of that revision, builds it into its own
+  per-revision target directory (`target/verify/<short-sha>`), verifies, and
+  removes the worktree on exit. When HEAD equals the revision it builds in place
+  against `target/`.
+- A first implementation shared one `CARGO_TARGET_DIR` between the worktree and
+  the in-place build. Cargo then reported the in-place outputs as up to date
+  while the worktree build had already overwritten those same binaries on disk,
+  so the hash check compared against the wrong build and failed. Each build root
+  now owns its target directory; this is why the packaging step verifies before
+  it copies anything.
 
 The expected hashes are now chosen by the `# Revision:` line of
 `docs/release/RC_LIVE_ARM_SHA256*.txt` (matched against the commit, short

@@ -32,6 +32,7 @@ command -v git >/dev/null || { echo "git not found" >&2; exit 1; }
 
 BUILD_REV="$(git -C "${REPO_ROOT}" rev-parse --verify "${REVISION}^{commit}")"
 HEAD_REV="$(git -C "${REPO_ROOT}" rev-parse --verify 'HEAD^{commit}')"
+SHORT_REV="$(git -C "${REPO_ROOT}" rev-parse --short "${BUILD_REV}")"
 echo "==> revision: ${REVISION}"
 echo "==> revision commit: ${BUILD_REV}"
 
@@ -45,15 +46,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Every build root gets its own cargo target directory. Sharing one between two
+# source trees is unsafe: cargo can mark an output up-to-date for one tree while
+# another tree's build has overwritten the same binary on disk, so the hash
+# check would compare against a foreign build.
 if [ "${HEAD_REV}" != "${BUILD_REV}" ]; then
     echo "==> HEAD ${HEAD_REV} differs from the revision; building an isolated worktree"
     WORKTREE="$(mktemp -d "${TMPDIR:-/tmp}/rc-live-verify.XXXXXX")"
     rmdir "${WORKTREE}"
     git -C "${REPO_ROOT}" worktree add --detach "${WORKTREE}" "${BUILD_REV}" >/dev/null
     BUILD_ROOT="${WORKTREE}"
+    TARGET_DIR="${REPO_ROOT}/target/verify/${SHORT_REV}"
 else
     echo "==> HEAD matches the revision; building the current tree"
+    TARGET_DIR="${REPO_ROOT}/target"
 fi
+mkdir -p "${TARGET_DIR}"
+BIN_DIR="${TARGET_DIR}/${TARGET}/release"
 
 # Expected hashes are read from the revision under verification itself. Each
 # record file carries a `# Revision:` line naming the tag and/or commit it
@@ -61,7 +70,6 @@ fi
 # frozen 16d5991 record plus a newer RC). Matching by commit, short commit, the
 # revision as typed and any tag pointing at the commit keeps the record
 # unambiguous without a hard-coded filename.
-SHORT_REV="$(git -C "${REPO_ROOT}" rev-parse --short "${BUILD_REV}")"
 REV_TAGS="$(git -C "${REPO_ROOT}" tag --points-at "${BUILD_REV}" | tr '\n' ' ')"
 LABELS=" ${BUILD_REV} ${SHORT_REV} ${REVISION} ${REV_TAGS} "
 EXPECTED=""
@@ -89,10 +97,8 @@ if [ -z "${EXPECTED}" ]; then
         exit 1
     fi
 fi
-BIN_DIR="${REPO_ROOT}/target/${TARGET}/release"
-
 echo "==> building ${TARGET} (offline) from ${BUILD_ROOT}"
-( cd "${BUILD_ROOT}" && CARGO_TARGET_DIR="${REPO_ROOT}/target" cargo build \
+( cd "${BUILD_ROOT}" && CARGO_TARGET_DIR="${TARGET_DIR}" cargo build \
     --workspace --release --target "${TARGET}" --offline )
 
 echo "==> checking ARM binary hashes against ${EXPECTED}"
