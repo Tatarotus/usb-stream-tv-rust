@@ -197,12 +197,16 @@ class TestFindMainVideoFile:
     def test_unreadable_file_skipped(self):
         with tempfile.TemporaryDirectory() as d:
             good = os.path.join(d, "good.mp4")
+            bad = os.path.join(d, "bad.mkv")
             open(good, "wb").write(b"x" * 100)
-            with mock.patch("os.path.getsize", side_effect=[OSError("denied"), 100]):
-                # first file raises, must not crash — need 2 files to exercise path
-                open(os.path.join(d, "bad.mkv"), "wb").write(b"x")
-                # result may be None or good depending on walk order; key: no exception
-                assert find_main_video_file(d) in (None, os.path.abspath(good), mock.ANY) or True
+            open(bad, "wb").write(b"x")
+            files = [(d, [], ["bad.mkv", "good.mp4"])]
+            with mock.patch("torrent_downloader.os.walk", return_value=files), mock.patch(
+                "torrent_downloader.os.path.getsize",
+                side_effect=[OSError("denied"), 100],
+            ):
+                # The unreadable first candidate must be skipped, not selected.
+                assert find_main_video_file(d) == os.path.abspath(good)
 
 
 # ------------------------------------------------- _read_and_normalize_srt
