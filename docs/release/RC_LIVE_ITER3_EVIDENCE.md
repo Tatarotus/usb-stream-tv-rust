@@ -36,7 +36,9 @@ Demonstrated result — verifying the frozen tag while HEAD is the new revision:
 
 ```text
 $ scripts/verify_rc_live_release.sh rc-001-live-16d5991
-==> HEAD 335c855 differs from the revision; building an isolated worktree
+==> revision commit: 16d5991c6868fca4b109fd0ee38b11106b10af58
+==> HEAD 5b685db... differs from the revision; building an isolated worktree
+==> building armv7-unknown-linux-gnueabihf (offline) from /tmp/rc-live-verify.XXXXXX
 ==> checking ARM binary hashes against .../docs/release/RC_LIVE_ARM_SHA256.txt
 OK      fuse_ntfs  909e2f066efb4ef2d64034546f11131c52216c920858e6bfec12b71ec3bae898
 OK      fuse_direct  a6eb746872834a119a91537889b4b2d8d68ada58a206712d759df80d9a020f46
@@ -66,8 +68,8 @@ the six Rust files as they were before the ITER#2 fixes. Regenerated over the
 allowlist:
 
 ```text
-files: 93
-manifest_sha256: f5fb0e783b19c7d3959c39087f56e4a07814ea2d1033985c991edb14f82f1544
+files: 94
+manifest_sha256: c4b9143361fef28e887d5d9e52ac485a4d394e82f74e2c5ed509df8462f85f50
 ```
 
 `sha256sum -c docs/release/RC_LIVE_RUNTIME_MANIFEST.sha256` → all OK.
