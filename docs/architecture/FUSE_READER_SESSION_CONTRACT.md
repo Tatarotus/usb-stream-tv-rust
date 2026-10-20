@@ -1,0 +1,16 @@
+# FUSE reader/session contract
+
+CONFIRMED topology: the kernel gadget opens `tv_stream.img`; TV NTFS file browsing is SCSI byte reads through that already-open backing fd. Original C explicitly warns about this (`src/ntfs/fuse_ntfs.c:587-593`). FUSE OPEN is not a remote-control Return event. Current Rust uses global anchor/xform and fh1 (`dispatcher.rs:480-497`, `live_engine.rs:46-50,120-125`). No evidence supports a distinct TV media session for every host OPEN.
+
+## Required contracts (proposed)
+
+- Track backing-device attachment, host FUSE handle and inferred TV playback session as different identities. Validate inode before an OPEN can affect live state. Directory/VOD/invalid-node access must not reset an unrelated live stream. RELEASE closes host resources only; its absence does not disprove TV Return.
+- Maintain successful-media cursor, virtual requested offset, mapped stream position and attempted read timestamp separately. NULL-only/probe replies do not update successful chain or timestamp checkpoints. Request-observation/idle detection time may still advance; C updates it before delivery (fuse_ntfs.c:1211). Do not freeze it under the assumption that it is a successful-media clock. Mixed replies need an explicit success accounting rule and packet-safe boundary; do not infer success from full reply length.
+- Mapping is `base_spos + (foff - base_foff)` with checked signed-direction arithmetic, bounded to resident ring/correct generation. Large/negative/overflow offsets and overwritten positions require deterministic classified results, never panics or allocation based on virtual offset.
+- Probes: one/two transient blocks cannot commit a new anchor. Out-of-window probes cannot poison reference timestamps or active-chain cursor. Confirmed seek requires at leastK>=3 sequential blocks plus explicit existing byte/gap guards; do not loosen current guards casually.
+- A verified reopen should select current playable live band and preserve decoder timeline even if TV reuses cached prefix. First determine whether firmware reads data needed to make this achievable. Stable file identity and finite advertised disk bounds remain unchanged during ordinary source outage.
+- Bounded waits release producer locks; cancellation or generation change invalidates stale read commit. Validate residency and copy coherently against wrap. Shared read serialization is a deliberate policy, not a substitute for feeder/flush synchronization.
+
+CONFIRMED contradiction needing repair design: `select_resume_anchor` preserves resident history; strict_contract.rs:689-755 requires all-NULL progress and uses that false adjacency for recovery. Initial red regression must expose this; later fix cannot simply change tests to accept stuck NULL playback. Separate attempted-request continuity from successful-media continuity if evidence requires it.
+
+Hardware protocol:60s play, Return,40s idle, reopen, repeat with10/20/66/180s idle and bookmarks below/above8MiB, overwritten/unoverwritten ring. Correlate backing OPEN/RELEASE, read offsets, mapped positions, generation/anchor reason, displayed timecode and source time. Measure live age from program timestamp, not only writer minus reader bytes. No automatic re-enumeration experiment is authorized.
