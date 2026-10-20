@@ -54,4 +54,7 @@ pub trait StreamBackend: Send + Sync {
         dst: &mut [u8],
         deadline_ms: u64,
     ) -> Result<usize, std::io::Error>;
+
+    /// Optional notification when the kernel opens the backing storage file.
+    fn on_open(&self) {}
 }

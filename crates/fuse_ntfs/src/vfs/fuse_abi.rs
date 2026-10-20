@@ -16,10 +16,11 @@ pub const FUSE_FORGET: u32 = 2;
 pub const FUSE_GETATTR: u32 = 3;
 pub const FUSE_OPEN: u32 = 14;
 pub const FUSE_READ: u32 = 15;
+pub const FUSE_WRITE: u32 = 16;
 pub const FUSE_STATFS: u32 = 17;
-/// FUSE_RELEASE is 18 in the Linux kernel ABI (8 is FUSE_MKDIR; a release
-/// handler must never swallow mkdir requests, so the audited value from the
-/// `fuse_direct` sibling engine is used here verbatim).
+/// FUSE_RELEASE is 18 in the Linux kernel ABI (8 is FUSE_MKNOD, 9 is FUSE_MKDIR;
+/// a release handler must never swallow mknod/mkdir requests, so the audited
+/// value from the `fuse_direct` sibling engine is used here verbatim).
 pub const FUSE_RELEASE: u32 = 18;
 pub const FUSE_INIT: u32 = 26;
 pub const FUSE_OPENDIR: u32 = 27;
@@ -148,6 +149,25 @@ pub struct fuse_read_in {
     pub read_flags: u32,
     pub lock_owner: u64,
     pub flags: u32,
+    pub padding: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct fuse_write_in {
+    pub fh: u64,
+    pub offset: u64,
+    pub size: u32,
+    pub write_flags: u32,
+    pub lock_owner: u64,
+    pub flags: u32,
+    pub padding: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, Default)]
+pub struct fuse_write_out {
+    pub size: u32,
     pub padding: u32,
 }
 

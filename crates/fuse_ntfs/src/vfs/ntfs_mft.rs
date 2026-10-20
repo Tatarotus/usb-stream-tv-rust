@@ -395,37 +395,47 @@ pub fn probe_layout(file: &File, vbr: &VbrInfo) -> VolumeLayout {
         if apply_fixup(&mut rec, attrs_offset).is_err() {
             continue;
         }
-        if let Ok(Some(fn_attr)) = find_attr(&rec, attrs_offset, ATTR_FILE_NAME) {
-            let val_off = fn_attr.offset + fn_attr.runlist_offset as usize;
-            let val_end = val_off + fn_attr.real_size as usize;
-            if val_end <= rec.len() {
-                let value = &rec[val_off..val_end];
-                if let Some(fn_name) = parse_file_name(value) {
-                    if fn_name.name == LIVE_FILE_NAME || fn_name.name == LIVE_FILE_NAME_ALT {
-                        layout.live_file_inode = i as u64;
-                        if let Ok(Some(data_attr)) = find_attr(&rec, attrs_offset, ATTR_DATA) {
-                            if data_attr.non_resident && data_attr.real_size > 0 {
-                                layout.data_size = data_attr.real_size;
-                                // Invert the runlist into disk extents: the TV
-                                // addresses the file by cluster LBA, and the
-                                // daemon needs LBA -> file offset to feed the
-                                // ring buffer. Falls back to the volume-tail
-                                // extent when the runlist is empty/unusable.
-                                let rl_start = data_attr.offset + data_attr.runlist_offset as usize;
-                                let rl_end = (data_attr.offset + data_attr.length as usize).min(rec.len());
-                                if rl_start < rl_end {
-                                    let extents = extents_from_runs(&parse_runlist(&rec[rl_start..rl_end]));
-                                    if !extents.is_empty() {
-                                        layout.data_start_byte = extents[0].disk_start_byte;
-                                        layout.extents = extents;
-                                    }
-                                }
-                            }
+        let mut cur = attrs_offset;
+        let mut is_live_record = false;
+        while let Ok(Some(attr)) = parse_attr_header(&rec, cur) {
+            if attr.attr_type == ATTR_FILE_NAME {
+                let val_off = attr.offset + attr.runlist_offset as usize;
+                let val_end = val_off + attr.real_size as usize;
+                if val_end <= rec.len() {
+                    let value = &rec[val_off..val_end];
+                    if let Some(fn_name) = parse_file_name(value) {
+                        if fn_name.name == LIVE_FILE_NAME || fn_name.name == LIVE_FILE_NAME_ALT {
+                            is_live_record = true;
+                            break;
                         }
-                        return layout;
                     }
                 }
             }
+            cur += attr.length as usize;
+        }
+
+        if is_live_record {
+            layout.live_file_inode = i as u64;
+            if let Ok(Some(data_attr)) = find_attr(&rec, attrs_offset, ATTR_DATA) {
+                if data_attr.non_resident && data_attr.real_size > 0 {
+                    layout.data_size = data_attr.real_size;
+                    // Invert the runlist into disk extents: the TV
+                    // addresses the file by cluster LBA, and the
+                    // daemon needs LBA -> file offset to feed the
+                    // ring buffer. Falls back to the volume-tail
+                    // extent when the runlist is empty/unusable.
+                    let rl_start = data_attr.offset + data_attr.runlist_offset as usize;
+                    let rl_end = (data_attr.offset + data_attr.length as usize).min(rec.len());
+                    if rl_start < rl_end {
+                        let extents = extents_from_runs(&parse_runlist(&rec[rl_start..rl_end]));
+                        if !extents.is_empty() {
+                            layout.data_start_byte = extents[0].disk_start_byte;
+                            layout.extents = extents;
+                        }
+                    }
+                }
+            }
+            return layout;
         }
     }
     layout
@@ -551,38 +561,46 @@ pub fn parse_record_meta(rec: &[u8]) -> Result<MftRecordMeta, MftError> {
 }
 #[derive(Debug, Clone, Copy)]
 pub struct AttrHeader { pub offset: usize, pub attr_type: u32, pub length: u32, pub non_resident: bool, pub runlist_offset: u16, pub real_size: u64 }
+
+pub fn parse_attr_header(rec: &[u8], cur: usize) -> Result<Option<AttrHeader>, MftError> {
+    if cur + 8 > rec.len() {
+        return Ok(None);
+    }
+    let a_type = rd_u32(rec, cur)?;
+    if a_type == 0xFFFF_FFFF {
+        return Ok(None);
+    }
+    let length = rd_u32(rec, cur + 4)?;
+    if length == 0 || cur + length as usize > rec.len() {
+        return Ok(None);
+    }
+    let non_resident = rec.get(cur + 8).copied().unwrap_or(0) != 0;
+    let (runlist_offset, real_size) = if non_resident {
+        let ro = rd_u16(rec, cur + 0x20).unwrap_or(0);
+        let rs = rd_u64(rec, cur + 0x30).unwrap_or(0);
+        (ro, rs)
+    } else {
+        let ro = rd_u16(rec, cur + 0x14).unwrap_or(0);
+        let vs = rd_u32(rec, cur + 0x10).unwrap_or(0) as u64;
+        (ro, vs)
+    };
+    Ok(Some(AttrHeader {
+        offset: cur,
+        attr_type: a_type,
+        length,
+        non_resident,
+        runlist_offset,
+        real_size,
+    }))
+}
+
 pub fn find_attr(rec: &[u8], attrs_offset: usize, attr_type: u32) -> Result<Option<AttrHeader>, MftError> {
     let mut cur = attrs_offset;
-    while cur + 8 <= rec.len() {
-        let a_type = rd_u32(rec, cur)?;
-        if a_type == 0xFFFF_FFFF {
-            return Ok(None);
+    while let Some(attr) = parse_attr_header(rec, cur)? {
+        if attr.attr_type == attr_type {
+            return Ok(Some(attr));
         }
-        let length = rd_u32(rec, cur + 4)?;
-        if length == 0 || cur + length as usize > rec.len() {
-            return Ok(None);
-        }
-        if a_type == attr_type {
-            let non_resident = rec.get(cur + 8).copied().unwrap_or(0) != 0;
-            let (runlist_offset, real_size) = if non_resident {
-                let ro = rd_u16(rec, cur + 0x20).unwrap_or(0);
-                let rs = rd_u64(rec, cur + 0x30).unwrap_or(0);
-                (ro, rs)
-            } else {
-                let ro = rd_u16(rec, cur + 0x14).unwrap_or(0);
-                let vs = rd_u32(rec, cur + 0x10).unwrap_or(0) as u64;
-                (ro, vs)
-            };
-            return Ok(Some(AttrHeader {
-                offset: cur,
-                attr_type: a_type,
-                length,
-                non_resident,
-                runlist_offset,
-                real_size,
-            }));
-        }
-        cur += length as usize;
+        cur += attr.length as usize;
     }
     Ok(None)
 }
@@ -1064,6 +1082,42 @@ mod tests {
         // anti-cache cycle; the probe must still find the live file.
         let mut rec = synth_record();
         let next = put_named_file_name_attr(&mut rec, ATTRS_OFF, NTFS_ROOT_INODE, LIVE_FILE_NAME_ALT);
+        let next = put_runlist_data_attr(&mut rec, next, 1 << 30, &[(23, 1_907_388)]);
+        end_attrs(&mut rec, next);
+        file.write_all_at(&rec, MFT_BYTE_OFFSET).expect("write mft record");
+
+        let layout = probe_layout(&file, &NtfsTemplate::default_vbr());
+        assert_eq!(layout.live_file_inode, 0);
+        assert_eq!(layout.data_start_byte, 23 * CLUSTER_SIZE as u64);
+        assert_eq!(layout.data_size, 1 << 30);
+
+        drop(file);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn probe_layout_matches_long_name_when_dos_name_precedes() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!(
+            "fuse_ntfs_dosname_{}_{}.bin",
+            std::process::id(),
+            nanos
+        ));
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .expect("scratch mft image");
+        let mut rec = synth_record();
+        // First put a DOS 8.3 name attribute (e.g. "TVAOVI~1.TRP")
+        let next = put_named_file_name_attr(&mut rec, ATTRS_OFF, NTFS_ROOT_INODE, "TVAOVI~1.TRP");
+        // Then put the long Win32 name attribute ("TV AO VIVO.trp")
+        let next = put_named_file_name_attr(&mut rec, next, NTFS_ROOT_INODE, LIVE_FILE_NAME);
         let next = put_runlist_data_attr(&mut rec, next, 1 << 30, &[(23, 1_907_388)]);
         end_attrs(&mut rec, next);
         file.write_all_at(&rec, MFT_BYTE_OFFSET).expect("write mft record");

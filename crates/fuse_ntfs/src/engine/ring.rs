@@ -53,11 +53,24 @@ pub fn fill_null_at(dst: &mut [u8], abs_off: u64) {
     }
 }
 
+/// Below this cushion the reader is paced at the slow tier.
+pub const PACE_LEAD_SLOW: u64 = 4 * 1024 * 1024;
+/// At/above this cushion the reader is paced at the fast tier.
+pub const PACE_LEAD_FAST: u64 = 8 * 1024 * 1024;
+/// Token-bucket window shared by all FUSE reader threads.
+pub const PACE_WINDOW_MS: u64 = 250;
+/// Hard clamp on any single pacing sleep slice (AGENTS.md §2.2).
+pub const MAX_SLEEP_SLICE_MS: u64 = 50;
+/// Total cooperative live-edge wait budget per FUSE read.
+pub const EDGE_WAIT_BUDGET_MS: u64 = 500;
+/// Minimum bytes in ring before first play start.
+pub const MIN_STREAM_START: u64 = 6 * 1024 * 1024;
+
 /// Reader pacing ceilings (bytes/second), selected by the lead band.
 ///
-/// * `Slow480` — cushion nearly empty (< 2 MiB): match the slowest feeder.
-/// * `Mid600`  — healthy cushion (2..8 MiB).
-/// * `Fast900` — deep cushion (>= 8 MiB): let the decoder catch up.
+/// * `Slow480` — cushion nearly empty (< 4 MiB): 480 KiB/s.
+/// * `Mid600`  — healthy cushion (4..8 MiB): 600 KiB/s.
+/// * `Fast900` — deep cushion (>= 8 MiB): 900 KiB/s.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaceTier {
     Slow480,
@@ -66,12 +79,12 @@ pub enum PaceTier {
 }
 
 impl PaceTier {
-    /// Bytes/second ceiling for this tier.
+    /// Bytes/second ceiling for this tier (KiB/s * 1024).
     pub const fn rate(self) -> u64 {
         match self {
-            PaceTier::Slow480 => 480_000,
-            PaceTier::Mid600 => 600_000,
-            PaceTier::Fast900 => 900_000,
+            PaceTier::Slow480 => 480 * 1024,
+            PaceTier::Mid600 => 600 * 1024,
+            PaceTier::Fast900 => 900 * 1024,
         }
     }
 
@@ -86,17 +99,6 @@ impl PaceTier {
         }
     }
 }
-
-/// Token-bucket window shared by all FUSE reader threads.
-pub const PACE_WINDOW_MS: u64 = 250;
-/// Hard clamp on any single pacing sleep (AGENTS.md §2.2).
-pub const MAX_SLEEP_SLICE_MS: u64 = 50;
-/// Total cooperative live-edge wait budget per FUSE read.
-pub const EDGE_WAIT_BUDGET_MS: u64 = 500;
-/// Below this cushion the reader is paced at the slow tier.
-pub const PACE_LEAD_SLOW: u64 = 2 * 1024 * 1024;
-/// At/above this cushion the reader is paced at the fast tier.
-pub const PACE_LEAD_FAST: u64 = 8 * 1024 * 1024;
 
 /// Ring data plane. All fields are private to the engine mutex; access goes
 /// through the checked helpers below (no direct indexing).
@@ -172,6 +174,12 @@ impl RingData {
 
     pub fn now_ms(&self) -> u64 {
         self.start.elapsed().as_millis() as u64
+    }
+
+    /// Shifts the base instant backward in time, simulating the passage of time
+    /// without blocking test execution.
+    pub fn shift_time_back(&mut self, dt: Duration) {
+        self.start = self.start.checked_sub(dt).unwrap_or(self.start);
     }
 
     /// Physical index of a monotonic position inside the ring.
@@ -257,8 +265,22 @@ impl RingData {
         pos >= self.ring_old() && pos.saturating_add(len) <= self.s_write
     }
 
+    /// Resets the ring data plane (flushes cursors and token bucket).
+    pub fn clear(&mut self) {
+        self.s_write = 0;
+        self.have_data = false;
+        self.pace_tok = 0;
+        self.pace_tok_ms = 0;
+        self.null_bytes = 0;
+        self.served_bytes = 0;
+        self.near_starve = 0;
+        self.edge_waits = 0;
+        self.overwritten_blocks = 0;
+        self.last_lead = 0;
+    }
+
     /// Token-bucket accounting: charges `n` served bytes and returns the pacing sleep
-    /// in milliseconds for debt, clamped to `MAX_SLEEP_SLICE_MS`.
+    /// in milliseconds for debt. The caller sleeps off the debt in slices of `MAX_SLEEP_SLICE_MS`.
     /// Zero means "no sleep needed" (e.g. lead >= 12MB or within burst allowance).
     pub fn pace_note(&mut self, n: u64, lead: u64, now_ms: u64) -> u64 {
         self.last_lead = lead;
@@ -281,8 +303,7 @@ impl RingData {
         self.pace_tok_ms = now_ms;
         self.pace_tok -= n as i64;
         if self.pace_tok < 0 {
-            let need_ms = ((-self.pace_tok) as u64 * 1000) / rate_bps;
-            need_ms.min(MAX_SLEEP_SLICE_MS)
+            ((-self.pace_tok) as u64 * 1000) / rate_bps
         } else {
             0
         }
@@ -376,20 +397,25 @@ impl Ring {
         self.cv.notify_all();
     }
 
+    /// Wakes all threads waiting on live-edge condvar (e.g. after flush/clear).
+    pub fn notify_all(&self) {
+        self.cv.notify_all();
+    }
+
     /// Bounded cooperative wait at the live edge: blocks until `s_write`
-    /// advances past `start` or the budget expires, waking on feeder
+    /// reaches or exceeds `needed_end` or the budget expires, waking on feeder
     /// notifications. Each condvar wait is sliced to <= 50 ms so callers can
     /// re-check shutdown/deadline state. Returns true when data is available.
-    pub fn wait_edge(&self, start: u64, budget: Duration) -> bool {
+    pub fn wait_edge(&self, needed_end: u64, budget: Duration) -> bool {
         let deadline = Instant::now() + budget;
         let mut rd = self.lock();
         loop {
-            if rd.s_write() > start {
+            if rd.s_write() >= needed_end {
                 return true;
             }
             let now = Instant::now();
             if now >= deadline {
-                return false;
+                return rd.s_write() >= needed_end;
             }
             let slice = (deadline - now).min(Duration::from_millis(MAX_SLEEP_SLICE_MS));
             let (guard, _timeout) = self
@@ -430,9 +456,9 @@ mod tests {
 
     #[test]
     fn pace_tier_rates() {
-        assert_eq!(PaceTier::Slow480.rate(), 480_000);
-        assert_eq!(PaceTier::Mid600.rate(), 600_000);
-        assert_eq!(PaceTier::Fast900.rate(), 900_000);
+        assert_eq!(PaceTier::Slow480.rate(), 480 * 1024);
+        assert_eq!(PaceTier::Mid600.rate(), 600 * 1024);
+        assert_eq!(PaceTier::Fast900.rate(), 900 * 1024);
         assert_eq!(PaceTier::for_lead(1_000_000), PaceTier::Slow480);
         assert_eq!(PaceTier::for_lead(4 * 1024 * 1024), PaceTier::Mid600);
         assert_eq!(PaceTier::for_lead(16 * 1024 * 1024), PaceTier::Fast900);
@@ -508,32 +534,34 @@ mod tests {
     }
 
     #[test]
-    fn token_bucket_clamps_to_50ms() {
+    fn token_bucket_calculates_sleep_debt() {
         let mut rd = RingData::with_capacity(188 * 4);
-        // Mid tier, cushion < 12 MB: big charge requests a large sleep — clamped to 50 ms.
+        // Mid tier, cushion < 12 MB: big charge requests a large sleep debt.
         let sleep = rd.pace_note(900_000, 4 * 1024 * 1024, 0);
-        assert_eq!(sleep, MAX_SLEEP_SLICE_MS);
+        assert!(sleep >= 1000);
         // Deep cushion (>= 12 MB): never throttled (always 0 sleep).
         let mut rd2 = RingData::with_capacity(188 * 4);
         assert_eq!(rd2.pace_note(900_000, 16 * 1024 * 1024, 0), 0);
     }
 
     #[test]
-    fn token_bucket_slow_tier_sleeps_less() {
-        let mut rd = RingData::with_capacity(188 * 4);
-        // Same excess under the slow tier resolves to a smaller sleep.
-        let sleep = rd.pace_note(480_000, 1_000, 0);
-        assert!(sleep > 0 && sleep <= MAX_SLEEP_SLICE_MS);
-        assert_eq!(sleep, MAX_SLEEP_SLICE_MS); // clamped
+    fn token_bucket_slow_tier_sleeps_more_for_same_excess() {
+        let mut rd_slow = RingData::with_capacity(188 * 4);
+        let sleep_slow = rd_slow.pace_note(480_000, 1_000, 0);
+
+        let mut rd_mid = RingData::with_capacity(188 * 4);
+        let sleep_mid = rd_mid.pace_note(480_000, 6 * 1024 * 1024, 0);
+
+        assert!(sleep_slow > sleep_mid);
     }
 
     #[test]
     fn ring_mutex_notifies_waiters() {
         let ring = Ring::with_capacity(188 * 4);
-        assert!(!ring.wait_edge(0, Duration::from_millis(10)));
-        ring.write_chunk(&[0xCC; 188]);
-        assert!(ring.wait_edge(0, Duration::from_millis(50)));
         assert!(!ring.wait_edge(188, Duration::from_millis(10)));
+        ring.write_chunk(&[0xCC; 188]);
+        assert!(ring.wait_edge(188, Duration::from_millis(50)));
+        assert!(!ring.wait_edge(376, Duration::from_millis(10)));
     }
 
     #[test]

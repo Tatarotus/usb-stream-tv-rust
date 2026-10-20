@@ -179,7 +179,7 @@ pub fn ts_write_pcr(v: u64, pkt: &mut [u8]) {
     pkt[7] = (base >> 17) as u8;
     pkt[8] = (base >> 9) as u8;
     pkt[9] = (base >> 1) as u8;
-    pkt[10] = (((base & 0x01) as u8) << 7) | ((ext >> 8) as u8 & 0x01);
+    pkt[10] = (((base & 0x01) as u8) << 7) | 0x7E | ((ext >> 8) as u8 & 0x01);
     pkt[11] = ext as u8;
 }
 
@@ -335,6 +335,7 @@ pub struct Epoch {
     pub delta_pcr: i64,
     /// Per-PID continuity-counter shift (identity for untouched PIDs).
     pub cc_add: [u8; 8192],
+    pub is_identity: bool,
 }
 
 impl Epoch {
@@ -344,6 +345,7 @@ impl Epoch {
             delta_pts: 0,
             delta_pcr: 0,
             cc_add: [0u8; 8192],
+            is_identity: true,
         }
     }
 }
@@ -493,14 +495,14 @@ impl TsXformState {
             if let Some(raw_pts) = raw.pts {
                 let target = pts_wrap(r.pts.saturating_add(SPLICE_PTS_EPS));
                 ep.delta_pts = pts_sub(target, raw_pts);
+                ep.delta_pcr = ep.delta_pts.wrapping_mul(300);
                 spliced = true;
-            }
-            if r.pcr_valid {
+            } else if r.pcr_valid {
                 if let Some(raw_pcr) = raw.pcr {
-                    // Same physical epsilon as PTS: one 90 kHz tick == 300
-                    // PCR ticks at 27 MHz.
                     let target = pcr_apply(r.pcr, SPLICE_PTS_EPS as i64 * 300);
                     ep.delta_pcr = pcr_sub(target, raw_pcr);
+                    ep.delta_pts = ep.delta_pcr / 300;
+                    spliced = true;
                 }
             }
             for i in 0..r.ncc {
@@ -510,6 +512,9 @@ impl TsXformState {
                     // Next delivered CC on this PID must be delivered + 1.
                     ep.cc_add[idx] = (delivered.wrapping_add(1).wrapping_sub(raw_cc)) & 0x0F;
                 }
+            }
+            if spliced || ep.delta_pts != 0 || ep.delta_pcr != 0 || ep.cc_add.iter().any(|&x| x != 0) {
+                ep.is_identity = false;
             }
         }
         self.epoch = ep;
@@ -530,6 +535,9 @@ impl TsXformState {
             return None; // NULL packets are never touched
         }
         let raw_cc = ts_cc(pkt);
+        if self.epoch.is_identity {
+            return Some((pid, raw_cc));
+        }
         let new_cc = raw_cc.wrapping_add(self.epoch.cc_add[usize::from(pid)]) & 0x0F;
         pkt[3] = (pkt[3] & 0xF0) | new_cc;
 
@@ -827,7 +835,7 @@ impl TsXformState {
                         s.pts = Some(pts);
                     }
                 }
-                if s.pts.is_some() && s.pcr.is_some() && s.ncc >= 2 {
+                if s.pts.is_some() && s.pcr.is_some() && s.ncc >= REF_CC_SLOTS {
                     break;
                 }
             }

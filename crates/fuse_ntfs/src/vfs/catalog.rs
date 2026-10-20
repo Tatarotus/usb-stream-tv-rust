@@ -11,8 +11,8 @@ pub const SWITCH_THRESHOLD: u64 = 1024 * 1024;
 pub const DIR_INO_CANAIS: u64 = 3;
 pub const DIR_INO_FILMES: u64 = 4;
 pub const DIR_INO_FAVORITOS: u64 = 5;
-pub const LIVE_INO_BASE: u64 = 0x10;
-pub const VOD_INO_BASE: u64 = 0x40;
+pub const LIVE_INO_BASE: u64 = 0x1000;
+pub const VOD_INO_BASE: u64 = 0x10000;
 pub const STREAM_INO: u64 = FILE_INO;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

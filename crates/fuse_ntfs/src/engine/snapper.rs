@@ -114,12 +114,27 @@ pub fn d12_snap(win: &[u8], base: u64, target: u64, s_write: u64) -> SnapOut {
     if !win.is_empty() {
         let start_p = off0.min(win.len().saturating_sub(TS_PKT_SZ));
         let mut p = start_p;
+        let mut no_sps_known_from = usize::MAX;
         while p + TS_PKT_SZ <= win.len() {
-            if is_pat(win, p) && has_sps_after(win, p, SPS_LOOKAHEAD) {
-                return SnapOut {
-                    pos: base + p as u64,
-                    tier: D12Tier::PatSps,
-                };
+            if is_pat(win, p) {
+                let limit = p.saturating_add(SPS_LOOKAHEAD as usize).min(win.len());
+                let scan_limit = limit.min(no_sps_known_from);
+                let mut found_sps = false;
+                let mut scan_p = p;
+                while scan_p + TS_PKT_SZ <= scan_limit {
+                    if ts_has_sps(&win[scan_p..scan_p + TS_PKT_SZ]) {
+                        found_sps = true;
+                        break;
+                    }
+                    scan_p += TS_PKT_SZ;
+                }
+                if found_sps {
+                    return SnapOut {
+                        pos: base + p as u64,
+                        tier: D12Tier::PatSps,
+                    };
+                }
+                no_sps_known_from = p;
             }
             if p < TS_PKT_SZ {
                 break;
