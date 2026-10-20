@@ -207,7 +207,7 @@ EOF
 } > "${OUT_DIR}/RELEASE_NOTES.md"
 
 python3 - "${OUT_DIR}" "${COMMIT}" "${SHORT}" "${REVISION}" <<'PY'
-import hashlib, json, os, sys
+import hashlib, json, os, sys, datetime
 out, commit, short, revision = sys.argv[1:5]
 
 def sha(p):
@@ -231,7 +231,7 @@ manifest = {
     "revision": revision,
     "commit": commit,
     "short": short,
-    "generated_utc": __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "generated_utc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "artifacts": artifacts,
     "server_py_sha256": sha(os.path.join(out, "host", "server.py")),
     "excluded": [".env", "parser integration", "catalog_cache", "favorites.json",
