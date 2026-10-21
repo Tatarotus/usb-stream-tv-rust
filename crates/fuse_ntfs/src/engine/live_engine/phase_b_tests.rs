@@ -263,3 +263,208 @@ fn new_generation_after_reanchor_flush_is_served() {
         assert!(a.epoch_seq > epoch_before + 1);
     });
 }
+
+// ================================================ V2 concurrency (TASK-008)
+//
+// The qualified-return "request observation" must never calibrate a stale epoch
+// and must stay distinct from a successful-media checkpoint when a competing
+// delivery or a generation-changing flush lands while the observation is parked
+// before its commit (the F4 window).
+
+/// Builds a washed-out, idle (> RESUME_GAP_MS), behind-cursor state and returns
+/// the file offset a qualified return would observe.
+fn qualified_return_fixture(e: &LiveEngine) -> u64 {
+    establish(e, &mk_stream(42_000, 0x55));
+
+    // Play forward to a ~4 MiB cursor.
+    let mut dst = vec![0u8; READ_LEN];
+    let mut foff = 0u64;
+    while foff < 4 * 1024 * 1024 {
+        e.serve_live(0, foff, &mut dst, 0);
+        foff += READ_LEN as u64;
+    }
+    let cursor = e.anchor.lock().unwrap().last_fend;
+    assert!(cursor >= 4 * 1024 * 1024, "playback cursor built");
+
+    // Wash the whole playback region out with ~169 MiB of new stream (the ring
+    // holds RINGSZ = 128 MiB, so the write head must pass capacity + the
+    // playback region), then idle beyond both RETURN_IDLE_MS and
+    // RESUME_GAP_MS (20 s).
+    e.ring.write_chunk(&mk_stream(900_000, 0x77));
+    e.ring.lock().shift_time_back(Duration::from_secs(21));
+
+    // More than RESUME_JUMP behind the cursor, inside the washed-out region.
+    let f = cursor - 1024 * 1024;
+    let base = e.anchor.lock().unwrap().base_spos;
+    let ring_old = e.ring.lock().ring_old();
+    assert!(base + f < ring_old, "observation maps behind ring_old");
+    f
+}
+
+/// V2a: a flush lands while the qualified observation is parked before its
+/// commit. The observation must publish nothing: no cursor, no saved calibration
+/// reference, no epoch/transformer change beyond the flush itself.
+#[test]
+fn qualified_observation_flush_race_publishes_no_stale_cursor() {
+    let e = LiveEngine::new();
+    let f = qualified_return_fixture(&e);
+    let epoch_before = e.anchor.lock().unwrap().epoch_seq;
+    let gen_before = e.anchor.lock().unwrap().gen;
+
+    test_seam::arm();
+    thread::scope(|s| {
+        let reader = s.spawn(|| {
+            let mut d = vec![0u8; READ_LEN];
+            e.serve_live(0, f, &mut d, 0);
+            d
+        });
+        test_seam::wait_reached();
+        e.flush();
+        test_seam::release();
+        let out = reader.join().expect("reader");
+        assert_null(&out);
+    });
+
+    let a = e.anchor.lock().unwrap();
+    assert!(!a.active, "flush invalidated the anchor");
+    assert_eq!(
+        a.last_fend,
+        u64::MAX,
+        "a stale observation must not publish a chain cursor"
+    );
+    assert_eq!(
+        a.saved_delivery_fend,
+        u64::MAX,
+        "a stale observation must not save a calibration reference"
+    );
+    assert_eq!(a.epoch_seq, epoch_before + 1, "flush epoch only");
+    assert_eq!(a.gen, gen_before + 1, "flush generation only");
+}
+
+/// V2 control: without a competing event the same fixture publishes the
+/// REQUEST cursor (chain advances so the next read is adjacent) while keeping
+/// the genuine delivered end in `saved_delivery_fend` for calibration, and
+/// without touching the epoch. This proves the two race tests above are not
+/// vacuous: the observation path is genuinely taken.
+#[test]
+fn qualified_observation_without_race_publishes_request_cursor() {
+    let e = LiveEngine::new();
+    let f = qualified_return_fixture(&e);
+    let a0 = {
+        let a = e.anchor.lock().unwrap();
+        (a.last_fend, a.epoch_seq)
+    };
+
+    let mut d = vec![0u8; READ_LEN];
+    e.serve_live(0, f, &mut d, 0);
+    assert_null(&d);
+
+    let a = e.anchor.lock().unwrap();
+    assert_eq!(
+        a.last_fend,
+        f + READ_LEN as u64,
+        "the request observation advances the chain cursor"
+    );
+    assert_eq!(
+        a.saved_delivery_fend, a0.0,
+        "the genuine delivered end is preserved for calibration"
+    );
+    assert_eq!(a.epoch_seq, a0.1, "the observation never splices");
+}
+
+/// V2b: a competing SUCCESSFUL delivery (cold restart re-anchor) lands while the
+/// qualified observation is parked. The observation must not calibrate the new
+/// epoch from its stale request offset; the cursor and `saved_delivery_fend`
+/// must follow the successful delivery only.
+#[test]
+fn qualified_observation_competing_delivery_stays_distinct() {
+    let e = LiveEngine::new();
+    let f = qualified_return_fixture(&e);
+    let epoch_before = e.anchor.lock().unwrap().epoch_seq;
+
+    test_seam::arm();
+    thread::scope(|s| {
+        let reader = s.spawn(|| {
+            let mut d = vec![0u8; READ_LEN];
+            e.serve_live(0, f, &mut d, 0);
+            d
+        });
+        test_seam::wait_reached();
+        // Competing successful delivery: a cold restart read re-anchors to the
+        // live band and bumps the anchor generation.
+        let mut live = vec![0u8; READ_LEN];
+        e.serve_live(0, 0, &mut live, 0);
+        test_seam::release();
+        let out = reader.join().expect("reader");
+        assert_null(&out);
+        assert!(
+            live.iter().any(|b| *b == 0x77),
+            "the competing read delivered new-stream media"
+        );
+    });
+
+    let a = e.anchor.lock().unwrap();
+    assert!(a.active, "the successful delivery published its anchor");
+    assert_eq!(
+        a.last_fend, READ_LEN as u64,
+        "chain cursor follows the successful delivery"
+    );
+    assert_eq!(
+        a.saved_delivery_fend,
+        u64::MAX,
+        "no stale request-observation reference survives a successful delivery"
+    );
+    assert!(
+        a.epoch_seq > epoch_before,
+        "the competing delivery re-anchored to the live band"
+    );
+}
+
+/// V2c: an ORDINARY successful delivery (in-window, same generation and epoch,
+/// no re-anchor) must clear a pending request-observation reference, so
+/// `saved_delivery_fend` cannot outlive the observation and later calibrate a
+/// stale end. The re-anchoring race above would mask this path.
+#[test]
+fn ordinary_delivery_clears_pending_observation_reference() {
+    let e = LiveEngine::new();
+    let f = qualified_return_fixture(&e);
+    let epoch0 = e.anchor.lock().unwrap().epoch_seq;
+
+    // The qualified observation publishes the request cursor and saves the
+    // genuine delivered end.
+    let mut d = vec![0u8; READ_LEN];
+    e.serve_live(0, f, &mut d, 0);
+    assert_null(&d);
+    assert_ne!(
+        e.anchor.lock().unwrap().saved_delivery_fend,
+        u64::MAX,
+        "the observation saved a calibration reference"
+    );
+
+    // An ordinary in-window read, not adjacent and not a jump candidate.
+    let (base_spos, base_foff) = {
+        let a = e.anchor.lock().unwrap();
+        (a.base_spos, a.base_foff)
+    };
+    let ring_old = e.ring.lock().ring_old();
+    let x = ring_old + 1024 * 1024 - base_spos + base_foff;
+    let mut live = vec![0u8; READ_LEN];
+    e.serve_live(0, x, &mut live, 0);
+    assert!(
+        live.iter().any(|b| *b == 0x77),
+        "the ordinary read delivered media"
+    );
+
+    let a = e.anchor.lock().unwrap();
+    assert_eq!(a.epoch_seq, epoch0, "no re-anchor on the ordinary delivery");
+    assert_eq!(
+        a.last_fend,
+        x + READ_LEN as u64,
+        "the cursor follows the successful delivery"
+    );
+    assert_eq!(
+        a.saved_delivery_fend,
+        u64::MAX,
+        "a successful delivery clears the request-observation reference"
+    );
+}

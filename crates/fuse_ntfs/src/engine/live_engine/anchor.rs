@@ -9,6 +9,10 @@ pub struct AnchorState {
     pub base_foff: u64,
     pub base_spos: u64,
     pub last_fend: u64,
+    /// Successful-delivery end saved before a NULL-only qualified-return chain
+    /// advance (TASK-008). `u64::MAX` means `last_fend` has no pending
+    /// request-only override, i.e. it still denotes successful delivery.
+    pub saved_delivery_fend: u64,
     pub epoch_seq: u64,
     /// Anchor-generation token: incremented by a flush/open and by every
     /// reanchor publication. A read that captured an older value must not
@@ -27,6 +31,7 @@ impl Default for AnchorState {
             base_foff: 0,
             base_spos: 0,
             last_fend: 0,
+            saved_delivery_fend: u64::MAX,
             epoch_seq: 0,
             gen: 0,
             probe_consec: 0,

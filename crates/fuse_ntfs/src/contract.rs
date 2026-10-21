@@ -24,6 +24,11 @@ pub const RESUME_MIN_LEAD: u64 = 2 * 1024 * 1024;
 /// File offset at/above which reads are treated as probe candidates.
 pub const PROBE_ISOLATION_FOFF: u64 = 8 * 1024 * 1024;
 
+/// Idle time after the last read at/above which the next read is a player
+/// reopen (Return / resume) rather than steady playback. Shared by the
+/// `restart_at_zero` cold restart and by the qualified-return probe exception.
+pub const RETURN_IDLE_MS: u64 = 1500;
+
 /// Margin past the active end beyond which a read is an isolated probe.
 pub const PROBE_OVERFALL: u64 = 2 * 1024 * 1024;
 

@@ -182,6 +182,14 @@ impl StateMachine {
         self.phase
     }
 
+    /// True when the 2-step resume chain was opened exactly at `foff` and is
+    /// still active — i.e. this read is the chain-start request. Used by the
+    /// engine to observe the requested cursor of a qualified Return whose
+    /// washed-out head could not supply media bytes (TASK-008).
+    pub fn resume_chain_started_at(&self, foff: u64) -> bool {
+        self.phase == SmPhase::GapWatch && self.gap_jump_foff == foff
+    }
+
     /// Records a fresh playback open (fresh open or channel switch): the
     /// grace window starts and every chain is reset.
     pub fn note_open(&mut self, now_ms: u64) {

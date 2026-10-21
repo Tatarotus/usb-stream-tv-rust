@@ -7,7 +7,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::contract::{StreamBackend, LEADBACK, PROBE_ISOLATION_FOFF};
+use crate::contract::{StreamBackend, LEADBACK, PROBE_ISOLATION_FOFF, RETURN_IDLE_MS};
 use crate::engine::ring::{Ring, MAX_SLEEP_SLICE_MS, MIN_STREAM_START};
 use crate::engine::state_machine::{OvwCtx, SmCtx, SmDecision};
 use crate::observability::{Observer, Reason};
@@ -57,6 +57,7 @@ impl LiveEngine {
         let mut anchor = self.anchor.lock().unwrap_or_else(|e| e.into_inner());
         anchor.active = false;
         anchor.last_fend = u64::MAX;
+        anchor.saved_delivery_fend = u64::MAX;
         anchor.epoch_seq = anchor.epoch_seq.wrapping_add(1);
         anchor.gen = anchor.gen.wrapping_add(1);
         let seq = anchor.epoch_seq;
@@ -118,6 +119,7 @@ impl StreamBackend for LiveEngine {
         let mut anchor = self.anchor.lock().unwrap_or_else(|e| e.into_inner());
         anchor.active = false;
         anchor.last_fend = u64::MAX;
+        anchor.saved_delivery_fend = u64::MAX;
         anchor.gen = anchor.gen.wrapping_add(1);
         let mut sm = self.sm.lock().unwrap_or_else(|e| e.into_inner());
         sm.reset_probe_state();
@@ -171,7 +173,11 @@ impl StreamBackend for LiveEngine {
             foff
         };
 
-        let is_adjacent = anchor.active && anchor.last_fend != u64::MAX && foff == anchor.last_fend;
+        // Chain cursor: qualified NULL-only resume observations (TASK-008) advance
+        // `last_fend` itself, so adjacency keeps working; the genuine delivered
+        // end is preserved in `saved_delivery_fend` for the splice calibration.
+        let chain_end = anchor.last_fend;
+        let is_adjacent = anchor.active && chain_end != u64::MAX && foff == chain_end;
         let channel_switched = anchor.active && anchor.file_id != file_id;
         let seq_behind_ring = is_adjacent && mapped_spos0 < ring_old0;
         let is_washed_out = mapped_spos0 < ring_old0;
@@ -180,10 +186,25 @@ impl StreamBackend for LiveEngine {
             && anchor.last_fend.saturating_sub(foff) > 32 * 1024 * 1024;
         let restart_at_zero = anchor.active
             && foff == 0
-            && (now_ms0.saturating_sub(anchor.last_read_ms) > 1500 || anchor.last_fend > 131072);
+            && (now_ms0.saturating_sub(anchor.last_read_ms) > RETURN_IDLE_MS
+                || anchor.last_fend > 131072);
         let is_restart = restart_at_zero || (large_backward_jump && is_washed_out);
         let mut need_reanchor = !anchor.active || channel_switched || seq_behind_ring || is_restart;
         let was_cold = was_cold || is_restart;
+
+        // TASK-008: a QUALIFIED RETURN. The player reopened the file after an
+        // idle gap and asked for a washed-out position BEHIND the chain cursor.
+        // That is a resume/restart request, not an isolated out-of-window probe,
+        // so it must reach the 2-step resume (`begin_gap_watch` -> `seq_behind_ring`)
+        // or the cold-restart live-band anchor instead of the behind-ring probe
+        // rejection. Steady-playback behind probes advance foff with no idle gap
+        // (`probe_isolation_future_and_behind`), so they keep the TASK-005
+        // bounded NULL-only isolation untouched.
+        let return_rewind = anchor.active
+            && is_washed_out
+            && anchor.last_fend != u64::MAX
+            && anchor.last_fend.saturating_sub(foff) > crate::engine::state_machine::RESUME_JUMP
+            && now_ms0.saturating_sub(anchor.last_read_ms) > RETURN_IDLE_MS;
 
         let (sm_decision, target_spos_override) = {
             let mut sm = self.sm.lock().unwrap_or_else(|e| e.into_inner());
@@ -192,8 +213,12 @@ impl StreamBackend for LiveEngine {
             }
             let ctx = SmCtx {
                 anchor_valid: anchor.active,
-                prev_fend: if anchor.active { anchor.last_fend } else { u64::MAX },
-                probe_pos: if foff >= PROBE_ISOLATION_FOFF { Some(mapped_spos0) } else { None },
+                prev_fend: if anchor.active { chain_end } else { u64::MAX },
+                probe_pos: if foff >= PROBE_ISOLATION_FOFF && !return_rewind {
+                    Some(mapped_spos0)
+                } else {
+                    None
+                },
                 s_write: cur_write0,
                 ring_old: ring_old0,
             };
@@ -239,11 +264,19 @@ impl StreamBackend for LiveEngine {
         }
 
         if need_reanchor {
-            let old_fend = anchor.last_fend;
+            let pending_observation = anchor.saved_delivery_fend != u64::MAX;
+            let old_fend = if pending_observation {
+                anchor.saved_delivery_fend
+            } else {
+                anchor.last_fend
+            };
             // NEW (TASK-002): checked symmetric map of the successful end (R4).
-            let old_pos = if ovw_conf && old_fend >= anchor.base_foff {
+            // A pending NULL-only observation must not become the calibration
+            // reference: use the genuine delivered end for both slices.
+            let use_delivery_end = ovw_conf || pending_observation;
+            let old_pos = if use_delivery_end && old_fend >= anchor.base_foff {
                 anchor.base_spos.checked_add(old_fend - anchor.base_foff)
-            } else if ovw_conf {
+            } else if use_delivery_end {
                 anchor.base_spos.checked_sub(anchor.base_foff - old_fend)
             } else {
                 Some(mapped_spos0)
@@ -356,6 +389,7 @@ impl StreamBackend for LiveEngine {
                 anchor.base_foff = crate::engine::ring::snap188(foff);
                 anchor.base_spos = new_spos;
                 anchor.last_fend = foff;
+                anchor.saved_delivery_fend = u64::MAX;
                 anchor.last_read_ms = now_ms0;
                 let why = observation::commit_why(sm_decision, ovw_conf, channel_switched, is_restart);
                 self.obs_commit(seq, anchor.base_foff, new_spos, why);
@@ -432,6 +466,40 @@ impl StreamBackend for LiveEngine {
         } else {
             Reason::ReferenceInvalid
         };
+        // TASK-008: request observation for a qualified Return. When the
+        // washed-out bookmark read opens (or continues) the 2-step resume chain
+        // but the ring can supply no media bytes, the chain cursor must still
+        // advance to the requested end; otherwise the next sequential read is
+        // never `adjacent` and the chain can never splice to the live band
+        // (`known_bug_resume_at_large_bookmark_never_returns_to_live`).
+        // Deliberately narrow: only a qualified return (washed out, idle gap,
+        // behind the cursor) that started its chain at this very offset, and
+        // only when no bytes were delivered. Rejected probes
+        // (`probe_isolation_future_and_behind`) never reach this point, and
+        // speculative overwritten reads keep the cursor frozen
+        // (`washed_out_return_falls_back_to_live_edge`).
+        if generation_ok && !need_reanchor && delivered == 0 && return_rewind {
+            let chain_started = {
+                let sm = self.sm.lock().unwrap_or_else(|e| e.into_inner());
+                sm.resume_chain_started_at(foff)
+            };
+            if chain_started {
+                let mut a = self.anchor.lock().unwrap_or_else(|e| e.into_inner());
+                if a.active
+                    && a.gen == delivery_gen
+                    && a.epoch_seq == epoch0
+                    && a.file_id == file_id
+                    && a.last_fend == chain_end
+                {
+                    // Preserve the genuine delivered end exactly once, then let
+                    // the chain cursor follow the observed request.
+                    if a.saved_delivery_fend == u64::MAX {
+                        a.saved_delivery_fend = a.last_fend;
+                    }
+                    a.last_fend = foff.saturating_add(dst.len() as u64);
+                }
+            }
+        }
         self.obs_delivered(
             foff,
             mapped_spos,

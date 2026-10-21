@@ -61,6 +61,8 @@ impl LiveEngine {
             if to_copy > 0 && generation_ok {
                 x.note_ckpt(fend, now_ms);
                 a.last_fend = fend;
+                // The chain cursor again denotes successful delivery.
+                a.saved_delivery_fend = u64::MAX;
             }
             if generation_ok {
                 a.last_read_ms = now_ms0;

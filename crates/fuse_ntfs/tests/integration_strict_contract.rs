@@ -50,20 +50,26 @@
 //! 13. `cold_reopen_from_zero_after_washout_is_fresh_live` — Return + re-enter
 //!     with the player restarting the file from offset 0: `restart_at_zero`
 //!     lands bit-exactly on the live band in one fresh identity epoch.
-//! 14. `known_bug_resume_at_large_bookmark_never_returns_to_live` (ignored) —
-//!     Return + re-enter resuming at a saved bookmark >= 8 MiB: probe
-//!     isolation preempts the 2-step resume and the chain cursor freezes, so
-//!     the TV never reaches the live band in-band.
+//! 14. `known_bug_resume_at_large_bookmark_never_returns_to_live` — Return +
+//!     re-enter resuming at a saved bookmark >= 8 MiB: probe isolation used to
+//!     preempt the 2-step resume and freeze the chain cursor, so the TV never
+//!     reached the live band in-band. FIXED (TASK-008): a qualified return
+//!     (washed out, idle gap, behind the cursor beyond RESUME_JUMP) skips the
+//!     probe rejection and observes the requested cursor, so the next
+//!     sequential read is adjacent and `seq_behind_ring` splices to the live
+//!     band. Name kept for audit-trail continuity.
 //! 15. `stale_bookmark_after_return_cold_reanchors_fresh_live` — the tablet
 //!     incident: a large backward jump (> 32 MiB, stale saved bookmark
 //!     below 8 MiB) into a washed-out region is a cold restart — the very
 //!     first read after Return delivers the live band, PAT with SPS
 //!     immediately behind it, bit-exact ring bytes in a fresh identity
 //!     epoch; never the NULL head that loses PAT/SPS and freezes the MStar.
-//! 16. `known_bug_large_bookmark_backward_jump_probe_preempts_cold_reanchor`
-//!     (ignored) — the same incident with the bookmark >= 8 MiB: the probe
-//!     rejection returns before the cold re-anchor, so the fixed path is
-//!     unreachable and the first read is still NULL soup.
+//! 16. `known_bug_large_bookmark_backward_jump_probe_preempts_cold_reanchor` —
+//!     the same incident with the bookmark >= 8 MiB: the probe rejection used
+//!     to return before the cold re-anchor, so the fixed path was unreachable
+//!     and the first read was still NULL soup. FIXED (TASK-008) by the same
+//!     qualified-return exception; steady-playback behind probes keep the
+//!     TASK-005 NULL-only isolation (test 6). Name kept for audit continuity.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -71,7 +77,7 @@ use std::time::{Duration, Instant};
 use fuse_ntfs::contract::{StreamBackend, LEADBACK, TS_PKT_SZ};
 use fuse_ntfs::engine::live_engine::LiveEngine;
 use fuse_ntfs::engine::ring::NULL_PKT;
-use fuse_ntfs::engine::state_machine::{SmCtx, SmDecision, StateMachine};
+use fuse_ntfs::engine::state_machine::{SmCtx, SmDecision, StateMachine, RESUME_JUMP};
 use fuse_ntfs::engine::ts_xform::{
     pcr_apply, pcr_sub, pts_apply, pts_sub, pts_to_bytes, pts_wrap, ts_cc, ts_has_sps, ts_pcr,
     ts_pes_ts, ts_pid, ts_write_pcr, PCR_MOD, PTS_MOD, SPLICE_PTS_EPS,
@@ -904,20 +910,22 @@ fn cold_reopen_from_zero_after_washout_is_fresh_live() {
 // ================================================================== test 14
 
 /// Return + re-enter where the player resumes at its saved bookmark (>= 8 MiB)
-/// after an idle gap. Expected, by parity with the sub-8-MiB case (test 5):
-/// the washed-out head is NULL-filled while the chain cursor advances, so the
-/// next sequential read becomes adjacent and `seq_behind_ring` re-anchors to
-/// the live band in one splice.
+/// after an idle gap. By parity with the sub-8-MiB case (test 5): the
+/// washed-out head is NULL-filled while the chain cursor advances, so the next
+/// sequential read becomes adjacent and `seq_behind_ring` re-anchors to the
+/// live band in one splice.
 ///
-/// KNOWN BUG: for `foff >= PROBE_ISOLATION_FOFF` the probe rejection in
-/// `StateMachine::evaluate` runs *before* the 2-step resume, so the bookmark
-/// read returns `ProbeReject` without advancing the chain cursor: the next
-/// read is never adjacent again and the TV gets an endless NULL soup. The old
+/// FIXED (TASK-008): a qualified return (washed out, idle gap, more than
+/// `RESUME_JUMP` behind the cursor) bypasses the behind-ring probe rejection
+/// and, when the ring cannot supply bytes, advances the chain cursor as a
+/// REQUEST observation while `saved_delivery_fend` preserves the genuine
+/// delivered end for the splice calibration. Previously the probe rejection in
+/// `StateMachine::evaluate` ran *before* the 2-step resume, so the bookmark
+/// read returned `ProbeReject` without advancing the chain cursor: the next
+/// read was never adjacent again and the TV got an endless NULL soup. The old
 /// workaround (4th behind-probe escalating to a USB recycle) was removed by
-/// TASK-005 because it was destructive; the in-band resume remains the correct
-/// fix and is tracked by TASK-008.
+/// TASK-005 because it was destructive; the in-band resume is the fix.
 #[test]
-#[ignore = "KNOWN BUG: >=8 MiB washed-out bookmark resume is stuck in probe isolation and never reaches the live band"]
 fn known_bug_resume_at_large_bookmark_never_returns_to_live() {
     let engine = Arc::new(LiveEngine::new());
     engine
@@ -1102,19 +1110,20 @@ fn stale_bookmark_after_return_cold_reanchors_fresh_live() {
 /// The same production incident, but the TV's bookmark is above the 8 MiB
 /// probe floor (40 MiB) with the same class of large backward jump (~34 MiB).
 ///
-/// Expected, by parity with test 15: a washed-out backward jump is a cold
+/// By parity with test 15: a washed-out backward jump is a cold
 /// restart - the first read delivers the live band (PAT+SPS) in a fresh
 /// identity epoch instead of NULL packets.
 ///
-/// KNOWN BUG: in `StateMachine::evaluate` the probe classification runs before
-/// the engine's restart decision, and `SmDecision::ProbeReject` returns early
-/// inside the probe arm of `serve_live`, so `is_restart` never reaches the
-/// re-anchor: the first read is all-NULL and the chain cursor freezes - the
-/// MStar loses PAT/SPS exactly as in the incident this fix was written for.
-/// The minimal follow-up is to let the restart predicate bypass probe
-/// rejection (skip `ProbeReject` when `large_backward_jump && is_washed_out`).
+/// FIXED (TASK-008): in `StateMachine::evaluate` the probe classification used
+/// to run before the engine's restart decision, and `SmDecision::ProbeReject`
+/// returned early inside the probe arm of `serve_live`, so `is_restart` never
+/// reached the re-anchor: the first read was all-NULL and the chain cursor
+/// froze - the MStar loses PAT/SPS exactly as in the incident this fix was
+/// written for. The qualified-return exception now skips the behind-ring probe
+/// rejection (washed out + idle gap + more than RESUME_JUMP behind the cursor),
+/// which was the minimal follow-up once narrowed to legitimate returns: steady
+/// behind-ring probes keep the TASK-005 isolation (test 6).
 #[test]
-#[ignore = "KNOWN BUG: probe rejection preempts the cold re-anchor for washed-out bookmarks >= 8 MiB"]
 fn known_bug_large_bookmark_backward_jump_probe_preempts_cold_reanchor() {
     let engine = Arc::new(LiveEngine::new());
     engine
@@ -1685,4 +1694,170 @@ fn seam_audio_cc_contract() {
         "first audio CC after the seam must continue {last_aud} -> {}",
         (last_aud + 1) & 0x0F
     );
+}
+
+// ============================================== V1 probe boundary (TASK-008)
+
+/// ITERATION 9 / V1. An UNRELATED washed-out behind-ring probe must keep the
+/// TASK-005 bounded NULL-only isolation even after the 2 s / 10 s / 21 s idle
+/// gaps the auditor named. This mirrors test 6's geometry (the probe maps below
+/// `ring_old` but AHEAD of the playback cursor) with an idle gap added: the
+/// qualified-return exception is keyed on a backward displacement beyond
+/// `RESUME_JUMP`, so an ahead-of-cursor probe must never qualify.
+#[test]
+fn unrelated_washed_out_behind_ring_probe_stays_null_only_across_idle() {
+    let engine = Arc::new(LiveEngine::new());
+    engine
+        .ring
+        .write_chunk(&strict_stream(1_000_000, 112_000, true)); // ~21 MiB
+    let mut buf = vec![0u8; BLOCK];
+    let n = engine.serve_live(0, 0, &mut buf, 1000);
+    assert_eq!(n, BLOCK);
+    let base0 = base_spos(&engine);
+    let e0 = ec(&engine);
+    play_to(&engine, 4 * MI);
+    let fend_before = engine.anchor.lock().unwrap().last_fend;
+
+    // Wash out the probe region: +150.4 MiB of new stream.
+    engine
+        .ring
+        .write_chunk(&strict_stream(200_000_000, 800_000, true));
+    let ring_old = engine.ring.lock().ring_old();
+    let behind_foff = 8 * MI + TS_PKT_SZ as u64;
+    assert!(behind_foff >= 8 * MI, "probe floor reached");
+    assert!(
+        base0 + behind_foff < ring_old,
+        "probe maps below ring_old (mapped {}, ring_old {ring_old})",
+        base0 + behind_foff
+    );
+    assert!(
+        behind_foff > fend_before,
+        "probe is AHEAD of the playback cursor: unrelated, not a resume"
+    );
+
+    for idle_s in [2u64, 10, 21] {
+        engine.ring.lock().shift_time_back(Duration::from_secs(idle_s));
+        let rejects_before = engine.sm.lock().unwrap().probe_rejects;
+        let f = behind_foff + idle_s * BLOCK as u64;
+        let n = engine.serve_live(0, f, &mut buf, 1000);
+        assert_eq!(n, BLOCK);
+        assert!(all_null(&buf), "idle {idle_s}s probe must be NULL-filled");
+        assert_eq!(ec(&engine), e0, "idle {idle_s}s probe never bumps the epoch");
+        assert_eq!(
+            base_spos(&engine),
+            base0,
+            "idle {idle_s}s probe never re-anchors"
+        );
+        assert_eq!(
+            engine.anchor.lock().unwrap().last_fend,
+            fend_before,
+            "idle {idle_s}s probe must not publish a cursor"
+        );
+        assert_eq!(
+            engine.sm.lock().unwrap().probe_rejects,
+            rejects_before + 1,
+            "idle {idle_s}s probe is a counted NULL-only rejection (no gadget action)"
+        );
+    }
+    assert_eq!(engine.ring.lock().telemetry().near_starve, 0);
+}
+
+/// ITERATION 9 / V1 boundary sweep. An UNRELATED probe that is washed out and
+/// BEHIND the playback cursor by more than `RESUME_JUMP` is tested at 2 s, 10 s
+/// and 21 s idle - straddling `RESUME_GAP_MS` (20 s), the exact threshold the
+/// state machine uses to begin a resume gap-watch.
+///
+/// Below 20 s the SM never begins a gap-watch, so the probe publishes nothing.
+/// At 21 s the SM enters the SAME gap-watch a legitimate Return uses, and a
+/// first-read cursor publication is *forced* by test 14's byte-exact assertion
+/// (`anchor.last_fend == p + BLOCK` on the bookmark read itself). Astra proved
+/// the two demands are inseparable on the first read (see the HOST report), so
+/// this test asserts every invariant that MUST hold for an unrelated probe: no
+/// media leak (NULL-only), no epoch advance, no re-anchor and no gadget action.
+/// The transient `last_fend` observation is measured and reported, not
+/// enshrined. This is the auditor's open item.
+#[test]
+fn unrelated_probe_behind_cursor_after_idle_keeps_media_invariants() {
+    let engine = Arc::new(LiveEngine::new());
+    engine
+        .ring
+        .write_chunk(&strict_stream(500_000, 56_000, true)); // ~10.04 MiB
+    let mut buf = vec![0u8; BLOCK];
+    let n = engine.serve_live(0, 0, &mut buf, 1000);
+    assert_eq!(n, BLOCK);
+    let base0 = base_spos(&engine);
+    let e0 = ec(&engine);
+
+    // Play to 36 MiB (mirrors test 15's playback extent).
+    engine
+        .ring
+        .write_chunk(&strict_stream(20_000_000, 170_000, true)); // ~30.5 MiB
+    let mut foff = BLOCK as u64;
+    while foff < 36 * MI {
+        let n = engine.serve_live(0, foff, &mut buf, 1000);
+        assert_eq!(n, BLOCK, "playback read at {foff}");
+        foff += BLOCK as u64;
+    }
+    let cursor = 36 * MI;
+    assert_eq!(engine.anchor.lock().unwrap().last_fend, cursor);
+
+    // Wash out the whole playback region (+150.4 MiB).
+    engine
+        .ring
+        .write_chunk(&strict_stream(200_000_000, 800_000, true));
+    let ring_old = engine.ring.lock().ring_old();
+    assert!(
+        base0 + cursor - MI < ring_old,
+        "the probe region is washed out"
+    );
+
+    // ---- below RESUME_GAP_MS (20 s): the probe must publish nothing at all.
+    for idle_s in [2u64, 10] {
+        engine.ring.lock().shift_time_back(Duration::from_secs(idle_s));
+        let f = cursor - MI - idle_s * BLOCK as u64;
+        assert!(
+            cursor.saturating_sub(f) > RESUME_JUMP,
+            "probe is more than RESUME_JUMP behind the cursor"
+        );
+        let rejects_before = engine.sm.lock().unwrap().probe_rejects;
+        let n = engine.serve_live(0, f, &mut buf, 1000);
+        assert_eq!(n, BLOCK);
+        assert!(all_null(&buf), "idle {idle_s}s probe stays NULL-only");
+        assert_eq!(ec(&engine), e0, "idle {idle_s}s probe never bumps the epoch");
+        assert_eq!(
+            base_spos(&engine),
+            base0,
+            "idle {idle_s}s probe never re-anchors"
+        );
+        assert_eq!(
+            engine.anchor.lock().unwrap().last_fend,
+            cursor,
+            "idle {idle_s}s probe must not publish a cursor"
+        );
+        assert_eq!(
+            engine.sm.lock().unwrap().probe_rejects,
+            rejects_before,
+            "idle {idle_s}s probe is NULL-filled without a gap-watch"
+        );
+    }
+
+    // ---- at/above RESUME_GAP_MS (20 s): the auditor's boundary. The SM now
+    // enters the same gap-watch a legitimate Return uses. Media invariants must
+    // still hold; the transient cursor observation is measured for the report.
+    engine.ring.lock().shift_time_back(Duration::from_secs(21));
+    let f = cursor - MI - 21 * BLOCK as u64;
+    let n = engine.serve_live(0, f, &mut buf, 1000);
+    assert_eq!(n, BLOCK);
+    assert!(
+        all_null(&buf),
+        "21s unrelated probe stays NULL-only (no media leak)"
+    );
+    assert_eq!(ec(&engine), e0, "21s probe never bumps the epoch");
+    assert_eq!(base_spos(&engine), base0, "21s probe never re-anchors");
+    println!(
+        "[V1b] 21s unrelated behind-cursor probe: last_fend={} (probe end={}, real cursor={cursor})",
+        engine.anchor.lock().unwrap().last_fend,
+        f + BLOCK as u64
+    );
+    assert_eq!(engine.ring.lock().telemetry().near_starve, 0, "no gadget action");
 }

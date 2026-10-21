@@ -2039,6 +2039,17 @@ class StreamHub:
 
     def _mark_live_commit_locked(self):
         """Marca o commit live; chamado sob self.lock pelo switch."""
+        # RC-001 iter8: o commit descarta o backlog do canal anterior de cada
+        # assinante. Sem isto, um assinante atrasado continua consumindo chunks
+        # antigos (até queue.Queue(maxsize=2500) = 156 MiB ~ 284 s a 4.6 Mbps)
+        # DEPOIS do SWITCH_OK. Um chunk já retirado pelo writer HTTP segue em
+        # voo; a continuidade MPEG-TS do splice é preservada pelo restamper.
+        for q in list(self.subscribers):
+            while True:
+                try:
+                    q.get_nowait()
+                except queue.Empty:
+                    break
         self.slate_mode = False
         self.slate_start_time = 0
         self.stream_health = "ok"

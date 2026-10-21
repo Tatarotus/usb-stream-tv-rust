@@ -495,7 +495,25 @@ impl TsXformState {
             if let Some(raw_pts) = raw.pts {
                 let target = pts_wrap(r.pts.saturating_add(SPLICE_PTS_EPS));
                 ep.delta_pts = pts_sub(target, raw_pts);
+                // PCR must never regress at a splice. Start from the
+                // PTS-derived shift (bit-exact parity with the historical
+                // behaviour, and the "PCR tracks PTS" invariant the strict
+                // contracts assert), then override ONLY when the delivered PCR
+                // step against the reference is negative. A forward step is
+                // legitimate and unbounded here: the reference PCR can sit up
+                // to ~89 ms behind the seam (measured 2_400_000 ticks @27 MHz
+                // in `return_resume_seam_is_bit_exact`), so a fixed 40 ms
+                // ceiling would corrupt a legal splice.
                 ep.delta_pcr = ep.delta_pts.wrapping_mul(300);
+                if r.pcr_valid {
+                    if let Some(raw_pcr) = raw.pcr {
+                        let target_pcr = pcr_apply(r.pcr, SPLICE_PTS_EPS as i64 * 300);
+                        let delivered = pcr_apply(raw_pcr, ep.delta_pcr);
+                        if pcr_sub(delivered, r.pcr) < 0 {
+                            ep.delta_pcr = pcr_sub(target_pcr, raw_pcr);
+                        }
+                    }
+                }
                 spliced = true;
             } else if r.pcr_valid {
                 if let Some(raw_pcr) = raw.pcr {
