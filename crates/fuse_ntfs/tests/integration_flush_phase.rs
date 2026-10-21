@@ -5,27 +5,18 @@
 //! `cargo test -p fuse_ntfs --test integration_flush_phase -- --ignored` to
 //! reproduce the defect documented in `TASK_004_A_HANDOFF.md`.
 
-use std::sync::{Arc, Mutex};
 
 use fuse_ntfs::contract::TS_PKT_SZ;
 use fuse_ntfs::engine::feeder_phase::FeederPhase;
-use fuse_ntfs::engine::ring::{snap188, Ring};
+use fuse_ntfs::engine::ring::snap188;
 use fuse_ntfs::engine::snapper::{d12_snap, is_pat, D12Tier};
-use fuse_ntfs::engine::state_machine::StateMachine;
 use fuse_ntfs::engine::ts_xform::TsXformState;
-use fuse_ntfs::engine::{AnchorState, LiveEngine};
-use fuse_ntfs::observability::Observer;
+use fuse_ntfs::engine::LiveEngine;
 
 const PAT_PERIOD: usize = 20;
 
 fn engine_with_ring(capacity: u64) -> LiveEngine {
-    LiveEngine {
-        ring: Arc::new(Ring::with_capacity(capacity)),
-        xform: Mutex::new(TsXformState::new()),
-        anchor: Mutex::new(AnchorState::default()),
-        sm: Mutex::new(StateMachine::new()),
-        obs: Observer::disabled(),
-    }
+    LiveEngine::with_capacity(capacity)
 }
 
 fn pat_packet(cc: u8) -> [u8; TS_PKT_SZ] {

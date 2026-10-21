@@ -21,6 +21,8 @@ use std::sync::Arc;
 
 use fuse_ntfs::contract::{StreamBackend, TS_PKT_SZ};
 use fuse_ntfs::engine::live_engine::LiveEngine;
+use fuse_ntfs::contract::LEADBACK;
+use fuse_ntfs::engine::state_machine::RESUME_JUMP;
 use fuse_ntfs::engine::ts_xform::SPLICE_PTS_EPS;
 
 const MI: u64 = 1024 * 1024;
@@ -280,14 +282,17 @@ fn return_splice_delivers_decodable_mpegts() {
     let engine = Arc::new(LiveEngine::new());
     engine.ring.write_chunk(&media);
 
-    // Cold open (anchors ~2 MiB into the stream) and play to 9 MiB, exactly as
-    // the strict-contract tests do.
+    // Cold open and play up to the leading edge. The fixture has a static
+    // write head, so the reader can only advance one LEADBACK ahead of it:
+    // play_to stays one MiB inside the lead so every pre-seam block is real
+    // media for any configured lead.
     let mut buf = vec![0u8; BLOCK];
     assert_eq!(engine.serve_live(0, 0, &mut buf, 1000), BLOCK);
     let base0 = engine.anchor.lock().unwrap().base_spos;
     let epoch0 = engine.anchor.lock().unwrap().epoch_seq;
+    let play_to = LEADBACK - MI;
     let mut foff = BLOCK as u64;
-    while foff < 9 * MI {
+    while foff < play_to {
         assert_eq!(engine.serve_live(0, foff, &mut buf, 1000), BLOCK);
         assert!(
             buf.iter().any(|b| *b == 0x47),
@@ -296,7 +301,13 @@ fn return_splice_delivers_decodable_mpegts() {
         foff += BLOCK as u64;
     }
     let cursor = engine.anchor.lock().unwrap().last_fend;
-    assert!(cursor >= 9 * MI);
+    assert!(
+        cursor >= play_to,
+        "cursor {cursor} must reach play_to={play_to}"
+    );
+    // A Return is only qualified when the bookmark sits more than
+    // RESUME_JUMP behind the observable cursor.
+    let bookmark = cursor - (RESUME_JUMP + BLOCK as u64);
 
     // Timestamps of the last block delivered BEFORE the Return: the seam
     // reference for the post-splice continuity check.
@@ -312,7 +323,6 @@ fn return_splice_delivers_decodable_mpegts() {
 
     let ring_old = engine.ring.lock().ring_old();
     let s_write = engine.ring.lock().s_write();
-    let bookmark = 8 * MI + TS_PKT_SZ as u64;
     assert!(
         base0 + bookmark < ring_old,
         "the bookmark is washed out (mapped {}, ring_old {ring_old})",

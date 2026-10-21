@@ -2387,6 +2387,10 @@ class StreamHub:
 
                 eco_desc = " [⚡ MODO ECONÔMICO: STREAM COPY -c:v copy (~2% CPU)]" if target_is_eco else " [🔥 MODO TRANSCODE: libx264]"
                 print(f"\n[⚡] INICIANDO SINTONIA MAKE-BEFORE-BREAK: {target_name} ({target_url}){eco_desc}")
+                log_event(
+                    f"SWITCH_REQ {target_id} url={target_url} eco={target_is_eco} "
+                    f"resolve={(time.time() - t_sw0):.2f}s"
+                )
                 log_event(f"SWITCH_BEGIN {self.current_channel_id} -> {target_id} eco={target_is_eco}")
                 def wait_for_stream_chunk(p, timeout_sec):
                     deadline = time.time() + timeout_sec
@@ -2419,6 +2423,7 @@ class StreamHub:
                         target_is_eco = False
                     else:
                         cmd_eco = build_ffmpeg_cmd(target_url, is_live=True, is_eco=True)
+                        log_event(f"SWITCH_SPAWN {target_id} mode=eco at={(time.time() - t_sw0):.2f}s")
                         try:
                             new_p = subprocess.Popen(
                                 cmd_eco,
@@ -2445,6 +2450,7 @@ class StreamHub:
                 # Tentativa 2 / Modo Padrão: Transcodificação forçada (libx264)
                 if not first_chunk_data:
                     cmd_transcode = build_ffmpeg_cmd(target_url, is_live=True, is_eco=False)
+                    log_event(f"SWITCH_SPAWN {target_id} mode=transcode at={(time.time() - t_sw0):.2f}s")
                     try:
                         new_p = subprocess.Popen(
                             cmd_transcode,
@@ -2465,6 +2471,11 @@ class StreamHub:
                         except Exception:
                             pass
                     return
+
+                log_event(
+                    f"SWITCH_FIRST_CHUNK {target_id} bytes={len(first_chunk_data)} "
+                    f"at={(time.time() - t_sw0):.2f}s"
+                )
 
                 # Chaveamento atômico instantâneo!
                 with self.lock:
@@ -4495,6 +4506,14 @@ self.addEventListener('message', (event) => {
             params = urllib.parse.parse_qs(body)
             params = {k: v[0] for k, v in params.items()}
 
+        # Objective C (RC-001 iter 11): stage timing. Request receipt is the
+        # first observable stage; SWITCH_BEGIN/OK inside switch_channel only
+        # cover the make-before-break transaction itself.
+        log_event(
+            f"SWITCH_HTTP_REQ method=POST ch={params.get('channel_id')} "
+            f"url={params.get('url')} at={time.time():.3f}"
+        )
+
         # Validação do PIN de Segurança (1233)
         req_pin = self.headers.get("X-Auth-PIN") or params.get("pin")
         if AUTH_PIN and req_pin != AUTH_PIN:
@@ -4565,6 +4584,10 @@ self.addEventListener('message', (event) => {
 
         ch_id = query.get("id", [""])[0] or query.get("channel_id", [""])[0]
         custom_url = query.get("url", [""])[0]
+        # Objective C (RC-001 iter 11): GET path request receipt.
+        log_event(
+            f"SWITCH_HTTP_REQ method=GET ch={ch_id} url={custom_url} at={time.time():.3f}"
+        )
         custom_name = query.get("name", [""])[0]
         no_reconnect_val = query.get("no_reconnect", ["0"])[0] or query.get("no_usb_reconnect", ["0"])[0]
         no_reconnect = no_reconnect_val in ["1", "true", "True", "yes"]

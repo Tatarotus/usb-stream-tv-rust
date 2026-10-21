@@ -189,7 +189,19 @@ fn source_starvation_is_in_band_and_does_not_move_cursor() {
     assert!(!is_null(&buf, 0), "initial open delivers real ring bytes");
 
     let before = snapshot(&engine);
-    let foff = engine.ring.lock().s_write();
+    // The writer edge in FILE coordinates: the anchor maps `base_foff` to
+    // `base_spos`, so the live edge is `s_write - base_spos + base_foff`.
+    // Using the raw ring cursor as a file offset only lands in-band when the
+    // anchor happens to sit at its minimum lead.
+    let foff = {
+        let a = engine.anchor.lock().unwrap();
+        engine
+            .ring
+            .lock()
+            .s_write()
+            .saturating_sub(a.base_spos)
+            .saturating_add(a.base_foff)
+    };
     assert!(foff > before.last_fend, "read must land at the writer edge");
 
     let n = engine.serve_live(0, foff, &mut buf, 1000);

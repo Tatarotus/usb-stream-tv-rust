@@ -246,6 +246,10 @@ pub enum RefSrc {
 pub struct XformRef {
     pub src: RefSrc,
     pub valid: bool,
+    /// True when `pts` is a real delivered PES timestamp (not the zero
+    /// sentinel). A reference can be valid for PCR/CC yet have never seen a
+    /// PES (e.g. a PAT-only window).
+    pub pts_valid: bool,
     pub pts: u64,
     pub pcr: u64,
     pub pcr_valid: bool,
@@ -259,6 +263,7 @@ impl XformRef {
         Self {
             src: RefSrc::Served,
             valid: false,
+            pts_valid: false,
             pts: 0,
             pcr: 0,
             pcr_valid: false,
@@ -363,6 +368,8 @@ struct Tail {
 #[derive(Clone)]
 struct ServedState {
     valid: bool,
+    /// Latest delivered PES timestamp (not the last PES in byte order).
+    pts_valid: bool,
     pts: u64,
     pcr: u64,
     pcr_valid: bool,
@@ -375,6 +382,7 @@ impl ServedState {
     fn new() -> Self {
         Self {
             valid: false,
+            pts_valid: false,
             pts: 0,
             pcr: 0,
             pcr_valid: false,
@@ -388,6 +396,7 @@ impl ServedState {
         let mut r = XformRef::invalid();
         r.src = src;
         r.valid = self.valid;
+        r.pts_valid = self.pts_valid;
         r.pts = self.pts;
         r.pcr = self.pcr;
         r.pcr_valid = self.pcr_valid;
@@ -492,7 +501,7 @@ impl TsXformState {
         let mut ep = Epoch::identity(id);
         let mut spliced = false;
         if r.valid {
-            if let Some(raw_pts) = raw.pts {
+            if let (true, Some(raw_pts)) = (r.pts_valid, raw.pts) {
                 let target = pts_wrap(r.pts.saturating_add(SPLICE_PTS_EPS));
                 ep.delta_pts = pts_sub(target, raw_pts);
                 // PCR must never regress at a splice. Start from the
@@ -675,6 +684,12 @@ impl TsXformState {
     /// Advances `served` from the (already transformed) delivery block.
     fn update_served(&mut self, buf: &[u8], first_abs: u64) {
         let mut p = 0usize;
+        // Latest PES timestamp of THIS delivered block. The reference is the
+        // block's timeline maximum, not its byte-order last PES: audio
+        // interleave sits ~100 ms behind video, so a trailing audio PES used
+        // to become the splice reference and pushed video PTS BACKWARDS at
+        // the seam (measured -8_702 ticks on the RC-001 device).
+        let mut block_max: Option<u64> = None;
         while p + TS_PKT_SZ <= buf.len() {
             let pkt = &buf[p..p + TS_PKT_SZ];
             if pkt[0] == 0x47 && ts_pid(pkt) != NULL_PID {
@@ -687,10 +702,16 @@ impl TsXformState {
                     self.served.pcr_valid = true;
                 }
                 if let Some((pts, _)) = ts_pes_ts(pkt) {
-                    self.served.pts = pts;
+                    if block_max.map_or(true, |m| pts_sub(pts, m) > 0) {
+                        block_max = Some(pts);
+                    }
                 }
             }
             p += TS_PKT_SZ;
+        }
+        if let Some(m) = block_max {
+            self.served.pts = m;
+            self.served.pts_valid = true;
         }
     }
 
@@ -770,6 +791,9 @@ impl TsXformState {
         }
         let grid = crate::engine::ring::snap188(old_pos);
         let rel = grid.checked_sub(win_base)? as usize;
+        // Latest PES timestamp in the scanned window (see `update_served`:
+        // the seam reference is the timeline maximum, never the closest PES).
+        let mut max_pts: Option<u64> = None;
         let mut best_pts: Option<u64> = None;
         let mut best_pcr: Option<u64> = None;
         let mut p = rel;
@@ -797,13 +821,17 @@ impl TsXformState {
                 if best_pcr.is_none() {
                     best_pcr = ts_pcr(pkt);
                 }
-                if best_pts.is_none() {
-                    if let Some((pts, _)) = ts_pes_ts(pkt) {
+                if let Some((pts, _)) = ts_pes_ts(pkt) {
+                    if best_pts.is_none() {
                         best_pts = Some(pts);
                         upd_pos = win_base + p as u64;
                     }
+                    if max_pts.map_or(true, |m| pts_sub(pts, m) > 0) {
+                        max_pts = Some(pts);
+                    }
                 }
-                if best_pts.is_some() && best_pcr.is_some() {
+                if best_pcr.is_some() && best_pts.is_some() && back > RING_SCAN_BACK / 2 {
+                    // Enough coverage to establish the timeline maximum.
                     break;
                 }
             }
@@ -817,7 +845,8 @@ impl TsXformState {
         let mut r = XformRef::invalid();
         r.src = RefSrc::RingScan;
         r.valid = true;
-        r.pts = pts_apply(raw_pts, self.epoch.delta_pts);
+        r.pts_valid = true;
+        r.pts = pts_apply(max_pts.unwrap_or(raw_pts), self.epoch.delta_pts);
         r.pcr = match best_pcr {
             Some(pcr) => pcr_apply(pcr, self.epoch.delta_pcr),
             None => 0,
@@ -1019,6 +1048,7 @@ mod tests {
         // anchor is 9, so the decoder must next see 6 -> cc_add = 13.
         let mut r = XformRef::invalid();
         r.valid = true;
+        r.pts_valid = true;
         r.pts = 1_000_000;
         r.set_cc(0x100, 5); // delivered CC on video pid
         let mut raw = RawSample::empty();
@@ -1054,6 +1084,7 @@ mod tests {
         let mut x = TsXformState::new();
         let mut r = XformRef::invalid();
         r.valid = true;
+        r.pts_valid = true;
         r.pts = 1_000_000;
         r.set_cc(0x100, 5); // last delivered CC = 5
         x.begin_splice_epoch(1, &r, &raw);
@@ -1117,6 +1148,7 @@ mod tests {
         let mut x = TsXformState::new();
         let mut r = XformRef::invalid();
         r.valid = true;
+        r.pts_valid = true;
         r.pts = 4_000_000;
         let mut raw = TsXformState::collect_raw(&stream, 0, 0, 188 * 20);
         raw.pts = Some(500_000);
@@ -1190,6 +1222,7 @@ mod tests {
         let mut x = TsXformState::new();
         let mut r = XformRef::invalid();
         r.valid = true;
+        r.pts_valid = true;
         r.pts = 5_000_000;
         let mut raw = RawSample::empty();
         raw.pts = Some(3_000_000);

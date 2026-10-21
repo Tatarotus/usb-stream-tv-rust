@@ -26,6 +26,9 @@ pub use anchor::AnchorState;
 use deliver::Delivery;
 
 pub struct LiveEngine {
+    /// Distance behind the write head where a fresh/restart anchor lands.
+    /// Production is [`LEADBACK`]; host tests sweep it with [`Self::with_lead`].
+    lead: u64,
     pub ring: Arc<Ring>,
     pub xform: Mutex<TsXformState>,
     pub anchor: Mutex<AnchorState>,
@@ -42,12 +45,34 @@ impl Default for LiveEngine {
 impl LiveEngine {
     pub fn new() -> Self {
         Self {
+            lead: LEADBACK,
             ring: Arc::new(Ring::new()),
             xform: Mutex::new(TsXformState::new()),
             anchor: Mutex::new(AnchorState::default()),
             sm: Mutex::new(crate::engine::state_machine::StateMachine::new()),
             obs: Observer::disabled(),
         }
+    }
+
+    /// Same engine with a non-default ring capacity (host tests that need a
+    /// smaller ring than the 128 MiB production contract).
+    pub fn with_capacity(capacity: u64) -> Self {
+        let mut e = Self::new();
+        e.ring = Arc::new(Ring::with_capacity(capacity));
+        e
+    }
+
+    /// Host-only: same engine with a different anchor lead, so the lead sweep
+    /// compares 16/12/8 MiB without recompiling. The device always uses
+    /// `new()` (contract `LEADBACK`).
+    pub fn with_lead(lead: u64) -> Self {
+        let mut e = Self::new();
+        e.lead = lead;
+        e
+    }
+
+    pub fn lead(&self) -> u64 {
+        self.lead
     }
 
     pub fn flush(&self) {
@@ -286,8 +311,8 @@ impl StreamBackend for LiveEngine {
                 self.obs_noncommit(foff, dst.len() as u64, Reason::MappingUnderflow);
                 return self.obs_abort(dst, foff, Reason::MappingUnderflow, Some(now_ms0));
             };
-            let eff_lead = if cur_write0 > LEADBACK {
-                LEADBACK
+            let eff_lead = if cur_write0 > self.lead {
+                self.lead
             } else {
                 cur_write0.saturating_sub(2 * 1024 * 1024)
             };

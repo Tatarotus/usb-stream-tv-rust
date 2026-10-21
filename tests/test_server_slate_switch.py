@@ -402,3 +402,37 @@ def test_switch_youtube_failure_preserves_retry_count():
     assert hub.temporary_retries == 2
     assert hub.current_channel_id == "old"
     assert hub.last_live_channel == "old"
+
+
+def test_switch_channel_emits_stage_timing_instrumentation():
+    """Objective C (RC-001 iter 11): every switch must be attributable stage by
+    stage -- request receipt, URL resolution, ffmpeg spawn, first output chunk
+    and completion -- so a slow zap (e.g. the observed 40 s before ffmpeg
+    existed) can be located instead of guessed."""
+    hub = _hub()
+    hub.current_channel_id = "old"
+    hub.current_channel_name = "Old"
+    hub.current_url = "old"
+    hub.last_live_channel = "old"
+    hub.proc = _FakeProc()
+    hub.restamper.process_chunk.side_effect = None
+    hub.restamper.process_chunk.return_value = b""
+
+    events = []
+    with mock.patch("server.log_event", side_effect=events.append), mock.patch(
+        "server.subprocess.Popen", return_value=_FakeProc()
+    ), mock.patch("server.os.read", return_value=b"partial"):
+        assert hub.switch_channel("cnn-brasil", force=True, is_eco=False)
+        assert _wait_for(lambda: not hub.switching)
+
+    joined = "\n".join(events)
+    assert "SWITCH_REQ cnn-brasil" in joined, joined
+    assert "SWITCH_SPAWN cnn-brasil mode=transcode" in joined, joined
+    assert "SWITCH_FIRST_CHUNK cnn-brasil" in joined, joined
+    assert "SWITCH_OK cnn-brasil" in joined, joined
+
+    def _at(tag):
+        line = next(e for e in events if tag in e)
+        return float(line.split("at=")[1].split("s")[0])
+
+    assert _at("SWITCH_SPAWN") <= _at("SWITCH_FIRST_CHUNK")

@@ -5,28 +5,18 @@
 //! RED cases are ignored by default; run them with
 //! `cargo test -p fuse_ntfs --test integration_epoch_flush -- --ignored`.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use fuse_ntfs::contract::{StreamBackend, TS_PKT_SZ};
-use fuse_ntfs::engine::ring::Ring;
-use fuse_ntfs::engine::state_machine::StateMachine;
-use fuse_ntfs::engine::ts_xform::TsXformState;
-use fuse_ntfs::engine::{AnchorState, LiveEngine};
-use fuse_ntfs::observability::Observer;
+use fuse_ntfs::engine::LiveEngine;
 
 const READ_LEN: usize = TS_PKT_SZ * 64;
 const PAT_PERIOD: usize = 20;
 
 fn engine_with_ring(capacity: u64) -> LiveEngine {
-    LiveEngine {
-        ring: Arc::new(Ring::with_capacity(capacity)),
-        xform: Mutex::new(TsXformState::new()),
-        anchor: Mutex::new(AnchorState::default()),
-        sm: Mutex::new(StateMachine::new()),
-        obs: Observer::disabled(),
-    }
+    LiveEngine::with_capacity(capacity)
 }
 
 fn pat_packet(cc: u8) -> [u8; TS_PKT_SZ] {

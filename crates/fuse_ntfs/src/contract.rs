@@ -14,8 +14,27 @@ pub const TS_PKT_SZ: usize = 188;
 pub const RINGSZ: usize = 128 * 1024 * 1024;
 
 /// Distance behind the live write head (`g_s_write`) where playback anchors.
-/// 16 MiB absorbs network jitter without stalling the Samsung MStar SCSI bus.
-pub const LEADBACK: u64 = 16 * 1024 * 1024;
+///
+/// This is the live delay the viewer sees at every open and every restart: at
+/// the measured 5.3 Mbit/s source, 16 MiB was ~27 s behind live, so a Return
+/// that reopens the file landed at the same relative position and the picture
+/// looked like "the same scene as the first open" (RC-001 hardware window,
+/// iterations 9/10).
+///
+/// 12 MiB halves that to ~18 s while keeping the whole strict-contract suite
+/// unchanged. The host sweep (`integration_rc001_lead_sweep`, 5.3 Mbit/s, 8 s
+/// upstream interruption, ring wrap) shows 12 MiB and 16 MiB behave identically
+/// under starvation (0 NULL bytes) and 12 MiB keeps 6 MiB of margin.
+///
+/// 8 MiB also passed the sweep with 3.4 MiB of margin and is the smallest lead
+/// `PaceTier::Fast900` can sustain (below `PACE_LEAD_FAST` = 8 MiB the token
+/// bucket drops to 600 KiB/s, slower than the stream, so the cushion would
+/// self-correct back to ~8 MiB). It is NOT selected yet because two strict
+/// contracts (test 8 wrap, test 14 large bookmark) pre-buffer 9-12 MiB and play
+/// a static ring: their playable window is exactly one lead, so an 8 MiB lead
+/// makes them run past the live edge. Those fixtures need a live-feeder
+/// redesign, which must be reviewed before the lead is reduced further.
+pub const LEADBACK: u64 = 12 * 1024 * 1024;
 
 /// Minimum lead the reader must hold over the live edge before a confirmed
 /// resume (bookmark / jump) is allowed to re-anchor the stream.
