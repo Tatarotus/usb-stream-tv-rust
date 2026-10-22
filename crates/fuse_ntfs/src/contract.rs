@@ -55,6 +55,30 @@ pub const PROBE_OVERFALL: u64 = 2 * 1024 * 1024;
 /// restarts slightly behind the requested bookmark and never outruns it.
 pub const RESUME_TARGET_MARGIN: u64 = 2 * 1024 * 1024;
 
+/// Slack multiple applied to the *measured* PTS cadence when deciding whether a
+/// PES timestamp inside a delivered block may become the splice reference.
+///
+/// The horizon is `cadence_ticks_per_byte * delivered_bytes * this`, i.e. it is
+/// derived from the stream's own cadence and the bytes actually delivered —
+/// never from a fixed wall-clock window, so a legitimate cadence change (or a
+/// new epoch) is always accepted once its bytes have been delivered, while a
+/// single corrupt/future PES inside an otherwise normal block is rejected.
+/// Rejected candidates update neither the reference nor the cadence estimator.
+pub const PTS_CADENCE_SLACK: u64 = 8;
+
+/// (A) recovery: how many consecutive DELIVERED BLOCKS may be rejected while
+/// still advancing forward before the cadence estimator is re-measured from the
+/// bytes those blocks carried. It counts deliveries, not time and not ticks:
+/// corruption does not repeat in an ordered way, a real timeline change does.
+pub const PTS_REJECT_STREAK: u8 = 4;
+
+/// (B) How many consecutive reads a qualified Return intent may stay armed. It
+/// counts delivered reads of the SAME chain: a read that does not continue the
+/// chain (a probe, a jump, an abandoned chain) cancels the intent immediately,
+/// so it can never disable probe isolation or leak the return context into an
+/// unrelated seam.
+pub const RETURN_CHAIN_READS: u32 = 16;
+
 /// Backend abstraction implemented by the streaming engine.
 ///
 /// * `serve_live` feeds the live channel identified by `file_id`.

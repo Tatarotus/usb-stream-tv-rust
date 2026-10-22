@@ -468,3 +468,182 @@ fn ordinary_delivery_clears_pending_observation_reference() {
         "a successful delivery clears the request-observation reference"
     );
 }
+
+// ---- ITERATION 14: return-intent lifecycle (audit, pre-freeze) --------------
+
+fn arm_intent(e: &LiveEngine) {
+    use std::sync::atomic::Ordering::Relaxed;
+    e.return_pending.store(true, Relaxed);
+    e.return_left.store(5, Relaxed);
+    e.return_next.store(0, Relaxed);
+}
+
+fn assert_intent_off(e: &LiveEngine, what: &str) {
+    use std::sync::atomic::Ordering::Relaxed;
+    assert!(
+        !e.return_pending.load(Relaxed),
+        "{what} must clear the pending return intent"
+    );
+    assert_eq!(
+        e.return_left.load(Relaxed),
+        0,
+        "{what} must clear the return read budget"
+    );
+}
+
+/// A pending Return must not survive an explicit open or a flush.
+#[test]
+fn return_intent_cleared_by_open_and_flush() {
+    let e = LiveEngine::new();
+    let data = mk_stream(42_000, 0x55);
+    establish(&e, &data);
+
+    arm_intent(&e);
+    e.on_open();
+    assert_intent_off(&e, "on_open");
+
+    arm_intent(&e);
+    e.flush();
+    assert_intent_off(&e, "flush");
+}
+
+/// A channel switch is a new file: the old return intent must be dropped.
+#[test]
+fn return_intent_cleared_by_channel_switch() {
+    let e = LiveEngine::new();
+    let data = mk_stream(42_000, 0x55);
+    establish(&e, &data);
+    arm_intent(&e);
+
+    let mut dst = vec![0u8; READ_LEN];
+    let _ = e.serve_live(1, 0, &mut dst, 0); // file_id 0 -> 1
+    assert_intent_off(&e, "a channel switch");
+}
+
+/// A return read parked before its commit must NOT have armed the intent yet:
+/// arming is gated on the validated generation, so a read whose generation is
+/// reset while it is parked can neither arm the intent nor leave it armed.
+#[test]
+fn return_intent_is_armed_only_after_a_validated_commit() {
+    use std::sync::atomic::Ordering::Relaxed;
+    use std::time::Duration;
+
+    let e = LiveEngine::new();
+    let data = mk_stream(270_000, 0x55);
+    let fend = establish(&e, &data);
+    // Let the live edge run more than one lead ahead of the stale position.
+    e.ring.write_chunk(&mk_stream(40_000, 0x66));
+    e.ring.lock().shift_time_back(Duration::from_secs(45));
+
+    // Non-adjacent, below the cursor, and below RESUME_JUMP: a qualified return
+    // that the state machine serves as a continuation (no re-anchor), so the
+    // reader reaches the pre-commit seam.
+    let foff = fend - 8_192;
+    assert!(foff > 0);
+
+    test_seam::arm();
+    thread::scope(|s| {
+        let reader = s.spawn(|| {
+            let mut d = vec![0u8; READ_LEN];
+            e.serve_live(0, foff, &mut d, 0);
+            d
+        });
+        test_seam::wait_reached();
+        // Snapshot while parked; assert only after the reader is released, so a
+        // regression fails cleanly instead of deadlocking the scope.
+        let armed_at_park = e.return_pending.load(Relaxed);
+
+        // The reset lands while the read is parked: its commit must be stale.
+        e.on_open();
+        test_seam::release();
+        let out = reader.join().expect("reader");
+        assert_null(&out);
+
+        assert!(
+            !armed_at_park,
+            "the intent must not be armed before the generation is validated"
+        );
+    });
+
+    assert_intent_off(&e, "a return read whose generation was reset");
+}
+
+// ---- ITERATION 15: commit x on_open serialization (audit, pre-freeze) -------
+
+/// AUDIT (iteration 15). Deterministic interleaving, enforced by the anchor
+/// lock plus two independent seams (no sleep is used to establish ordering):
+///
+///  1. a VALID commit holds `xform`+`anchor` (valid generation, intent not yet
+///     armed) — seam "commit hold";
+///  2. a concurrent `on_open` starts and can only proceed on that same lock;
+///  3. the commit arms the Return intent and releases the lock;
+///  4. `on_open` acquires the lock and parks before its clear — seam "open
+///     hold" — where the test asserts the intent IS armed by the commit;
+///  5. `on_open` completes the reset (clear + generation bump);
+///  6. final state MUST be `return_pending == false`, `return_left == 0`.
+///
+/// This fails on the previous shape (clear outside the anchor lock): the clear
+/// runs while the commit is still parked, the commit then arms behind it, and
+/// the intent survives the generation bump.
+#[test]
+fn concurrent_on_open_cannot_leave_the_return_intent_armed() {
+    use std::sync::atomic::Ordering::Relaxed;
+    use std::time::Duration;
+
+    let e = LiveEngine::new();
+    let data = mk_stream(270_000, 0x55);
+    let fend = establish(&e, &data);
+    // Live edge more than one lead ahead of the stale position.
+    e.ring.write_chunk(&mk_stream(40_000, 0x66));
+    e.ring.lock().shift_time_back(Duration::from_secs(45));
+
+    // A return is already in progress, and the qualified read below continues
+    // that chain at this very offset (so the chain validation keeps it).
+    let foff = fend - 8_192;
+    {
+        e.return_pending.store(true, Relaxed);
+        e.return_left.store(4, Relaxed);
+        e.return_next.store(foff, Relaxed);
+    }
+
+    test_seam::arm_commit_hold();
+    test_seam::arm_open_hold();
+    thread::scope(|s| {
+        let reader = s.spawn(|| {
+            let mut d = vec![0u8; READ_LEN];
+            e.serve_live(0, foff, &mut d, 0);
+            d
+        });
+        // (1) The commit holds `xform`+`anchor` with a VALID generation.
+        test_seam::wait_commit_hold_reached();
+
+        // (2) Concurrent open.
+        let opener = s.spawn(|| e.on_open());
+
+        // (3) The commit arms the intent and releases the lock.
+        test_seam::release_commit_hold();
+
+        // (4) The open now owns the lock; the commit armed before the reset.
+        test_seam::wait_open_hold_reached();
+        let armed_by_commit = e.return_pending.load(Relaxed);
+        let budget_by_commit = e.return_left.load(Relaxed);
+
+        // (5) The reset completes.
+        test_seam::release_open_hold();
+        opener.join().expect("opener");
+        let out = reader.join().expect("reader");
+        assert!(!out.is_empty());
+
+        assert!(
+            armed_by_commit,
+            "the commit must have armed the return intent before the reset"
+        );
+        assert!(
+            budget_by_commit > 0,
+            "the commit must have armed a fresh read budget"
+        );
+    });
+
+    // (6) Final state after the concurrent open.
+    assert_intent_off(&e, "a concurrent on_open after the commit armed the intent");
+}

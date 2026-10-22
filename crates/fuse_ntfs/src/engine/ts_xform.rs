@@ -23,7 +23,7 @@
 //! (RAM checkpoint, post-wrap) -> `ring_scan` (walk back <= 512 KiB for the
 //! last PTS/PCR and convert to delivered values with the current epoch).
 
-use crate::contract::TS_PKT_SZ;
+use crate::contract::{PTS_CADENCE_SLACK, PTS_REJECT_STREAK, TS_PKT_SZ};
 
 /// PTS/DTS modulus: 2^33 ticks at 90 kHz.
 pub const PTS_MOD: u64 = 1u64 << 33; // 8_589_934_592
@@ -376,6 +376,22 @@ struct ServedState {
     upd_pos: u64,
     ccs: [(u16, u8); REF_CC_SLOTS],
     ncc: usize,
+    /// Cadence of the last ACCEPTED reference: the forward PTS step and the
+    /// byte span it covered, plus the block end position that produced it.
+    /// Plausibility-filter material only — never a splice reference, and never
+    /// advanced by a rejected candidate.
+    cad_pts: u64,
+    cad_bytes: u64,
+    cad_pos: u64,
+    /// Recovery streak: consecutive delivered blocks whose top candidate the
+    /// horizon rejected while still advancing forward. Corruption does not
+    /// repeat consistently; a timeline change (cadence jump, upstream
+    /// discontinuity) does. Long enough a streak re-measures the cadence from
+    /// the delivered bytes instead of freezing the reference forever.
+    rej_pts: u64,
+    rej_base_pts: u64,
+    rej_pos: u64,
+    rej_streak: u8,
 }
 
 impl ServedState {
@@ -389,6 +405,13 @@ impl ServedState {
             upd_pos: 0,
             ccs: [(0, 0); REF_CC_SLOTS],
             ncc: 0,
+            cad_pts: 0,
+            cad_bytes: 0,
+            cad_pos: 0,
+            rej_pts: 0,
+            rej_base_pts: 0,
+            rej_pos: 0,
+            rej_streak: 0,
         }
     }
 
@@ -444,6 +467,12 @@ pub struct TsXformState {
     served: ServedState,
     tail: Tail,
     ckpt: Vec<CkptSlot>,
+    /// Set by the engine while a RETURN is in progress (the player went idle
+    /// and re-read from a saved bookmark). Only then may the guard follow a
+    /// block-level PTS shift backwards: the delivered bytes are then genuinely
+    /// historical content the decoder is being handed. Outside that context a
+    /// backward shift is refused, so nothing else can re-time the seam.
+    return_ctx: bool,
     pub splices: u64,
     pub ref_served: u64,
     pub ref_ckpt: u64,
@@ -468,12 +497,19 @@ impl TsXformState {
                 consumed: 0,
             },
             ckpt: vec![CkptSlot::new(); CKPT_N],
+            return_ctx: false,
             splices: 0,
             ref_served: 0,
             ref_ckpt: 0,
             ref_scan: 0,
             ref_none: 0,
         }
+    }
+
+    /// Engine-owned: marks the delivery as part of a qualified RETURN (idle
+    /// gap + reopen). Cleared as soon as the return's re-anchor commits.
+    pub fn set_return_ctx(&mut self, on: bool) {
+        self.return_ctx = on;
     }
 
     pub fn epoch_id(&self) -> u64 {
@@ -682,14 +718,49 @@ impl TsXformState {
     }
 
     /// Advances `served` from the (already transformed) delivery block.
+    ///
+    /// The reference is the block's timeline maximum, not its byte-order last
+    /// PES: audio interleave sits ~100 ms behind video, so a trailing audio PES
+    /// used to become the splice reference and pushed video PTS BACKWARDS at
+    /// the seam (measured -8_702 ticks on the RC-001 device).
+    ///
+    /// Since iteration 12 the maximum is corroborated inside the block: a
+    /// corrupt or future-dated PES is a LONE value far above the block's own
+    /// cluster, while a genuine timeline shift (player rewind to its saved
+    /// bookmark, upstream PTS jump) moves the whole cluster together. The
+    /// horizon that separates the two is the stream's own cadence (ticks per
+    /// byte, measured from the last accepted reference) times the bytes actually
+    /// delivered — never a fixed wall-clock or absolute-ticks window.
+    ///
+    /// * top candidate plausible .......... reference = top (`think`)
+    /// * top implausible, 2nd plausible ... lone outlier: reference = 2nd
+    /// * both implausible, close to each other, a third candidate agrees AND
+    ///   the delivery is part of a qualified RETURN
+    ///   ................................... block-level shift: follow the block,
+    ///   but do not learn cadence from it
+    /// * both implausible and far apart ... nothing credible: reject
+    /// * single-candidate block ........... may not move the reference unless
+    ///   plausible (nothing corroborates it)
     fn update_served(&mut self, buf: &[u8], first_abs: u64) {
         let mut p = 0usize;
-        // Latest PES timestamp of THIS delivered block. The reference is the
-        // block's timeline maximum, not its byte-order last PES: audio
-        // interleave sits ~100 ms behind video, so a trailing audio PES used
-        // to become the splice reference and pushed video PTS BACKWARDS at
-        // the seam (measured -8_702 ticks on the RC-001 device).
-        let mut block_max: Option<u64> = None;
+        let block_end = first_abs.saturating_add(buf.len() as u64);
+        let prev_valid = self.served.pts_valid;
+        let prev_pts = self.served.pts;
+        // Span since the last ACCEPTED reference (not the last delivery), so a
+        // sustained shift is accepted as soon as its bytes arrive, while a lone
+        // outlier in an otherwise normal block still fails the horizon.
+        let span = block_end.saturating_sub(self.served.cad_pos);
+        let horizon: i128 = if prev_valid && self.served.cad_bytes > 0 && span > 0 {
+            let expected =
+                (self.served.cad_pts as u128 * span as u128) / self.served.cad_bytes as u128;
+            let bounded = (expected * PTS_CADENCE_SLACK as u128).min(i64::MAX as u128);
+            bounded as i128
+        } else {
+            i128::MAX
+        };
+        let mut top1: Option<u64> = None;
+        let mut top2: Option<u64> = None;
+        let mut top3: Option<u64> = None;
         while p + TS_PKT_SZ <= buf.len() {
             let pkt = &buf[p..p + TS_PKT_SZ];
             if pkt[0] == 0x47 && ts_pid(pkt) != NULL_PID {
@@ -702,16 +773,140 @@ impl TsXformState {
                     self.served.pcr_valid = true;
                 }
                 if let Some((pts, _)) = ts_pes_ts(pkt) {
-                    if block_max.map_or(true, |m| pts_sub(pts, m) > 0) {
-                        block_max = Some(pts);
+                    // Keep the two largest candidates of THIS block. A corrupt
+                    // or future-dated PES is a lone value far above the block's
+                    // own cluster; a genuine timeline shift (player rewind,
+                    // upstream jump) moves the whole cluster together. Only the
+                    // second-largest can corroborate the first.
+                    match top1 {
+                        None => top1 = Some(pts),
+                        Some(m) => {
+                            let d = pts_sub(pts, m);
+                            if d > 0 {
+                                top3 = top2;
+                                top2 = Some(m);
+                                top1 = Some(pts);
+                            } else if d < 0 && top2.map_or(true, |s| pts_sub(pts, s) > 0) {
+                                top3 = top2;
+                                top2 = Some(pts);
+                            } else if d < 0 && top3.map_or(true, |s| pts_sub(pts, s) > 0) {
+                                top3 = Some(pts);
+                            }
+                        }
                     }
                 }
             }
             p += TS_PKT_SZ;
         }
-        if let Some(m) = block_max {
+        // Plausible = the candidate could be the next reference step: forward and
+        // within the cadence horizon (a lone outlier is usually also *forward*),
+        // never backwards on its own.
+        let think = |m: u64| -> bool {
+            let step = pts_sub(m, prev_pts);
+            !prev_valid || (step > 0 && (step as i128) <= horizon)
+        };
+        // Track a sustained shift: consecutive top candidates that are rejected
+        // yet advance forward from the reference. A lone corrupt PES cannot hold
+        // a streak (the next clean block is accepted and resets it).
+        let plausible_top = top1.is_some_and(|m| think(m));
+        if plausible_top {
+            self.served.rej_streak = 0;
+        } else if let Some(m) = top1 {
+            let step = pts_sub(m, prev_pts);
+            let beyond = prev_valid && step > 0 && (step as i128) > horizon;
+            let ordered = self.served.rej_streak == 0 || pts_sub(m, self.served.rej_pts) > 0;
+            if beyond && ordered {
+                if self.served.rej_streak == 0 {
+                    self.served.rej_pos = first_abs;
+                    self.served.rej_base_pts = m;
+                }
+                self.served.rej_streak = self.served.rej_streak.saturating_add(1);
+                self.served.rej_pts = m;
+            } else if !beyond {
+                self.served.rej_streak = 0;
+            }
+        } else {
+            self.served.rej_streak = 0;
+        }
+        let chosen: Option<(u64, bool)> = match (top1, top2) {
+            (None, _) => None,
+            (Some(m), Some(second)) => {
+                if think(m) {
+                    Some((m, true))
+                } else if think(second) {
+                    // The largest candidate is unusable but the second one is
+                    // plausible: a lone corrupt/future PES must not win over the
+                    // block's own cluster, however small the gap looks.
+                    Some((second, true))
+                } else if self.return_ctx && {
+                    // A corroborated shift is followed ONLY inside a qualified
+                    // return, and only when a THIRD candidate agrees: two
+                    // coherent corrupt PES must not be able to re-time the seam.
+                    let gap = pts_sub(m, second);
+                    let third_ok = top3.map_or(false, |t| {
+                        let g = pts_sub(m, t);
+                        g > 0 && (g as i128) <= horizon
+                    });
+                    gap > 0 && (gap as i128) <= horizon && third_ok
+                } {
+                    // Both candidates are outside the previous horizon, yet they
+                    // corroborate each other (they are close): the whole block
+                    // moved — player rewind to its saved bookmark, or an upstream
+                    // PTS jump. Follow the delivered content, but do not teach
+                    // the cadence estimator from a discontinuity.
+                    Some((m, false))
+                } else {
+                    // Neither plausible nor mutually corroborating: nothing in
+                    // this block can be trusted, so it cannot move the reference.
+                    None
+                }
+            }
+            // Single-candidate block: nothing corroborates it, so it may not
+            // unilaterally move the reference backwards or past the horizon.
+            (Some(m), None) => {
+                if think(m) {
+                    Some((m, true))
+                } else {
+                    None
+                }
+            }
+        };
+        // Recovery from a sustained timeline change, only when the block itself
+        // yields nothing acceptable (an in-block candidate always wins). The
+        // cadence is re-measured over the bytes the streak delivered, starting at
+        // the first rejected candidate — never across the discontinuity that
+        // started it, so the slope can only be UNDER-estimated here (which needs
+        // another streak, never a rogue acceptance).
+        if chosen.is_none() && self.served.rej_streak >= PTS_REJECT_STREAK {
+            let bytes = block_end.saturating_sub(self.served.rej_pos);
+            let step = pts_sub(self.served.rej_pts, self.served.rej_base_pts);
+            self.served.rej_streak = 0;
+            if prev_valid && bytes > 0 && step > 0 {
+                self.served.cad_pts = step as u64;
+                self.served.cad_bytes = bytes;
+                self.served.cad_pos = block_end;
+                self.served.pts = self.served.rej_pts;
+                self.served.pts_valid = true;
+                return;
+            }
+        }
+        if let Some((m, consistent)) = chosen {
+            if consistent && prev_valid && span > 0 {
+                let step = pts_sub(m, prev_pts);
+                if step > 0 {
+                    self.served.cad_pts = step as u64;
+                    self.served.cad_bytes = span;
+                }
+            }
+            // Arm the span origin at the end of the block that produced the
+            // reference. The FIRST accepted reference has no measured span, so
+            // leaving `cad_pos` at 0 would make the next block's span the whole
+            // absolute stream position and derive a near-zero slope — which
+            // then rejects every later candidate and freezes the reference.
+            self.served.cad_pos = block_end;
             self.served.pts = m;
             self.served.pts_valid = true;
+            self.served.rej_streak = 0;
         }
     }
 
@@ -1215,6 +1410,236 @@ mod tests {
         assert_eq!(r.src, RefSrc::RingScan);
         assert_eq!(r.pts, 1_000_000 + 99 * 3000);
         assert!(r.pcr_valid || !r.pcr_valid); // pcr optional in scan
+    }
+
+    // -- ITERATION 12 (A): served-reference plausibility guard --------------
+
+    /// One block of `n` packets: a video PES at the block start, an optional
+    /// audio PES at the very end (the real interleave sits behind video), and
+    /// timestamp-free filler in between.
+    fn guard_block(n: usize, video_pts: u64, audio_pts: Option<u64>) -> Vec<u8> {
+        let mut v = Vec::with_capacity(n * TS_PKT_SZ);
+        v.extend_from_slice(&pes_pkt(0x100, 0, video_pts));
+        for i in 1..n {
+            if i + 1 == n {
+                if let Some(a) = audio_pts {
+                    v.extend_from_slice(&pes_pkt(0x101, i as u8, a));
+                    continue;
+                }
+            }
+            v.extend_from_slice(&pkt(0x200, i as u8));
+        }
+        v
+    }
+
+    /// ITERATION 12 (A): a single future-dated PES must never become the splice
+    /// reference. The block maximum is taken over candidates plausible for the
+    /// cadence measured from the last accepted reference.
+    #[test]
+    fn served_reference_rejects_future_dated_outlier_pes() {
+        const N: usize = 100;
+        let block_bytes = (N * TS_PKT_SZ) as u64;
+        let step = 9_000u64;
+        let mut x = TsXformState::new();
+        let mut pts = 1_000_000u64;
+        for i in 0..4u64 {
+            let mut b = guard_block(N, pts, None);
+            x.apply_block(&mut b[..], i * block_bytes, true, |_, _| true);
+            assert_eq!(x.served.pts, pts, "reference follows a uniform cadence");
+            pts += step;
+        }
+        // A corrupt future-dated PES, far beyond the cadence horizon, hides in
+        // an otherwise normal block.
+        let mut b = guard_block(N, pts, None);
+        b.extend_from_slice(&pes_pkt(0x100, N as u8, pts + 9_000_000));
+        let abs = 4 * block_bytes;
+        x.apply_block(&mut b[..], abs, true, |_, _| true);
+        assert_eq!(
+            x.served.pts, pts,
+            "a future-dated outlier must not move the reference"
+        );
+        // ... and it must not poison the cadence estimator either.
+        let mut b = guard_block(N, pts + step, None);
+        x.apply_block(&mut b[..], abs + block_bytes, true, |_, _| true);
+        assert_eq!(x.served.pts, pts + step, "cadence survives the outlier");
+    }
+
+    /// Iteration-11 regression, re-asserted under the guard: the reference is
+    /// the block maximum, so trailing interleaved audio (~100 ms behind video)
+    /// must never win.
+    #[test]
+    fn served_reference_keeps_video_max_over_trailing_audio() {
+        const N: usize = 100;
+        let block_bytes = (N * TS_PKT_SZ) as u64;
+        let mut x = TsXformState::new();
+        for i in 0..2u64 {
+            let mut b = guard_block(N, 1_000_000 + i * 9_000, None);
+            x.apply_block(&mut b[..], i * block_bytes, true, |_, _| true);
+        }
+        let mut b = guard_block(N, 1_018_000, Some(1_009_000));
+        x.apply_block(&mut b[..], 2 * block_bytes, true, |_, _| true);
+        assert_eq!(
+            x.served.pts, 1_018_000,
+            "video maximum, never the byte-order last (audio) PES"
+        );
+    }
+
+    /// A cold epoch has no delivered continuity to preserve, so the guard must
+    /// be disarmed: an arbitrary jump is accepted, never treated as an outlier.
+    #[test]
+    fn served_guard_is_disarmed_by_a_new_epoch() {
+        const N: usize = 100;
+        let block_bytes = (N * TS_PKT_SZ) as u64;
+        let mut x = TsXformState::new();
+        for i in 0..2u64 {
+            let mut b = guard_block(N, 1_000_000 + i * 9_000, None);
+            x.apply_block(&mut b[..], i * block_bytes, true, |_, _| true);
+        }
+        x.reset_epoch(1);
+        let mut b = guard_block(N, 900_000_000, None);
+        x.apply_block(&mut b[..], 2 * block_bytes, true, |_, _| true);
+        assert_eq!(x.served.pts, 900_000_000, "cold epoch re-arms the guard");
+    }
+
+    /// An UNCORROBORATED stale value (a lone PES at/before the reference, e.g.
+    /// a duplicate block boundary or a corrupt reset) must not pull the splice
+    /// reference backwards, and must not re-arm the cadence span: rejecting it
+    /// lets the horizon keep accumulating delivered bytes, so a real sustained
+    /// shift still lands once its bytes have arrived. A whole block on another
+    /// timeline is real content and is followed — see the rewind test below.
+    #[test]
+    fn served_reference_never_regresses_and_still_self_heals() {
+        const N: usize = 100;
+        let block_bytes = (N * TS_PKT_SZ) as u64;
+        let mut x = TsXformState::new();
+        for i in 0..3u64 {
+            let mut b = guard_block(N, 1_000_000 + i * 9_000, None);
+            x.apply_block(&mut b[..], i * block_bytes, true, |_, _| true);
+        }
+        assert_eq!(x.served.pts, 1_018_000);
+        // Uncorroborated stale block (one PES): cannot drag the reference down.
+        let mut b = guard_block(N, 1_009_000, None);
+        x.apply_block(&mut b[..], 3 * block_bytes, true, |_, _| true);
+        assert_eq!(x.served.pts, 1_018_000, "single stale PES must not regress");
+        // Span kept accumulating across the stale block: a sustained +100_000
+        // shift (well beyond one block's horizon) is still accepted.
+        let mut b = guard_block(N, 1_118_000, None);
+        x.apply_block(&mut b[..], 4 * block_bytes, true, |_, _| true);
+        assert_eq!(x.served.pts, 1_118_000, "a sustained shift still lands");
+    }
+
+    /// A *corroborated* block-level shift is real content, not an outlier. When
+    /// the whole block sits on an older timeline — the player rewound to its
+    /// saved bookmark after Return and the engine is serving that region again
+    /// — the splice reference must follow the delivered content. If it kept the
+    /// stale pre-return timeline the seam would re-time the rewound bytes by
+    /// the whole rewind distance (398 s in
+    /// `integration_return_and_channel_switch::test_return_resume_timeline_splice`,
+    /// where 201.784 s was the pre-return end and 165.964 s the rewatched
+    /// region). Such a block must not teach the cadence estimator.
+    #[test]
+    fn served_reference_follows_a_corroborated_block_level_shift() {
+        const N: usize = 100;
+        let block_bytes = (N * TS_PKT_SZ) as u64;
+        let mut x = TsXformState::new();
+        for i in 0..3u64 {
+            let mut b = guard_block(N, 1_000_000 + i * 9_000, None);
+            x.apply_block(&mut b[..], i * block_bytes, true, |_, _| true);
+        }
+        assert_eq!(x.served.pts, 1_018_000);
+        // Rewind: several PES inside one delivered block, all older than the
+        // reference and mutually consistent with each other.
+        let mut b = Vec::new();
+        for i in 0..N {
+            if i % 30 == 0 {
+                b.extend_from_slice(&pes_pkt(0x100, i as u8, 100_000 + i as u64 * 90));
+            } else {
+                b.extend_from_slice(&pkt(0x200, i as u8));
+            }
+        }
+        // Outside a qualified return the same block must be refused.
+        x.apply_block(&mut b[..], 3 * block_bytes, true, |_, _| true);
+        assert_eq!(
+            x.served.pts, 1_018_000,
+            "a backward shift outside a return must not move the reference"
+        );
+        // Inside a return it is the delivered content and must be followed.
+        x.set_return_ctx(true);
+        x.apply_block(&mut b[..], 3 * block_bytes, true, |_, _| true);
+        assert_eq!(
+            x.served.pts,
+            100_000 + 90 * 90,
+            "a corroborated rewind inside a return is followed, not discarded"
+        );
+        // The guard re-arms from the NEW reference and still works.
+        let mut b = guard_block(N, 117_100, None);
+        x.apply_block(&mut b[..], 4 * block_bytes, true, |_, _| true);
+        assert_eq!(x.served.pts, 117_100);
+    }
+
+    /// Astra (iteration-12, final review) blocking #3: a sustained cadence
+    /// change must not freeze the reference forever. Rejected blocks do not
+    /// re-arm `cad_pos`, so the horizon keeps growing with the bytes actually
+    /// delivered; a 10x faster timeline lands within a couple of blocks even
+    /// when every block carries a single PES, and the estimator is then
+    /// re-taught from the accepted span.
+    #[test]
+    fn served_reference_recovers_from_a_sustained_cadence_change() {
+        const N: usize = 100;
+        let block_bytes = (N * TS_PKT_SZ) as u64;
+        let mut x = TsXformState::new();
+        for i in 0..3u64 {
+            let mut b = guard_block(N, 1_000_000 + i * 9_000, None);
+            x.apply_block(&mut b[..], i * block_bytes, true, |_, _| true);
+        }
+        assert_eq!(x.served.pts, 1_018_000);
+        // 10x the measured cadence: 90_000 ticks per block, far above the
+        // 8x slack, and only one PES per block (nothing to corroborate it).
+        let mut landed_at = None;
+        for i in 0..6u64 {
+            let pts = 1_108_000 + i * 90_000;
+            let mut b = guard_block(N, pts, None);
+            x.apply_block(&mut b[..], (3 + i) * block_bytes, true, |_, _| true);
+            if landed_at.is_none() && x.served.pts == pts {
+                landed_at = Some(i);
+            }
+        }
+        assert!(
+            matches!(landed_at, Some(i) if i <= 3),
+            "a sustained cadence change must land within a few blocks, got {landed_at:?} (served {})",
+            x.served.pts
+        );
+        // Once landed, the horizon follows the new cadence again.
+        for i in 6..8u64 {
+            let pts = 1_108_000 + i * 90_000;
+            let mut b = guard_block(N, pts, None);
+            x.apply_block(&mut b[..], (3 + i) * block_bytes, true, |_, _| true);
+            assert_eq!(x.served.pts, pts, "cadence re-taught after the shift");
+        }
+    }
+
+    /// The guard must never FREEZE the reference. The first accepted reference
+    /// has no measured span yet, so the span origin is armed at that block's
+    /// end. Regression this test exists to catch: arming it at position 0 made
+    /// the first cadence the whole absolute stream position (~8 MiB here, ~137
+    /// MiB on the device), deriving a near-zero slope that rejected every later
+    /// candidate and pinned `served.pts` ~1.5 MiB into playback - which moved
+    /// the RC-001 media-continuity seam by ~2.3 s.
+    #[test]
+    fn served_reference_advances_across_a_long_monotonic_stream() {
+        const N: usize = 100;
+        let block_bytes = (N * TS_PKT_SZ) as u64;
+        let base_abs = (8 * 1024 * 1024) / TS_PKT_SZ as u64 * TS_PKT_SZ as u64; // ~8 MiB, packet-aligned
+        let mut x = TsXformState::new();
+        for i in 0..40u64 {
+            let mut b = guard_block(N, 1_000_000 + i * 9_000, None);
+            x.apply_block(&mut b[..], base_abs + i * block_bytes, true, |_, _| true);
+            assert_eq!(
+                x.served.pts,
+                1_000_000 + i * 9_000,
+                "reference must follow the stream at block {i}"
+            );
+        }
     }
 
     #[test]

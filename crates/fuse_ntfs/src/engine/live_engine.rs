@@ -34,6 +34,17 @@ pub struct LiveEngine {
     pub anchor: Mutex<AnchorState>,
     pub sm: Mutex<crate::engine::state_machine::StateMachine>,
     pub obs: Observer,
+    /// A qualified RETURN was seen and has not reached its re-anchor yet. It
+    /// must stay qualified across the NULL qualification / GapWatch reads that
+    /// follow, otherwise `warm_return` disappears on the next read and the
+    /// resume anchor can pick the resident historical bookmark again (audit,
+    /// iteration 12: non-adjacent resident return). Cleared by the commit, a
+    /// channel switch, or an explicit restart from offset 0.
+    return_pending: std::sync::atomic::AtomicBool,
+    /// Expected next file offset of the pending return chain, and how many reads
+    /// of that chain may still arrive. Both bound the intent to the actual chain.
+    return_next: std::sync::atomic::AtomicU64,
+    return_left: std::sync::atomic::AtomicU32,
 }
 
 impl Default for LiveEngine {
@@ -51,6 +62,9 @@ impl LiveEngine {
             anchor: Mutex::new(AnchorState::default()),
             sm: Mutex::new(crate::engine::state_machine::StateMachine::new()),
             obs: Observer::disabled(),
+            return_pending: std::sync::atomic::AtomicBool::new(false),
+            return_next: std::sync::atomic::AtomicU64::new(0),
+            return_left: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
@@ -83,6 +97,10 @@ impl LiveEngine {
         anchor.active = false;
         anchor.last_fend = u64::MAX;
         anchor.saved_delivery_fend = u64::MAX;
+        self.return_pending
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        self.return_left
+            .store(0, std::sync::atomic::Ordering::Relaxed);
         anchor.epoch_seq = anchor.epoch_seq.wrapping_add(1);
         anchor.gen = anchor.gen.wrapping_add(1);
         let seq = anchor.epoch_seq;
@@ -141,8 +159,21 @@ impl LiveEngine {
 
 impl StreamBackend for LiveEngine {
     fn on_open(&self) {
+        // The reset is serialized with the delivery commit THROUGH the anchor
+        // lock: `commit_delivery` takes the same lock before it validates the
+        // generation and arms the return intent, so a clear that happened
+        // outside this lock could be overtaken by an arming commit and leave a
+        // stale intent armed behind the generation bump.
         let mut anchor = self.anchor.lock().unwrap_or_else(|e| e.into_inner());
+        #[cfg(test)]
+        test_seam::park_in_open_after_anchor_lock();
         anchor.active = false;
+        // A new open ends any Return that was still pending: the intent must
+        // never survive a generation-changing reset.
+        self.return_pending
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        self.return_left
+            .store(0, std::sync::atomic::Ordering::Relaxed);
         anchor.last_fend = u64::MAX;
         anchor.saved_delivery_fend = u64::MAX;
         anchor.gen = anchor.gen.wrapping_add(1);
@@ -214,8 +245,69 @@ impl StreamBackend for LiveEngine {
             && (now_ms0.saturating_sub(anchor.last_read_ms) > RETURN_IDLE_MS
                 || anchor.last_fend > 131072);
         let is_restart = restart_at_zero || (large_backward_jump && is_washed_out);
-        let mut need_reanchor = !anchor.active || channel_switched || seq_behind_ring || is_restart;
-        let was_cold = was_cold || is_restart;
+
+        // ITERATION 12 — QUALIFIED SAME-CHANNEL RETURN. Steady playback never
+        // leaves a read gap this long, so an idle read at/before the delivered
+        // end is a genuine Return/reopen (not an isolated probe, not a forward
+        // seek), and when the live edge has run more than one lead ahead the
+        // playhead must land in the live band instead of resuming the stale
+        // bookmark (iteration-11 Test B: lag = prior lag + the whole break,
+        // permanently).
+        //
+        // Because the player is already mid-stream, the epoch for such a return
+        // must also be a WARM splice (continuous PTS/PCR/CC), not a cold
+        // identity reset: a cold restart restarts the delivered timeline and the
+        // MStar decoder freezes on it (iteration-11 Test C, reproduced by the
+        // old binary too). An explicit restart from offset 0 (`restart_at_zero`)
+        // is excluded: that is the operator asking for the file start, so it
+        // keeps the historical cold fresh-live anchor.
+        let qualified_return = anchor.active
+            && !channel_switched
+            && !restart_at_zero
+            && anchor.last_fend != u64::MAX
+            && foff <= anchor.last_fend
+            && now_ms0.saturating_sub(anchor.last_read_ms)
+                > crate::engine::state_machine::RESUME_GAP_MS
+            && cur_write0.saturating_sub(mapped_spos0) > self.lead;
+        // An ADJACENT return never enters the TASK-008 gap watch (it is not a
+        // jump), so it must be forced here. A washed-out return keeps the 2-step
+        // NULL-only qualification and is only re-targeted (below).
+        let adjacent_return = qualified_return && is_adjacent;
+        // Persist the intent: the reads that QUALIFY the return (probe/NULL
+        // qualification, GapWatch) happen after the idle gap is gone, so
+        // recomputing from `now - last_read_ms` alone loses the return exactly
+        // when the state machine is about to choose a resume anchor. A channel
+        // switch, an explicit restart from offset 0 or an inactive anchor end
+        // the intent immediately.
+        use std::sync::atomic::Ordering as AtomicOrdering;
+        // The intent is bound to the actual chain: it survives only while the
+        // reads continue it and only for a bounded number of reads. Anything
+        // else (a probe, a jump, an abandoned chain) cancels it HERE, before
+        // classification, so it can never disable probe isolation.
+        if self.return_pending.load(AtomicOrdering::Relaxed) {
+            let left = self.return_left.load(AtomicOrdering::Relaxed);
+            let next = self.return_next.load(AtomicOrdering::Relaxed);
+            if left == 0 || foff != next {
+                self.return_pending.store(false, AtomicOrdering::Relaxed);
+                self.return_left.store(0, AtomicOrdering::Relaxed);
+            }
+        }
+        if channel_switched || restart_at_zero || !anchor.active {
+            self.return_pending.store(false, AtomicOrdering::Relaxed);
+            self.return_left.store(0, AtomicOrdering::Relaxed);
+        }
+        // The intent is ARMED later, inside `commit_delivery`, and only once the
+        // captured generation has been validated: a read parked across an
+        // open/flush can neither arm it nor leave it armed behind the reset.
+        let return_pending = self.return_pending.load(AtomicOrdering::Relaxed);
+        let warm_return = qualified_return || return_pending;
+        let mut need_reanchor = !anchor.active
+            || channel_switched
+            || seq_behind_ring
+            || is_restart
+            || adjacent_return;
+        // A warm return is never cold: it splices instead of resetting.
+        let was_cold = was_cold || (is_restart && !warm_return);
 
         // TASK-008: a QUALIFIED RETURN. The player reopened the file after an
         // idle gap and asked for a washed-out position BEHIND the chain cursor.
@@ -239,7 +331,7 @@ impl StreamBackend for LiveEngine {
             let ctx = SmCtx {
                 anchor_valid: anchor.active,
                 prev_fend: if anchor.active { chain_end } else { u64::MAX },
-                probe_pos: if foff >= PROBE_ISOLATION_FOFF && !return_rewind {
+                probe_pos: if foff >= PROBE_ISOLATION_FOFF && !return_rewind && !warm_return {
                     Some(mapped_spos0)
                 } else {
                     None
@@ -297,8 +389,10 @@ impl StreamBackend for LiveEngine {
             };
             // NEW (TASK-002): checked symmetric map of the successful end (R4).
             // A pending NULL-only observation must not become the calibration
-            // reference: use the genuine delivered end for both slices.
-            let use_delivery_end = ovw_conf || pending_observation;
+            // reference: use the genuine delivered end for both slices. A warm
+            // return does the same: its splice must calibrate against where the
+            // player actually was, not against the restart request.
+            let use_delivery_end = ovw_conf || pending_observation || warm_return;
             let old_pos = if use_delivery_end && old_fend >= anchor.base_foff {
                 anchor.base_spos.checked_add(old_fend - anchor.base_foff)
             } else if use_delivery_end {
@@ -322,6 +416,7 @@ impl StreamBackend for LiveEngine {
                 || is_restart
                 || seq_behind_ring
                 || ovw_conf
+                || warm_return
             {
                 cur_write0.saturating_sub(eff_lead)
             } else if sm_decision == SmDecision::ResumeAfterGap {
@@ -416,7 +511,14 @@ impl StreamBackend for LiveEngine {
                 anchor.last_fend = foff;
                 anchor.saved_delivery_fend = u64::MAX;
                 anchor.last_read_ms = now_ms0;
-                let why = observation::commit_why(sm_decision, ovw_conf, channel_switched, is_restart);
+                self.return_pending.store(false, AtomicOrdering::Relaxed);
+                self.return_left.store(0, AtomicOrdering::Relaxed);
+                let why = observation::commit_why(
+                    sm_decision,
+                    ovw_conf,
+                    channel_switched,
+                    is_restart && !warm_return,
+                );
                 self.obs_commit(seq, anchor.base_foff, new_spos, why);
             }
         } else {
@@ -475,6 +577,18 @@ impl StreamBackend for LiveEngine {
         test_seam::park_before_commit();
         // 7. Apply Caminho C transform, gated on the generation captured
         // before delivery; a stale read must not commit checkpoint/last_fend.
+        // Only a read that actually continues/opens the return chain asks the
+        // commit to arm the intent; a read that re-anchors in this call CLOSES
+        // the chain (the re-anchor transaction clears it) and never re-arms it.
+        let arm_return = if need_reanchor {
+            None
+        } else if qualified_return {
+            Some((foff.saturating_add(dst.len() as u64), true))
+        } else if return_pending {
+            Some((foff.saturating_add(dst.len() as u64), false))
+        } else {
+            None
+        };
         let (generation_ok, delivered) = self.commit_delivery(
             dst,
             foff,
@@ -484,6 +598,8 @@ impl StreamBackend for LiveEngine {
             delivery_gen,
             epoch0,
             now_ms0,
+            warm_return,
+            arm_return,
         );
 
         let why = if generation_ok {

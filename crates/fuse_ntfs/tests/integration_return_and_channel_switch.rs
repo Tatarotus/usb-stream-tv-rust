@@ -428,3 +428,243 @@ fn test_return_resume_washed_out_fallback_to_live() {
         "fallback to live edge must serve live video packets with valid PTS"
     );
 }
+
+/// ITERATION 12 — AUDIT BLOCKER (non-adjacent RESIDENT bookmark return).
+///
+/// The player returns to a saved bookmark that is *not* adjacent to the
+/// delivered end but is still resident in the ring, with a backward jump below
+/// the 32 MiB `large_backward_jump` threshold. In that geometry nothing forced
+/// `need_reanchor` on the first read: the state machine entered GapWatch, and by
+/// the confirming read the 20 s idle condition was already gone, so
+/// `warm_return` dropped out and `select_resume_anchor` could pick the resident
+/// historical position again — the player would re-watch delayed content instead
+/// of returning to live. The qualified-return intent is now persisted until the
+/// re-anchor commits.
+#[test]
+fn test_nonadjacent_resident_bookmark_return_lands_live() {
+    let engine = Arc::new(LiveEngine::new());
+
+    // 20 MiB buffered (bookmark region resident), play 4 MiB sequentially.
+    let initial = make_ts_stream(1_000_000, (20 * 1024 * 1024) / TS_PKT_SZ);
+    engine.ring.write_chunk(&initial);
+    let mut buf = vec![0u8; BLOCK];
+    let mut foff = 0u64;
+    let mut last_pts = 0u64;
+    while foff < 4 * 1024 * 1024 {
+        let n = engine.serve_live(0, foff, &mut buf, 1000);
+        assert_eq!(n, BLOCK);
+        if let Some(&p) = extract_video_pts_list(&buf, foff).last() {
+            last_pts = p;
+        }
+        foff += BLOCK as u64;
+    }
+    let epoch_before = engine.anchor.lock().unwrap().epoch_seq;
+    let fend_before = 4 * 1024 * 1024u64;
+
+    // Return: 45 s idle, then the feeder writes 15 MiB more (live edge 35 MiB).
+    engine
+        .ring
+        .lock()
+        .shift_time_back(Duration::from_secs(45));
+    engine
+        .ring
+        .write_chunk(&make_ts_stream(50_000_000, (15 * 1024 * 1024) / TS_PKT_SZ));
+
+    let bookmark = 1_900_544u64; // resident, 2.3 MiB behind the delivered end
+    assert!(bookmark < fend_before, "geometry: backward jump");
+    assert!(
+        fend_before - bookmark < 32 * 1024 * 1024,
+        "geometry: below large_backward_jump"
+    );
+
+    let mut rb = vec![0u8; 16_384];
+    let mut pos = bookmark;
+    let mut committed_at = None;
+    // The decoder's clock just before the seam is the last content ACTUALLY
+    // delivered during the qualification reads (the rewound bookmark region),
+    // which may be older than the pre-return delivered end.
+    let mut pts_before_splice = last_pts;
+    let mut splice_foff = 0u64;
+    for i in 0..6u64 {
+        let n = engine.serve_live(0, pos, &mut rb, 1000);
+        assert_eq!(n, 16_384);
+        let ep = engine.anchor.lock().unwrap().epoch_seq;
+        if ep != epoch_before {
+            committed_at = Some(i);
+            splice_foff = pos;
+            break;
+        }
+        if let Some(&p) = extract_video_pts_list(&rb, pos).last() {
+            pts_before_splice = p;
+        }
+        pos += 16_384;
+    }
+    committed_at.expect("return must re-anchor, not keep the old epoch");
+
+    let a = engine.anchor.lock().unwrap();
+    let spos = a.base_spos;
+    let write = engine.ring.lock().s_write();
+    // The anchor must land in the live band, not at the resident bookmark.
+    assert!(
+        write.saturating_sub(spos) >= 8 * 1024 * 1024
+            && write.saturating_sub(spos) <= 16 * 1024 * 1024,
+        "anchor must sit in the live band: spos={spos} write={write}"
+    );
+    drop(a);
+
+    // Warm splice: the seam continues EXACTLY from the last delivered content.
+    let spliced = extract_video_pts_list(&rb, splice_foff);
+    assert!(
+        !spliced.is_empty(),
+        "the committing read must deliver spliced video PES"
+    );
+    let want = (pts_before_splice + SPLICE_PTS_EPS) % PTS_MOD;
+    let d = (spliced[0] as i64 - want as i64).abs();
+    assert!(
+        d <= 6000,
+        "warm splice must continue the delivered timeline: {pts_before_splice} -> {} (diff {d})",
+        spliced[0]
+    );
+    let next_pos = splice_foff + 16_384;
+    let n = engine.serve_live(0, next_pos, &mut buf, 1000);
+    assert_eq!(n, BLOCK);
+    let pts = extract_video_pts_list(&buf, next_pos);
+    assert!(!pts.is_empty(), "post-return block must carry video PES");
+    let first = pts[0];
+
+    // And it must stay live on the following reads (no fall back to history).
+    let mut prev = first;
+    for i in 0..4u64 {
+        let p = next_pos + (i + 1) * BLOCK as u64;
+        let n = engine.serve_live(0, p, &mut buf, 1000);
+        assert_eq!(n, BLOCK);
+        let list = extract_video_pts_list(&buf, p);
+        if let Some(&f) = list.first() {
+            let fwd = (f + PTS_MOD - prev) % PTS_MOD;
+            assert!(fwd < 2_000_000, "timeline regressed: {prev} -> {f}");
+            prev = f;
+        }
+    }
+}
+
+/// ITERATION 13 — AUDIT BLOCKER (abandoned return chain). A qualified Return
+/// that is interrupted by an unrelated read must not keep the engine in
+/// "return" mode: that would disable probe isolation (`probe_pos` is skipped
+/// while `warm_return`) and let a probe advance the playback chain cursor and
+/// publish checkpoints. The intent must be bounded to the actual chain and
+/// cancelled by anything that does not continue it.
+#[test]
+fn test_abandoned_return_chain_restores_probe_isolation() {
+    let engine = Arc::new(LiveEngine::new());
+    let mut buf = vec![0u8; BLOCK];
+
+    // 1. Ordinary live playback chain.
+    engine
+        .ring
+        .write_chunk(&make_ts_stream(1_000_000, (40 * 1024 * 1024) / TS_PKT_SZ));
+    let mut foff = 0u64;
+    while foff < 8 * 1024 * 1024 {
+        assert_eq!(engine.serve_live(0, foff, &mut buf, 1000), BLOCK);
+        foff += BLOCK as u64;
+    }
+    let (epoch0, spos0) = {
+        let a = engine.anchor.lock().unwrap();
+        (a.epoch_seq, a.base_spos)
+    };
+    assert_eq!(
+        engine.anchor.lock().unwrap().last_fend,
+        8 * 1024 * 1024,
+        "chain cursor after playback"
+    );
+
+    // 2. Qualified non-adjacent resident Return (idle gap, more data arrives).
+    engine.ring.lock().shift_time_back(Duration::from_secs(45));
+    engine
+        .ring
+        .write_chunk(&make_ts_stream(50_000_000, (20 * 1024 * 1024) / TS_PKT_SZ));
+    let write = engine.ring.lock().s_write();
+    let bookmark = 6 * 1024 * 1024u64;
+    let mut rb = vec![0u8; 16_384];
+    for i in 0..2u64 {
+        assert_eq!(
+            engine.serve_live(0, bookmark + i * 16_384, &mut rb, 1000),
+            16_384
+        );
+    }
+    // Baseline for the probe: the qualification reads are real deliveries, so
+    // they do move the chain cursor; the probe must not.
+    let (fend_before_probe, splices0) = {
+        let a = engine.anchor.lock().unwrap();
+        (
+            a.last_fend,
+            engine.xform.lock().unwrap().splices,
+        )
+    };
+    assert_eq!(
+        engine.anchor.lock().unwrap().epoch_seq,
+        epoch0,
+        "still qualifying, not committed yet"
+    );
+
+    // 3. Interrupt the chain with an unrelated non-adjacent probe far ahead of
+    // the live edge: it must be rejected as a probe, before any delivery.
+    let probe_rejects_before = engine.sm.lock().unwrap().probe_rejects;
+    let probe_off = write + 8 * 1024 * 1024;
+    let n = engine.serve_live(0, probe_off, &mut rb, 1000);
+    assert_eq!(n, 16_384, "probe is answered with a full NULL block");
+
+    // 4. Probe isolation is intact: the read was classified as a probe (the
+    // state machine counted it) and nothing was published.
+    assert_eq!(
+        engine.sm.lock().unwrap().probe_rejects,
+        probe_rejects_before + 1,
+        "an unrelated read after a cancelled return must be a PROBE"
+    );
+    let a = engine.anchor.lock().unwrap();
+    assert_eq!(
+        a.last_fend, fend_before_probe,
+        "a probe must not move the chain cursor"
+    );
+    assert_eq!(a.epoch_seq, epoch0, "a probe must not open an epoch");
+    assert_eq!(a.base_spos, spos0, "a probe must not re-anchor");
+    drop(a);
+    assert_eq!(
+        engine.xform.lock().unwrap().splices,
+        splices0,
+        "a probe must not splice"
+    );
+
+    // 5. A subsequently confirmed real Return still reaches the live band. The
+    // jump must exceed RESUME_JUMP from the current chain cursor, so it is a
+    // genuine bookmark seek again, not a continuation.
+    engine.ring.lock().shift_time_back(Duration::from_secs(45));
+    engine
+        .ring
+        .write_chunk(&make_ts_stream(90_000_000, (4 * 1024 * 1024) / TS_PKT_SZ));
+    let bookmark2 = 5 * 1024 * 1024u64;
+    assert!(
+        fend_before_probe - bookmark2 > 256 * 1024,
+        "geometry: a real bookmark seek again"
+    );
+    let mut committed = None;
+    let mut pos = bookmark2;
+    for i in 0..8u64 {
+        assert_eq!(engine.serve_live(0, pos, &mut rb, 1000), 16_384);
+        if engine.anchor.lock().unwrap().epoch_seq != epoch0 {
+            committed = Some(i);
+            break;
+        }
+        pos += 16_384;
+    }
+    assert!(
+        committed.is_some(),
+        "a real Return after a cancelled one must still re-anchor"
+    );
+    let a = engine.anchor.lock().unwrap();
+    let w = engine.ring.lock().s_write();
+    assert!(
+        w - a.base_spos >= 8 * 1024 * 1024 && w - a.base_spos <= 16 * 1024 * 1024,
+        "the confirmed Return lands in the live band: spos={} write={w}",
+        a.base_spos
+    );
+}

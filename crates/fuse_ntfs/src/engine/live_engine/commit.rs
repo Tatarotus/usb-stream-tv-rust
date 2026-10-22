@@ -27,6 +27,11 @@ impl LiveEngine {
         gen0: u64,
         epoch0: u64,
         now_ms0: u64,
+        return_ctx: bool,
+        // Arm/advance the return intent: `(next file offset, fresh chain)`.
+        // Applied ONLY when the captured generation is still current, so a
+        // stale read can never leave the intent armed behind an open/flush.
+        arm_return: Option<(u64, bool)>,
     ) -> (bool, usize) {
         let ring_for_full = self.ring.clone();
         let mut full_at = move |abs: u64, pkt: &mut [u8; TS_PKT_SZ]| -> bool {
@@ -43,6 +48,25 @@ impl LiveEngine {
             let mut x = self.xform.lock().unwrap_or_else(|e| e.into_inner());
             let mut a = self.anchor.lock().unwrap_or_else(|e| e.into_inner());
             generation_ok = a.gen == gen0 && a.active && a.epoch_seq == epoch0;
+            #[cfg(test)]
+            super::test_seam::park_in_commit_after_gen_check();
+            if generation_ok {
+                // Only a qualified return may deliver historical (rewound)
+                // content to the decoder; the transformer refuses a backward
+                // PTS shift in any other context.
+                x.set_return_ctx(return_ctx);
+                if let Some((next, fresh)) = arm_return {
+                    use std::sync::atomic::Ordering as O;
+                    let left = if fresh {
+                        crate::contract::RETURN_CHAIN_READS
+                    } else {
+                        self.return_left.load(O::Relaxed).saturating_sub(1)
+                    };
+                    self.return_next.store(next, O::Relaxed);
+                    self.return_left.store(left, O::Relaxed);
+                    self.return_pending.store(true, O::Relaxed);
+                }
+            }
             if to_copy > 0 && generation_ok {
                 x.apply_block(
                     &mut dst[prefix..prefix + to_copy],

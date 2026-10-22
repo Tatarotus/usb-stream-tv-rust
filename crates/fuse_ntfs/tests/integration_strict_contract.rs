@@ -60,16 +60,25 @@
 //!     band. Name kept for audit-trail continuity.
 //! 15. `stale_bookmark_after_return_cold_reanchors_fresh_live` — the tablet
 //!     incident: a large backward jump (> 32 MiB, stale saved bookmark
-//!     below 8 MiB) into a washed-out region is a cold restart — the very
-//!     first read after Return delivers the live band, PAT with SPS
-//!     immediately behind it, bit-exact ring bytes in a fresh identity
-//!     epoch; never the NULL head that loses PAT/SPS and freezes the MStar.
+//!     below 8 MiB) into a washed-out region re-anchors — the very first read
+//!     after Return delivers the live band, PAT with SPS immediately behind it,
+//!     and (ITERATION 12) a WARM splice continuing at `ref + SPLICE_PTS_EPS`;
+//!     never the NULL head that loses PAT/SPS, and never a cold identity reset
+//!     mid-stream (which froze the MStar on the device). Name kept historical.
 //! 16. `known_bug_large_bookmark_backward_jump_probe_preempts_cold_reanchor` —
 //!     the same incident with the bookmark >= 8 MiB: the probe rejection used
-//!     to return before the cold re-anchor, so the fixed path was unreachable
+//!     to return before the re-anchor, so the fixed path was unreachable
 //!     and the first read was still NULL soup. FIXED (TASK-008) by the same
 //!     qualified-return exception; steady-playback behind probes keep the
-//!     TASK-005 NULL-only isolation (test 6). Name kept for audit continuity.
+//!     TASK-005 NULL-only isolation (test 6). ITERATION 12 turns the re-anchor
+//!     into a warm splice for the same reason as test 15. Name kept historical.
+//! 17. `return_to_live_after_idle_gap_reanchors_within_the_ring` — the
+//!     iteration-11 Test B defect: the player returns to its saved bookmark
+//!     while that position is still INSIDE the ring (only the writer moved, so
+//!     the read is adjacent to the chain cursor), and used to resume there with
+//!     no re-anchor at all — the lag became permanent (15 -> 60.5 MiB measured).
+//!     A qualified adjacent return must be forced to the live band in a warm
+//!     splice.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -397,14 +406,25 @@ fn return_resume_seam_is_bit_exact() {
     assert_eq!(n, READ);
     assert_eq!(ec(&engine), e0 + 1, "exactly one splice epoch, on the 4th chained read");
     let base1 = base_spos(&engine);
-    // Tier 1 walks back from the snapped bookmark to the PAT of group
-    // `floor(f3 / 1880)`, exactly one PAT period below the target.
-    assert_eq!(
-        base1,
-        base0 + (f3 / UNIT_B) * UNIT_B,
-        "position-preserving PAT anchor at the bookmark"
+    // ITERATION 12 (audit, non-adjacent resident return): a qualified Return
+    // lands in the LIVE band, not at the resident bookmark. Resuming the
+    // bookmark is the D1 defect (live edge ran a whole break ahead). The anchor
+    // is snapped/PAT-walked inside the band, so the lead is bounded, not exact.
+    assert_eq!(base1 % TS_PKT_SZ as u64, 0, "anchor is 188-aligned");
+    assert!(
+        sw - base1 >= LEADBACK,
+        "qualified return must land in the live band: lead={} (LEADBACK {LEADBACK})",
+        sw - base1
     );
-    assert!(sw - base1 > LEADBACK, "anchor must not fall back to the live edge");
+    assert!(
+        sw - base1 < LEADBACK + 2 * UNIT_B,
+        "band walk-back is bounded: lead={}",
+        sw - base1
+    );
+    assert!(
+        base1 > base0 + f3,
+        "the live band is AHEAD of the bookmark target (base0 {base0}, f3 {f3})"
+    );
 
     let (eid, dpts, dpcr) = deltas(&engine);
     assert_eq!(eid, e0 + 1);
@@ -509,8 +529,10 @@ fn return_resume_seam_is_bit_exact() {
 // ================================================================== test 2
 
 /// Same splice, but with the *real* TV bookmark (1_900_544, phase 52) and the
-/// real 16 KiB block size. Position-preserving selection must still hold and
-/// every delivered PES/PCR is checked bit-exactly against the raw ring.
+/// real 16 KiB block size. The anchor must land in the live band (iteration-12
+/// audit) and every delivered PES/PCR is checked bit-exactly against the raw
+/// ring. Name kept for audit continuity: it used to assert a position-preserving
+/// bookmark anchor.
 #[test]
 fn return_resume_arbitrary_phase_is_position_preserving() {
     let engine = Arc::new(LiveEngine::new());
@@ -534,15 +556,19 @@ fn return_resume_arbitrary_phase_is_position_preserving() {
     assert_eq!(ec(&engine), e0 + 1, "one splice epoch on the 4th chained read");
     let base1 = base_spos(&engine);
 
-    // Position-preserving: far from the live edge, one PAT walk-back of the
-    // snapped bookmark target.
-    assert!(sw - base1 > LEADBACK, "must not fall back to the live edge");
-    let target = {
-        let t = base0 + f3;
-        t - (t % TS_PKT_SZ as u64)
-    };
-    assert!(base1 <= target, "anchor at or below the snapped target");
-    assert!(target - base1 < 2 * UNIT_B, "walk-back within two PAT periods");
+    // Same live-band contract, now with a non-188-aligned bookmark phase: the
+    // anchor stays 188-aligned and the block is mapped with the foff phase.
+    assert_eq!(base1 % TS_PKT_SZ as u64, 0, "anchor is 188-aligned");
+    assert!(
+        sw - base1 >= LEADBACK,
+        "qualified return must land in the live band: lead={}",
+        sw - base1
+    );
+    assert!(sw - base1 < LEADBACK + 2 * UNIT_B, "band walk-back is bounded");
+    assert!(
+        base1 > base0 + f3,
+        "the live band is AHEAD of the bookmark target (base0 {base0}, f3 {f3})"
+    );
 
     // Exact splice math, phase included (collect_raw starts at the aligned
     // anchor, so the first raw PES is unambiguous).
@@ -1001,12 +1027,21 @@ fn known_bug_resume_at_large_bookmark_never_returns_to_live() {
 ///
 /// The naive guard (`restart_at_zero`, `foff == 0`) missed this because the TV
 /// never asks byte 0: it asks its bookmark. The fix treats
-/// `large_backward_jump && is_washed_out` as a cold restart: the anchor is
-/// planted exactly at the requested offset (`base_foff = snap188(foff)`), the
-/// read is aligned on the fresh live edge at a PAT with the SPS immediately
-/// behind it, and the epoch is reset to identity - so the very first read
-/// delivers decodable live data instead of the NULL head that loses PAT/SPS
-/// and freezes the MStar on the first frame.
+/// `large_backward_jump && is_washed_out` as a restart: the anchor is planted
+/// exactly at the requested offset (`base_foff = snap188(foff)`), the read is
+/// aligned on the fresh live edge at a PAT with the SPS immediately behind it,
+/// and the very first read delivers decodable live data instead of the NULL
+/// head that loses PAT/SPS and freezes the MStar on the first frame.
+///
+/// ITERATION 12 (behaviour change, intentionally justifying this rewrite): the
+/// epoch for this restart is a WARM SPLICE, not an identity reset. The player is
+/// already mid-stream when it re-enters, so restarting the delivered timeline
+/// freezes the MStar decoder - the iteration-11 Test C failure, reproducible
+/// with the previous binary as well, where the picture died right after a
+/// `reanchor_commit reason=restart` cold epoch. The delivered timeline must
+/// therefore continue at `ref + SPLICE_PTS_EPS`. The test name is historical:
+/// the live-band anchor, the on-PAT/SPS alignment and the single re-anchor are
+/// unchanged.
 #[test]
 fn stale_bookmark_after_return_cold_reanchors_fresh_live() {
     let engine = Arc::new(LiveEngine::new());
@@ -1036,6 +1071,9 @@ fn stale_bookmark_after_return_cold_reanchors_fresh_live() {
     }
     assert_eq!(engine.anchor.lock().unwrap().last_fend, 36 * MI);
     assert_eq!(ec(&engine), e0, "playback never bumps the epoch");
+    let last_play_foff = 36 * MI - BLOCK as u64;
+    let ref_pts = last_pes_pts_any(&buf, last_play_foff).expect("playback tail PES");
+    let pre_pcr = pcr_list(&buf, last_play_foff).last().copied();
 
     // Return + absence: the stream advances ~100 MiB, washing out the whole
     // playback region (in production the ring had also already dropped the
@@ -1069,17 +1107,36 @@ fn stale_bookmark_after_return_cold_reanchors_fresh_live() {
     assert!(base1 <= snapped && snapped - base1 < 2 * UNIT_B, "live-band anchor");
 
     // The anchor is planted exactly at the requested offset, snapped to the
-    // packet grid, and the fresh identity epoch delivers raw ring bytes.
+    // packet grid.
     let phase = bm % TS_PKT_SZ as u64;
     assert_eq!(
         engine.anchor.lock().unwrap().base_foff,
         bm - phase,
         "base_foff == snap188(bookmark)"
     );
-    assert_eq!(deltas(&engine), (e0 + 1, 0, 0), "identity epoch (no shift)");
-    let mut raw = vec![0u8; READ];
-    engine.ring.lock().read_at(base1 + phase, &mut raw);
-    assert_eq!(rb, raw, "fresh live data is bit-exact ring bytes");
+    // ITERATION 12: the epoch is a WARM SPLICE instead of an identity reset, so
+    // the delivered timeline continues from the reference at exactly
+    // `ref + SPLICE_PTS_EPS`. Asserted against the raw live-band sample the
+    // splice was computed from - a wrong (stale) reference moves the seam, so
+    // this is stricter than the raw-byte comparison it replaces.
+    let (eid, dpts, _dpcr) = deltas(&engine);
+    assert_eq!(eid, e0 + 1, "exactly one splice epoch");
+    let want = pts_wrap(ref_pts + SPLICE_PTS_EPS);
+    let raw_first = raw_first_pes_pts(&engine, base1).expect("raw live-band PES");
+    assert_eq!(dpts, pts_sub(want, raw_first), "splice delta_pts exact");
+    assert_eq!(
+        first_pes_pts_any(&rb, bm),
+        Some(want),
+        "the return continues at ref + SPLICE_PTS_EPS instead of restarting"
+    );
+    assert!(
+        pts_sub(want, ref_pts) == SPLICE_PTS_EPS as i64,
+        "forward continuity: the timeline advances, never repeats or resets"
+    );
+    if let Some(pre) = pre_pcr {
+        let post = pcr_list(&rb, bm).first().copied().expect("post-splice PCR");
+        assert!(pcr_sub(post, pre) >= 0, "PCR must not regress at the seam");
+    }
     assert_eq!(engine.anchor.lock().unwrap().last_fend, bm + READ as u64);
 
     // The live edge lands on a PAT with the SPS immediately behind it: the
@@ -1094,14 +1151,33 @@ fn stale_bookmark_after_return_cold_reanchors_fresh_live() {
     assert_eq!(abs0, base1 + TS_PKT_SZ as u64, "first full packet is the SPS");
     assert!(ts_has_sps(p0), "first full packet carries the SPS");
 
-    // Read 2 - the chain continues live: no second splice, still bit-exact.
+    // Read 2 - the chain continues live in the SAME warm epoch: no second
+    // re-anchor, and every PES packet is the raw ring packet under the splice.
     let n = engine.serve_live(0, bm + READ as u64, &mut rb, 1000);
     assert_eq!(n, READ);
     assert!(!all_null(&rb));
     assert_eq!(ec(&engine), e0 + 1, "no second re-anchor");
-    let mut raw = vec![0u8; READ];
-    engine.ring.lock().read_at(base1 + phase + READ as u64, &mut raw);
-    assert_eq!(rb, raw, "second block is bit-exact too");
+    let mut spliced_pes = 0usize;
+    // `pkts` reports absolute ring positions when handed the delivery's ring
+    // base, so the per-packet comparison reads the raw packet the splice was
+    // computed from (the block starts at the anchor + its file offset).
+    let ring_base = base1 + (bm + READ as u64 - engine.anchor.lock().unwrap().base_foff);
+    for (abs, pkt) in pkts(&rb, ring_base) {
+        if pkt[0] != 0x47 {
+            continue;
+        }
+        let raw = raw_pkt_at(&engine, abs);
+        if let Some((pts, _)) = ts_pes_ts(pkt) {
+            let (raw_pts, _) = ts_pes_ts(&raw).expect("raw PES at the same position");
+            assert_eq!(
+                pts,
+                pts_apply(raw_pts, dpts),
+                "post-seam PES PTS at abs={abs}"
+            );
+            spliced_pes += 1;
+        }
+    }
+    assert!(spliced_pes > 0, "the second block carries spliced PES packets");
     assert_eq!(engine.ring.lock().telemetry().near_starve, 0);
 }
 
@@ -1110,9 +1186,18 @@ fn stale_bookmark_after_return_cold_reanchors_fresh_live() {
 /// The same production incident, but the TV's bookmark is above the 8 MiB
 /// probe floor (40 MiB) with the same class of large backward jump (~34 MiB).
 ///
-/// By parity with test 15: a washed-out backward jump is a cold
-/// restart - the first read delivers the live band (PAT+SPS) in a fresh
-/// identity epoch instead of NULL packets.
+/// By parity with test 15: a washed-out backward jump re-anchors onto the live
+/// band and the first read delivers it (PAT+SPS) instead of NULL packets.
+///
+/// ITERATION 12 (behaviour change, intentionally justifying this rewrite): the
+/// epoch for this re-anchor is a WARM SPLICE, not an identity reset. This is the
+/// exact geometry of the iteration-11 Test C freeze on the device (a 380 MiB
+/// backward jump onto a washed-out bookmark, followed by
+/// `reanchor_commit reason=restart` with a fresh epoch and then no media at
+/// all), and the picture died with the previous binary too, so the cold reset -
+/// not the candidate - is what the MStar decoder could not survive. The splice
+/// assertions below are recomputed from the raw ring; the test name stays
+/// historical.
 ///
 /// FIXED (TASK-008): in `StateMachine::evaluate` the probe classification used
 /// to run before the engine's restart decision, and `SmDecision::ProbeReject`
@@ -1148,6 +1233,9 @@ fn known_bug_large_bookmark_backward_jump_probe_preempts_cold_reanchor() {
     }
     assert_eq!(engine.anchor.lock().unwrap().last_fend, 74 * MI);
     assert_eq!(ec(&engine), e0, "playback never bumps the epoch");
+    let last_play_foff = 74 * MI - BLOCK as u64;
+    let ref_pts = last_pes_pts_any(&buf, last_play_foff).expect("playback tail PES");
+    let pre_pcr = pcr_list(&buf, last_play_foff).last().copied();
 
     engine
         .ring
@@ -1159,7 +1247,7 @@ fn known_bug_large_bookmark_backward_jump_probe_preempts_cold_reanchor() {
     assert!(74 * MI - bm > 32 * MI, "large backward jump");
     engine.ring.lock().shift_time_back(Duration::from_secs(7200));
 
-    // Read 1: desired = cold re-anchor onto the live band, exactly like test 15.
+    // Read 1: re-anchor onto the live band, exactly like test 15.
     let mut rb = vec![0u8; READ];
     let n = engine.serve_live(0, bm, &mut rb, 1000);
     assert_eq!(n, READ);
@@ -1167,17 +1255,130 @@ fn known_bug_large_bookmark_backward_jump_probe_preempts_cold_reanchor() {
         !all_null(&rb),
         "the first read after Return must be live data (test-15 parity)"
     );
-    assert_eq!(ec(&engine), e0 + 1, "cold re-anchor fires exactly once");
+    assert_eq!(ec(&engine), e0 + 1, "re-anchor fires exactly once");
     let base1 = base_spos(&engine);
     let target = sw - LEADBACK;
     let snapped = target - (target % TS_PKT_SZ as u64);
     assert!(base1 <= snapped && snapped - base1 < 2 * UNIT_B, "live-band anchor");
     let phase = bm % TS_PKT_SZ as u64;
     assert_eq!(engine.anchor.lock().unwrap().base_foff, bm - phase);
-    assert_eq!(deltas(&engine), (e0 + 1, 0, 0), "identity epoch (no shift)");
-    let mut raw = vec![0u8; READ];
-    engine.ring.lock().read_at(base1 + phase, &mut raw);
-    assert_eq!(rb, raw, "fresh live data is bit-exact ring bytes");
+    // ITERATION 12: a WARM SPLICE, not an identity reset - the delivered
+    // timeline continues at ref + SPLICE_PTS_EPS instead of restarting.
+    let (eid, dpts, _dpcr) = deltas(&engine);
+    assert_eq!(eid, e0 + 1, "exactly one splice epoch");
+    let want = pts_wrap(ref_pts + SPLICE_PTS_EPS);
+    let raw_first = raw_first_pes_pts(&engine, base1).expect("raw live-band PES");
+    assert_eq!(dpts, pts_sub(want, raw_first), "splice delta_pts exact");
+    assert_eq!(
+        first_pes_pts_any(&rb, bm),
+        Some(want),
+        "the return continues at ref + SPLICE_PTS_EPS instead of restarting"
+    );
+    assert!(
+        pts_sub(want, ref_pts) == SPLICE_PTS_EPS as i64,
+        "forward continuity: the timeline advances, never repeats or resets"
+    );
+    if let Some(pre) = pre_pcr {
+        let post = pcr_list(&rb, bm).first().copied().expect("post-splice PCR");
+        assert!(pcr_sub(post, pre) >= 0, "PCR must not regress at the seam");
+    }
+}
+
+// ================================================================== test 17
+
+/// Iteration 11, Test B on the tablet — the second operator-reported defect:
+/// "Return/reopen does not return to live". The player comes back to exactly
+/// where it stopped (its chain cursor) after an idle gap, while the writer ran
+/// on: the request is ADJACENT and still inside the ring, so the state machine
+/// sees no seek, no washed-out probe and no restart, and the engine used to
+/// keep serving from the stale position - the lag became permanent (measured
+/// 15 MiB -> 60.5 MiB and never recovered). A qualified adjacent return must be
+/// forced onto the live band, in a warm splice so the delivered timeline
+/// continues instead of resetting (the iteration-11 Test C freeze).
+#[test]
+fn return_to_live_after_idle_gap_reanchors_within_the_ring() {
+    let engine = Arc::new(LiveEngine::new());
+    engine
+        .ring
+        .write_chunk(&strict_stream(500_000, 56_000, true)); // ~10.04 MiB
+    let mut buf = vec![0u8; BLOCK];
+    let n = engine.serve_live(0, 0, &mut buf, 1000);
+    assert_eq!(n, BLOCK);
+    let e0 = ec(&engine);
+
+    // Steady sequential playback, one block at a time.
+    let mut foff = BLOCK as u64;
+    while foff < 4 * MI {
+        let n = engine.serve_live(0, foff, &mut buf, 1000);
+        assert_eq!(n, BLOCK, "playback read at {foff}");
+        assert!(!all_null(&buf), "playback is in-window all along");
+        foff += BLOCK as u64;
+    }
+    let last_play_foff = 4 * MI - BLOCK as u64;
+    let ref_pts = last_pes_pts_any(&buf, last_play_foff).expect("playback tail PES");
+    let pre_pcr = pcr_list(&buf, last_play_foff).last().copied();
+    let cursor = engine.anchor.lock().unwrap().last_fend;
+    let old_base_foff = engine.anchor.lock().unwrap().base_foff;
+    assert_eq!(cursor, 4 * MI, "the chain cursor is where playback stopped");
+    assert_eq!(ec(&engine), e0, "playback never bumps the epoch");
+
+    // The operator leaves the TV: the stream runs on ~55 MiB, so the live edge
+    // is far ahead of the parked playhead - but the playhead itself is still
+    // inside the 128 MiB ring, so it is NOT washed out and no other trigger
+    // (restart_at_zero, large_backward_jump, seq_behind_ring) applies.
+    engine
+        .ring
+        .write_chunk(&strict_stream(60_000_000, 306_000, true)); // ~57 MiB
+    let sw = engine.ring.lock().s_write();
+    let ring_old = engine.ring.lock().ring_old();
+    let mapped = base_spos(&engine) + (cursor - old_base_foff);
+    assert!(
+        mapped > ring_old,
+        "the returned-to position is still in the ring ({mapped} > {ring_old})"
+    );
+    assert!(sw - mapped > LEADBACK, "the live edge ran more than a lead ahead");
+    engine.ring.lock().shift_time_back(Duration::from_secs(7200));
+
+    // The Return: the player asks for exactly where it stopped.
+    let n = engine.serve_live(0, cursor, &mut buf, 1000);
+    assert_eq!(n, BLOCK);
+    assert!(
+        !all_null(&buf),
+        "the Return must deliver live media, not the stale position"
+    );
+    assert_eq!(ec(&engine), e0 + 1, "the Return re-anchors exactly once");
+    let base1 = base_spos(&engine);
+    let target = sw - LEADBACK;
+    let snapped = target - (target % TS_PKT_SZ as u64);
+    assert!(base1 <= snapped && snapped - base1 < 2 * UNIT_B, "live-band anchor");
+    // Warm splice: the timeline continues at ref + SPLICE_PTS_EPS.
+    let (eid, dpts, _dpcr) = deltas(&engine);
+    assert_eq!(eid, e0 + 1, "exactly one splice epoch");
+    let want = pts_wrap(ref_pts + SPLICE_PTS_EPS);
+    let raw_first = raw_first_pes_pts(&engine, base1).expect("raw live-band PES");
+    assert_eq!(dpts, pts_sub(want, raw_first), "splice delta_pts exact");
+    assert_eq!(
+        first_pes_pts_any(&buf, cursor),
+        Some(want),
+        "the Return continues at ref + SPLICE_PTS_EPS instead of restarting"
+    );
+    assert!(
+        pts_sub(want, ref_pts) == SPLICE_PTS_EPS as i64,
+        "forward continuity: the timeline advances, never repeats or resets"
+    );
+    if let Some(pre) = pre_pcr {
+        let post = pcr_list(&buf, cursor).first().copied().expect("post-splice PCR");
+        assert!(pcr_sub(post, pre) >= 0, "PCR must not regress at the seam");
+    }
+
+    // And it stays live: the following adjacent read keeps the same anchor, so
+    // the lag cannot creep back to the old permanent value.
+    let n = engine.serve_live(0, cursor + BLOCK as u64, &mut buf, 1000);
+    assert_eq!(n, BLOCK);
+    assert!(!all_null(&buf));
+    assert_eq!(ec(&engine), e0 + 1, "no second re-anchor");
+    assert_eq!(base_spos(&engine), base1, "the live anchor is kept");
+    assert_eq!(engine.ring.lock().telemetry().near_starve, 0);
 }
 
 // ================================================================== test 6

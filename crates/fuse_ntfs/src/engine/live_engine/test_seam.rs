@@ -54,6 +54,96 @@ pub(super) fn park_before_commit() {
     park();
 }
 
+/// Second, INDEPENDENT seam: parked inside `commit_delivery`'s `xform`+`anchor`
+/// critical section, right after the generation check and before the return
+/// intent is armed. It must not share the state of the first seam, otherwise
+/// `park_before_commit()` (which runs earlier, outside the lock) would swallow
+/// the park. This is the only point where a test can hold the anchor, with a
+/// valid generation, against a concurrent `on_open()`.
+pub(super) fn arm_commit_hold() {
+    *commit_hold().state.lock().unwrap_or_else(|e| e.into_inner()) = 1;
+}
+
+pub(super) fn wait_commit_hold_reached() {
+    let s = commit_hold();
+    let mut g = s.state.lock().unwrap_or_else(|e| e.into_inner());
+    while *g < 2 {
+        g = s.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+    }
+}
+
+pub(super) fn release_commit_hold() {
+    let s = commit_hold();
+    *s.state.lock().unwrap_or_else(|e| e.into_inner()) = 3;
+    s.cv.notify_all();
+}
+
+fn commit_hold() -> &'static Seam {
+    static HOLD: OnceLock<Seam> = OnceLock::new();
+    HOLD.get_or_init(|| Seam {
+        state: Mutex::new(0),
+        cv: Condvar::new(),
+    })
+}
+
+/// Third, independent seam: parked in `on_open()` immediately after the
+/// `anchor` lock is acquired and BEFORE the return intent is cleared and the
+/// generation is bumped. It lets a test observe, deterministically, whether an
+/// arming commit landed before or after the reset's critical section.
+pub(super) fn arm_open_hold() {
+    *open_hold().state.lock().unwrap_or_else(|e| e.into_inner()) = 1;
+}
+
+pub(super) fn wait_open_hold_reached() {
+    let s = open_hold();
+    let mut g = s.state.lock().unwrap_or_else(|e| e.into_inner());
+    while *g < 2 {
+        g = s.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+    }
+}
+
+pub(super) fn release_open_hold() {
+    let s = open_hold();
+    *s.state.lock().unwrap_or_else(|e| e.into_inner()) = 3;
+    s.cv.notify_all();
+}
+
+fn open_hold() -> &'static Seam {
+    static HOLD: OnceLock<Seam> = OnceLock::new();
+    HOLD.get_or_init(|| Seam {
+        state: Mutex::new(0),
+        cv: Condvar::new(),
+    })
+}
+
+pub(super) fn park_in_open_after_anchor_lock() {
+    let s = open_hold();
+    let mut g = s.state.lock().unwrap_or_else(|e| e.into_inner());
+    if *g != 1 {
+        return;
+    }
+    *g = 2;
+    s.cv.notify_all();
+    while *g != 3 {
+        g = s.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+    }
+    *g = 0;
+}
+
+pub(super) fn park_in_commit_after_gen_check() {
+    let s = commit_hold();
+    let mut g = s.state.lock().unwrap_or_else(|e| e.into_inner());
+    if *g != 1 {
+        return;
+    }
+    *g = 2;
+    s.cv.notify_all();
+    while *g != 3 {
+        g = s.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+    }
+    *g = 0;
+}
+
 /// Called by the engine after the new sequence is computed and before the
 /// atomic transformer-update + anchor-publication section. No-op unless the
 /// seam is armed.
