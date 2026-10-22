@@ -130,6 +130,49 @@ pub(super) fn park_in_open_after_anchor_lock() {
     *g = 0;
 }
 
+/// Fourth, independent seam: parked immediately after `serve_live` snapshots
+/// the anchor generation and before any shared state (anchor mapping, intent,
+/// state machine) is read or written.
+pub(super) fn arm_after_snapshot() {
+    *after_snapshot().state.lock().unwrap_or_else(|e| e.into_inner()) = 1;
+}
+
+pub(super) fn wait_after_snapshot_reached() {
+    let s = after_snapshot();
+    let mut g = s.state.lock().unwrap_or_else(|e| e.into_inner());
+    while *g < 2 {
+        g = s.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+    }
+}
+
+pub(super) fn release_after_snapshot() {
+    let s = after_snapshot();
+    *s.state.lock().unwrap_or_else(|e| e.into_inner()) = 3;
+    s.cv.notify_all();
+}
+
+fn after_snapshot() -> &'static Seam {
+    static HOLD: OnceLock<Seam> = OnceLock::new();
+    HOLD.get_or_init(|| Seam {
+        state: Mutex::new(0),
+        cv: Condvar::new(),
+    })
+}
+
+pub(super) fn park_after_gen_snapshot() {
+    let s = after_snapshot();
+    let mut g = s.state.lock().unwrap_or_else(|e| e.into_inner());
+    if *g != 1 {
+        return;
+    }
+    *g = 2;
+    s.cv.notify_all();
+    while *g != 3 {
+        g = s.cv.wait(g).unwrap_or_else(|e| e.into_inner());
+    }
+    *g = 0;
+}
+
 pub(super) fn park_in_commit_after_gen_check() {
     let s = commit_hold();
     let mut g = s.state.lock().unwrap_or_else(|e| e.into_inner());

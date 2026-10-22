@@ -647,3 +647,63 @@ fn concurrent_on_open_cannot_leave_the_return_intent_armed() {
     // (6) Final state after the concurrent open.
     assert_intent_off(&e, "a concurrent on_open after the commit armed the intent");
 }
+
+// ---- ITERATION 15b: stale read must not cancel a NEW generation's intent ----
+
+/// AUDIT (Astra finding, iteration 15). A read that snapshotted generation `G`
+/// and then lost it (an open completed while it was preparing) must not run the
+/// classification at all: the chain-cancellation would clear the intent that
+/// the NEW generation is legitimately holding (the foff of the stale request is
+/// not the new chain's expected next offset).
+///
+/// Ordering is explicit: the reader parks right after the generation snapshot
+/// (no shared state touched), the reset completes, a NEW intent is armed, then
+/// the stale read is released. Deterministic; no sleep.
+#[test]
+fn stale_read_cannot_cancel_a_new_generation_return_intent() {
+    use std::sync::atomic::Ordering::Relaxed;
+
+    let e = LiveEngine::new();
+    let data = mk_stream(270_000, 0x55);
+    establish(&e, &data);
+
+    let next = 8 * 1024 * 1024u64; // the NEW chain's expected offset
+    let foff = 4 * 1024 * 1024u64; // stale request, deliberately not `next`
+
+    test_seam::arm_after_snapshot();
+    thread::scope(|s| {
+        let reader = s.spawn(|| {
+            let mut d = vec![0u8; READ_LEN];
+            e.serve_live(0, foff, &mut d, 0);
+            d
+        });
+        test_seam::wait_after_snapshot_reached();
+
+        // Reset completes: the read's generation is now stale.
+        e.on_open();
+        // The new generation arms its own return chain.
+        e.return_pending.store(true, Relaxed);
+        e.return_left.store(crate::contract::RETURN_CHAIN_READS, Relaxed);
+        e.return_next.store(next, Relaxed);
+
+        test_seam::release_after_snapshot();
+        let out = reader.join().expect("reader");
+        assert_null(&out);
+    });
+
+    // The stale request must not have cancelled the new generation's intent.
+    assert!(
+        e.return_pending.load(Relaxed),
+        "a stale read must not cancel a new generation's return intent"
+    );
+    assert_eq!(
+        e.return_left.load(Relaxed),
+        crate::contract::RETURN_CHAIN_READS,
+        "the new chain's read budget must be untouched"
+    );
+    assert_eq!(
+        e.return_next.load(Relaxed),
+        next,
+        "the new chain's expected offset must be untouched"
+    );
+}

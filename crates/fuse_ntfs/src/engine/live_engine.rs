@@ -189,6 +189,8 @@ impl StreamBackend for LiveEngine {
         }
 
         let (snapshot_gen, mut delivery_gen) = { let g = self.anchor.lock().unwrap_or_else(|e| e.into_inner()).gen; (g, g) };
+        #[cfg(test)]
+        test_seam::park_after_gen_snapshot();
         // 1. If ring is cold or empty, wait or fill null and return.
         {
             let mut cur_write = self.ring.lock().s_write();
@@ -219,6 +221,14 @@ impl StreamBackend for LiveEngine {
 
         // Map foff to mapped_spos and decide re-anchor.
         let anchor = self.anchor.lock().unwrap_or_else(|e| e.into_inner());
+        // Astra/iteration-15: a read that lost its generation (an open/flush
+        // completed while this request was preparing) must not classify, cancel
+        // a NEW generation's return intent or mutate the state machine. Abort as
+        // stale right here, before any shared state is touched.
+        if anchor.gen != snapshot_gen {
+            drop(anchor);
+            return self.obs_abort_stale(dst, foff);
+        }
         let mapped_spos0 = if anchor.active {
             if foff >= anchor.base_foff {
                 anchor.base_spos + (foff - anchor.base_foff)
