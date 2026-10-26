@@ -1,0 +1,35 @@
+{
+  "cluster_size": 4096,
+  "files": [
+    {
+      "path": "/Favoritos/Abertos/SBT.trp",
+      "mft_inode": 66,
+      "logical_size": 4000000000,
+      "initialized_size": 4000000000,
+      "runs": [
+        {
+          "vcn": 0,
+          "lcn": 4195432,
+          "clusters": 976563
+        }
+      ]
+    },
+    {
+      "path": "/Favoritos/Abertos/Record.trp",
+      "mft_inode": 67,
+      "logical_size": 4000000000,
+      "initialized_size": 4000000000,
+      "runs": [
+        {
+          "vcn": 0,
+          "lcn": 5176088,
+          "clusters": 976563
+        }
+      ]
+    }
+  ],
+  "schema_version": 1,
+  "volume_bytes": 137438953472,
+  "host_physical_bytes": 71811072,
+  "note": "Offline virtual metadata only; no source IDs, media transport or bootstrap included"
+}

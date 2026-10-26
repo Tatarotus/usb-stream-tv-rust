@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "template_sparse_sha256": "583b837b02da06121bcc5927d29de184465cc8e18c47358d3d7fc6b63293a0d6",
+  "template_sparse_bytes": 193181,
+  "layout_sha256": "5c898a9699f637f246a64601a52891502c87f4fb96e108fee5d4e237110ca9df",
+  "volume_bytes": 137438953472,
+  "layout_bytes": 776,
+  "files": [
+    "/Favoritos/Abertos/SBT.trp",
+    "/Favoritos/Abertos/Record.trp"
+  ],
+  "package_id": "6fa5c6a8d48a42c7b3debc88f592deadb49ace32988bd0bae8d2624fc0523862"
+}

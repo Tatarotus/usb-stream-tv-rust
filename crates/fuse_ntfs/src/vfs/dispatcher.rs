@@ -22,6 +22,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::contract::{StreamBackend, TS_PKT_SZ};
+use crate::favorites::extents::MapRegion;
+use crate::favorites::runtime::FavoritesRuntime;
 use crate::observability::{EventKind, Observer, Reason, UNSET};
 use crate::vfs::catalog::{Catalog, NodeKind};
 use crate::vfs::fuse_abi::*;
@@ -61,6 +63,8 @@ pub struct NtfsServer {
     pub backend: Arc<dyn StreamBackend>,
     pub deadline_ms: u64,
     pub obs: Observer,
+    /// Opt-in favorites route. `None` preserves the Single Live/VOD path.
+    pub favorites: Option<Arc<FavoritesRuntime>>,
 }
 
 impl NtfsServer {
@@ -77,6 +81,7 @@ impl NtfsServer {
             backend,
             deadline_ms: DEFAULT_DEADLINE_MS,
             obs: Observer::disabled(),
+            favorites: None,
         }
     }
 
@@ -84,6 +89,14 @@ impl NtfsServer {
     /// behavior are unchanged; the default is a disabled observer.
     pub fn with_observer(mut self, obs: Observer) -> Self {
         self.obs = obs;
+        self
+    }
+
+    /// Enables the opt-in favorites disk map. Callers must have validated the
+    /// template/layout/bootstrap package first; unknown files still fail
+    /// closed (NULL packets), never fall back to `catalog.active_node()`.
+    pub fn with_favorites(mut self, favorites: Arc<FavoritesRuntime>) -> Self {
+        self.favorites = Some(favorites);
         self
     }
 
@@ -173,33 +186,74 @@ impl NtfsServer {
                 dst[done..].fill(0);
                 break;
             }
-            match self.template.route(cur) {
-                DiskRegion::Data(foff) => {
-                    let run = self.template.data_run_len(cur);
-                    let rem = (dst.len() - done) as u64;
-                    let chunk = rem.min(run) as usize;
-                    if chunk == 0 {
-                        dst[done..].fill(0);
-                        break;
+            if let Some(favorites) = &self.favorites {
+                match favorites.route(cur) {
+                    MapRegion::File {
+                        file_id,
+                        file_offset,
+                        len,
+                    } => {
+                        let rem = (dst.len() - done) as u64;
+                        let chunk = rem.min(len) as usize;
+                        if chunk == 0 {
+                            dst[done..].fill(0);
+                            break;
+                        }
+                        let n = favorites.serve_file(
+                            file_id,
+                            file_offset,
+                            &mut dst[done..done + chunk],
+                        );
+                        if n == 0 {
+                            dst[done..].fill(0);
+                            break;
+                        }
+                        done += n;
+                        cur += n as u64;
                     }
-                    let n = self.serve_stream(foff, &mut dst[done..done + chunk]);
-                    done += n;
-                    cur += n as u64;
+                    MapRegion::Metadata { .. } | MapRegion::Unmapped { .. } => {
+                        // Still template-backed: VBR/MFT/index sectors live in
+                        // sparse holes that the layout does not enumerate.
+                        // This never routes to an active channel.
+                        let before = done;
+                        self.serve_template_chunk(cur, dst, &mut done);
+                        cur += (done - before) as u64;
+                    }
                 }
-                DiskRegion::Metadata(_) => {
-                    let sec = cur / BPS as u64;
-                    let sec_off = (cur % BPS as u64) as usize;
-                    let rem = (dst.len() - done) as u64;
-                    let chunk = rem.min((BPS - sec_off) as u64) as usize;
-                    let mut sec_buf = [0u8; BPS];
-                    self.template.read_sector(sec, &mut sec_buf);
-                    dst[done..done + chunk].copy_from_slice(&sec_buf[sec_off..sec_off + chunk]);
-                    done += chunk;
-                    cur += chunk as u64;
+            } else {
+                match self.template.route(cur) {
+                    DiskRegion::Data(foff) => {
+                        let run = self.template.data_run_len(cur);
+                        let rem = (dst.len() - done) as u64;
+                        let chunk = rem.min(run) as usize;
+                        if chunk == 0 {
+                            dst[done..].fill(0);
+                            break;
+                        }
+                        let n = self.serve_stream(foff, &mut dst[done..done + chunk]);
+                        done += n;
+                        cur += n as u64;
+                    }
+                    DiskRegion::Metadata(_) => {
+                        let before = done;
+                        self.serve_template_chunk(cur, dst, &mut done);
+                        cur += (done - before) as u64;
+                    }
                 }
             }
         }
         dst.len()
+    }
+
+    fn serve_template_chunk(&self, cur: u64, dst: &mut [u8], done: &mut usize) {
+        let sec = cur / BPS as u64;
+        let sec_off = (cur % BPS as u64) as usize;
+        let rem = (dst.len() - *done) as u64;
+        let chunk = rem.min((BPS - sec_off) as u64) as usize;
+        let mut sec_buf = [0u8; BPS];
+        self.template.read_sector(sec, &mut sec_buf);
+        dst[*done..*done + chunk].copy_from_slice(&sec_buf[sec_off..sec_off + chunk]);
+        *done += chunk;
     }
 
     /// Routes stream-data reads through the active catalog entry.
@@ -1071,5 +1125,56 @@ mod tests {
         session.dispatch(&req.0[..IN_HDR_SZ], &mut out);
         assert_eq!(out_len(&out), OUT_HDR_SZ);
         assert_eq!(out_err(&out), -libc::EINVAL);
+    }
+
+    #[test]
+    fn favorites_route_ignores_global_active_and_serves_bootstrap() {
+        use crate::favorites::extents::ExtentMap;
+        use crate::favorites::runtime::{FavoriteFile, FavoritesRuntime, RuntimeConfig};
+        use crate::vfs::ntfs_mft::parse_runlist;
+
+        let mut encoded = vec![0x44];
+        encoded.extend_from_slice(&(1024u32).to_le_bytes());
+        encoded.extend_from_slice(&(256i32).to_le_bytes());
+        encoded.push(0);
+        let runs = parse_runlist(&encoded);
+        let mut map = ExtentMap::new(8 * 1024 * 1024).unwrap();
+        map.add_metadata(0, 1024 * 1024).unwrap();
+        map.add_file_runs(7, &runs, 1 * 1024 * 1024).unwrap();
+        let runtime = Arc::new(
+            FavoritesRuntime::new(
+                map,
+                vec![FavoriteFile {
+                    file_id: 7,
+                    channel_id: "sbt".into(),
+                    path: "Favoritos/Abertos/SBT.trp".into(),
+                    logical_size: 1024 * 1024,
+                }],
+                RuntimeConfig::new("session", "manifest"),
+            )
+            .unwrap(),
+        );
+        let backend = ProbeBackend::new();
+        let server = Arc::new(
+            NtfsServer::new(
+                NtfsTemplate::synthesized(),
+                Catalog::new(1024),
+                backend.clone(),
+            )
+            .with_favorites(runtime.clone()),
+        );
+        server.catalog.set_active(1);
+        let disk_start = 1024 * 1024u64;
+        let bootstrap = runtime.bootstrap(7).unwrap();
+        let mut buf = vec![0u8; TS_PKT_SZ * 4];
+        assert_eq!(server.serve_read(FILE_INO, disk_start, &mut buf), buf.len());
+        assert_eq!(&buf[..], &bootstrap.bytes()[..buf.len()]);
+        assert!(backend.live_calls.lock().unwrap().is_empty());
+
+        // A read in the unallocated hole still comes from the template and
+        // never from the active catalog channel.
+        let mut hole = vec![0xFFu8; 512];
+        server.serve_read(FILE_INO, 2 * 1024 * 1024, &mut hole);
+        assert!(backend.live_calls.lock().unwrap().is_empty());
     }
 }

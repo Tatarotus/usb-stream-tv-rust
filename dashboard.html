@@ -105,6 +105,7 @@
 
         .app-container {
             width: 100%;
+            min-width: 0;
             max-width: 640px;
             padding: max(16px, env(safe-area-inset-top)) 16px calc(96px + env(safe-area-inset-bottom, 0px)) 16px;
             display: flex;
@@ -695,11 +696,13 @@
         /* ==================== GRADE DE 2 COLUNAS DE VODS PRONTOS ==================== */
         .vod-grid-2col {
             display: grid;
-            grid-template-columns: repeat(2, 1fr);
+            grid-template-columns: repeat(2, minmax(0, 1fr));
             gap: 12px;
+            min-width: 0;
         }
 
         .vod-grid-card {
+            min-width: 0;
             background: var(--surface);
             border: 2px solid var(--border);
             border-radius: 14px;
@@ -769,6 +772,7 @@
         }
 
         .vod-grid-body {
+            min-width: 0;
             padding: 10px;
             display: flex;
             flex-direction: column;
@@ -1357,6 +1361,22 @@
         }
 
         /* Área de Salvos na TV & Chips (Stitch Mobile Redesign) */
+        #section-saved,
+        #section-saved > *,
+        #section-saved .vod-movie-card,
+        #section-saved .vod-card-top {
+            min-width: 0;
+            max-width: 100%;
+        }
+        #section-saved .vod-meta,
+        #section-saved .vod-status-detail,
+        #section-saved .vod-speed-detail,
+        #section-saved .saved-disk-label,
+        #section-saved .saved-disk-val,
+        #section-saved .saved-disk-count {
+            min-width: 0;
+            overflow-wrap: anywhere;
+        }
         .saved-header-card {
             background: var(--surface-container);
             border: 1px solid var(--border-prominent);
@@ -1523,6 +1543,8 @@
         }
         .saved-filter-chips {
             display: flex;
+            min-width: 0;
+            max-width: 100%;
             gap: 8px;
             overflow-x: auto;
             padding: 4px 2px 8px 2px;
@@ -2480,11 +2502,11 @@
         /* ==================== ESTILOS STITCH SENIOR MOBILE REDESIGN ==================== */
 
         /* 3D Tactile Buttons & Surfaces */
-        .cat-quick-box, .btn-modal-action, .btn-paginator-action, .btn-paginator-top, .bottom-nav-item, .btn-voice-search, .pwa-install-btn {
+        .cat-quick-box, .btn-modal-action, .btn-paginator-action, .btn-paginator-top, .bottom-nav-item, .pwa-install-btn {
             box-shadow: 0 4px 0 rgba(0, 0, 0, 0.45);
             transition: transform 0.1s ease, box-shadow 0.1s ease, background 0.15s ease;
         }
-        .cat-quick-box:active, .btn-modal-action:active, .btn-paginator-action:active, .btn-paginator-top:active, .bottom-nav-item:active, .btn-voice-search:active {
+        .cat-quick-box:active, .btn-modal-action:active, .btn-paginator-action:active, .btn-paginator-top:active, .bottom-nav-item:active {
             transform: translateY(2px) !important;
             box-shadow: 0 2px 0 rgba(0, 0, 0, 0.45) !important;
         }
@@ -2527,7 +2549,7 @@
 
 
 
-        /* Cartão de Busca Sênior com Microfone / Comando de Voz */
+        /* Cartão de pesquisa por texto */
         .senior-search-card {
             background: var(--surface-container);
             border: 2px solid var(--border);
@@ -2563,7 +2585,7 @@
             background: var(--surface-card) !important;
             border: 2px solid var(--border) !important;
             border-radius: 14px !important;
-            padding: 0 180px 0 16px !important;
+            padding: 0 60px 0 16px !important;
             font-size: 18px !important;
             font-weight: 600 !important;
             color: #ffffff !important;
@@ -2571,9 +2593,7 @@
             outline: none !important;
             transition: all 0.2s ease !important;
         }
-        /* Inputs de URL (YouTube/Magnet): têm apenas o botão ✕ de 44px à direita,
-           não o grupo de ações (limpar + microfone + enviar) dos campos de busca.
-           Sem esta regra, o padding de 180px reduz a área visível do link a ~33%. */
+        /* Reserva espaço para limpar o link sem comprimir o texto no celular. */
         .senior-search-input.yt-url-input-field {
             padding: 0 60px 0 16px !important;
         }
@@ -2591,33 +2611,6 @@
             align-items: center;
             gap: 8px;
             z-index: 5;
-        }
-        .btn-voice-search {
-            min-height: 46px;
-            padding: 0 14px;
-            background: var(--secondary-container);
-            color: var(--on-secondary);
-            border: none;
-            border-radius: 12px;
-            font-size: 16px;
-            font-weight: 800;
-            font-family: var(--font-family);
-            display: flex;
-            align-items: center;
-            gap: 4px;
-            cursor: pointer;
-            box-shadow: 0 3px 0 rgba(0, 0, 0, 0.35);
-            flex-shrink: 0;
-        }
-        .btn-voice-search.listening {
-            background: #ef4444 !important;
-            color: #ffffff !important;
-            animation: voice-pulse 1.2s infinite ease-in-out;
-        }
-        @keyframes voice-pulse {
-            0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
-            50% { transform: scale(1.06); box-shadow: 0 0 0 12px rgba(239, 68, 68, 0); }
-            100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
         }
         .btn-clear-search {
             position: static !important;
@@ -2902,7 +2895,7 @@
             background: var(--surface-card);
             border: 2px solid var(--border-prominent);
             border-radius: 14px;
-            padding: 0 170px 0 46px;
+            padding: 0 60px 0 46px;
             font-size: 17px;
             font-weight: 600;
             color: #ffffff;
@@ -3248,106 +3241,6 @@
             justify-content: center !important;
         }
 
-        /* Modal de Comando de Voz */
-        .voice-modal {
-            position: fixed;
-            inset: 0;
-            z-index: 3000;
-            background: rgba(6, 14, 32, 0.88);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-        }
-        .voice-modal-box {
-            background: var(--surface-card);
-            border: 2px solid var(--secondary);
-            border-radius: 24px;
-            padding: 32px 24px;
-            max-width: 440px;
-            width: 100%;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            text-align: center;
-            gap: 16px;
-            box-shadow: 0 16px 48px rgba(0, 0, 0, 0.85);
-        }
-        .voice-wave-ring {
-            width: 88px;
-            height: 88px;
-            border-radius: 50%;
-            background: var(--secondary-container);
-            color: var(--on-secondary);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            animation: voice-ring-pulse 1.4s infinite ease-in-out;
-        }
-        @keyframes voice-ring-pulse {
-            0% { box-shadow: 0 0 0 0 rgba(238, 152, 0, 0.8); transform: scale(0.95); }
-            50% { box-shadow: 0 0 0 24px rgba(238, 152, 0, 0); transform: scale(1.08); }
-            100% { box-shadow: 0 0 0 0 rgba(238, 152, 0, 0); transform: scale(0.95); }
-        }
-        .voice-mic-icon {
-            font-size: 44px;
-        }
-        .voice-status-title {
-            font-size: 24px;
-            font-weight: 900;
-            color: var(--text-primary);
-        }
-        .voice-transcript-text {
-            font-size: 19px;
-            font-weight: 700;
-            color: var(--secondary);
-            min-height: 56px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            line-height: 1.3;
-        }
-        .voice-tip-text {
-            font-size: 15px;
-            color: var(--text-muted);
-        }
-        .btn-voice-confirm {
-            min-height: 50px;
-            padding: 0 20px;
-            background: #4edea3;
-            border: none;
-            color: #062b1a;
-            border-radius: 12px;
-            font-size: 16px;
-            font-weight: 800;
-            cursor: pointer;
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            margin-top: 8px;
-            box-shadow: 0 4px 12px rgba(78, 222, 163, 0.35);
-            transition: transform 0.1s ease;
-        }
-        .btn-voice-confirm:active {
-            transform: scale(0.97);
-        }
-        .btn-voice-cancel {
-            min-height: 50px;
-            padding: 0 24px;
-            background: var(--surface-variant);
-            border: 1px solid var(--border-prominent);
-            color: var(--text-primary);
-            border-radius: 12px;
-            font-size: 17px;
-            font-weight: 800;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            margin-top: 8px;
-        }
 
         /* Barra de Navegação Inferior Fixa (Bottom Mode Nav) */
         .bottom-mode-nav {
@@ -3365,7 +3258,9 @@
         }
         .bottom-nav-grid {
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            width: 100%;
+            min-width: 0;
             gap: 8px;
             height: 72px;
             max-width: 640px;
@@ -3375,6 +3270,7 @@
         }
         .bottom-nav-item {
             display: flex;
+            min-width: 0;
             flex-direction: column;
             align-items: center;
             justify-content: center;
@@ -3393,6 +3289,8 @@
             font-size: 28px;
         }
         .bottom-nav-label {
+            width: 100%;
+            min-width: 0;
             font-size: 14px;
             font-weight: 700;
             margin-top: 2px;
@@ -3458,24 +3356,38 @@
                         <span class="material-symbols-outlined">save</span>
                     </div>
                     <div class="saved-card-info">
-                        <h2 class="saved-card-title">Salvos na TV e Pendrive</h2>
-                        <p class="saved-card-desc">Assista direto do pendrive da TV sem usar internet e sem engasgos.</p>
+                        <h2 class="saved-card-title">Filmes e vídeos salvos</h2>
+                        <p id="saved-storage-desc" class="saved-card-desc">Vídeos preparados para assistir na TV.</p>
                     </div>
                 </div>
 
-                <!-- Status do Disco da TV -->
+                <!-- Espaço do servidor usado na preparação dos vídeos -->
                 <div class="saved-disk-box">
                     <div class="saved-disk-header">
                         <span class="saved-disk-label">
                             <span class="material-symbols-outlined">hard_drive</span>
-                            Espaço Livre no Pendrive da TV:
+                            Espaço livre na VPS (temporário):
                         </span>
-                        <span id="saved-disk-info" class="saved-disk-val">28 GB Livres (80%)</span>
+                        <span id="saved-disk-info" class="saved-disk-val">Verificando...</span>
                     </div>
                     <div class="saved-disk-track">
-                        <div id="saved-disk-progress" class="saved-disk-fill" style="width: 20%;"></div>
+                        <div id="saved-disk-progress" class="saved-disk-fill" style="width: 0%;"></div>
                     </div>
                     <span id="saved-disk-subtext" class="saved-disk-count">0 Filmes e Capítulos salvos prontos para tocar.</span>
+                </div>
+
+                <div id="saved-drive-box" class="saved-disk-box" style="display: none;" aria-live="polite">
+                    <div class="saved-disk-header">
+                        <span class="saved-disk-label">
+                            <span class="material-symbols-outlined" data-hydrated="1" aria-hidden="true"><svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor" focusable="false" style="display:block;"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4a7.48 7.48 0 0 0-6.65 4.04A6 6 0 0 0 6 20h13a5 5 0 0 0 .35-9.96z"/></svg></span>
+                            Espaço livre no Google Drive:
+                        </span>
+                        <span id="saved-drive-info" class="saved-disk-val">Verificando...</span>
+                    </div>
+                    <div id="saved-drive-track" class="saved-disk-track" style="display: none;">
+                        <div id="saved-drive-progress" class="saved-disk-fill" style="width: 0%;"></div>
+                    </div>
+                    <span class="saved-disk-count">Novos vídeos são salvos no Drive. A reprodução usa internet.</span>
                 </div>
 
                 <!-- Botões de Ação do Topo -->
@@ -3523,6 +3435,7 @@
                 <div id="saved-active-list" class="active-downloads-list"></div>
             </div>
 
+
             <!-- Filtros de Conteúdo Salvo -->
             <div class="saved-filter-chips" role="tablist" aria-label="Filtros de conteúdo salvo">
                 <button id="filter-saved-all" class="cat-chip active" onclick="setSavedFilter('all')">⭐ Todos (0)</button>
@@ -3542,7 +3455,18 @@
         <!-- ==================== ÁREA DO MODO CINEMA & FILMES ==================== -->
         <div id="section-cinema" style="display: flex; flex-direction: column; gap: 18px;">
 
-            <!-- Busca Sênior em Letras Grandes com Microfone -->
+            <!-- Categorias e pesquisa de filmes -->
+            <section class="category-quick-section">
+                <div class="category-section-header">
+                    <h3 class="category-section-title">Escolha por Categoria</h3>
+                    <span class="category-section-badge">Acesso Rápido</span>
+                </div>
+                <div id="movie-categories" class="category-quick-grid" role="tablist" aria-label="Categorias de Filmes">
+                    <button class="cat-quick-box active">● Carregando categorias...</button>
+                </div>
+            </section>
+
+            <!-- Pesquisa -->
             <section class="senior-search-card">
                 <label class="senior-search-label" for="movie-search-input">
                     <span class="material-symbols-outlined">search</span>
@@ -3556,26 +3480,7 @@
                         <button id="movie-search-clear" class="btn-clear-search" onclick="clearMovieSearch()" style="display: none;" aria-label="Limpar busca">
                             <span class="material-symbols-outlined">backspace</span>
                         </button>
-                        <button id="movie-voice-btn" class="btn-voice-search" type="button" onclick="startVoiceSearch('movie-search-input', 'movie')" aria-label="Falar pelo Microfone">
-                            <span class="material-symbols-outlined">mic</span>
-                            <span>Falar</span>
-                        </button>
                     </div>
-                </div>
-                <p class="search-tip-helper">
-                    <span class="material-symbols-outlined">lightbulb</span>
-                    Toque no botão amarelo para falar o nome do filme desejado.
-                </p>
-            </section>
-
-            <!-- Categorias de Toque Fácil (4-6 Opções + Todas as Categorias) -->
-            <section class="category-quick-section">
-                <div class="category-section-header">
-                    <h3 class="category-section-title">Escolha por Categoria</h3>
-                    <span class="category-section-badge">Acesso Rápido</span>
-                </div>
-                <div id="movie-categories" class="category-quick-grid" role="tablist" aria-label="Categorias de Filmes">
-                    <button class="cat-quick-box active">● Carregando categorias...</button>
                 </div>
             </section>
 
@@ -3609,7 +3514,18 @@
          <!-- ==================== ÁREA DO MODO SÉRIES ==================== -->
          <div id="section-series" style="display: none; flex-direction: column; gap: 18px;">
 
-             <!-- Busca Sênior de Séries em Letras Grandes com Microfone -->
+             <!-- Categorias e pesquisa de séries -->
+             <section class="category-quick-section">
+                 <div class="category-section-header">
+                     <h3 class="category-section-title">Escolha por Categoria</h3>
+                     <span class="category-section-badge">Acesso Rápido</span>
+                 </div>
+                 <div id="series-categories" class="category-quick-grid" role="tablist" aria-label="Categorias de Séries">
+                     <button class="cat-quick-box active">● Carregando categorias...</button>
+                 </div>
+             </section>
+
+             <!-- Pesquisa -->
              <section class="senior-search-card">
                  <label class="senior-search-label" for="series-search-input">
                      <span class="material-symbols-outlined">search</span>
@@ -3623,26 +3539,7 @@
                          <button id="series-search-clear" class="btn-clear-search" onclick="clearSeriesSearch()" style="display: none;" aria-label="Limpar busca">
                              <span class="material-symbols-outlined">backspace</span>
                          </button>
-                         <button id="series-voice-btn" class="btn-voice-search" type="button" onclick="startVoiceSearch('series-search-input', 'series')" aria-label="Falar pelo Microfone">
-                             <span class="material-symbols-outlined">mic</span>
-                             <span>Falar</span>
-                         </button>
                      </div>
-                 </div>
-                 <p class="search-tip-helper">
-                     <span class="material-symbols-outlined">lightbulb</span>
-                     Toque no botão amarelo para falar o nome da série ou novela.
-                 </p>
-             </section>
-
-             <!-- Categorias de Toque Fácil de Séries -->
-             <section class="category-quick-section">
-                 <div class="category-section-header">
-                     <h3 class="category-section-title">Escolha por Categoria</h3>
-                     <span class="category-section-badge">Acesso Rápido</span>
-                 </div>
-                 <div id="series-categories" class="category-quick-grid" role="tablist" aria-label="Categorias de Séries">
-                     <button class="cat-quick-box active">● Carregando categorias...</button>
                  </div>
              </section>
 
@@ -3681,7 +3578,18 @@
                 <div class="section-title">Escolha o Canal para Assistir:</div>
             </div>
 
-            <!-- Busca Sênior de Canais com Microfone -->
+            <!-- Categorias e pesquisa de canais -->
+            <section class="category-quick-section">
+                <div class="category-section-header">
+                    <h3 class="category-section-title">Escolha por Categoria</h3>
+                    <span class="category-section-badge">Acesso Rápido</span>
+                </div>
+                <div id="live-categories" class="category-quick-grid" role="tablist" aria-label="Categorias de Canais">
+                    <button class="cat-quick-box active">● Carregando categorias...</button>
+                </div>
+            </section>
+
+            <!-- Pesquisa -->
             <section class="senior-search-card">
                 <label class="senior-search-label" for="channel-search-input">
                     <span class="material-symbols-outlined">search</span>
@@ -3695,26 +3603,7 @@
                         <button id="channel-search-clear" class="btn-clear-search" onclick="clearChannelSearch()" style="display: none;" aria-label="Limpar busca">
                             <span class="material-symbols-outlined">backspace</span>
                         </button>
-                        <button id="channel-voice-btn" class="btn-voice-search" type="button" onclick="startVoiceSearch('channel-search-input', 'live')" aria-label="Falar pelo Microfone">
-                            <span class="material-symbols-outlined">mic</span>
-                            <span>Falar</span>
-                        </button>
                     </div>
-                </div>
-                <p class="search-tip-helper">
-                    <span class="material-symbols-outlined">lightbulb</span>
-                    Toque no botão amarelo para falar o canal desejado.
-                </p>
-            </section>
-
-            <!-- Categorias de Toque Fácil de Canais -->
-            <section class="category-quick-section">
-                <div class="category-section-header">
-                    <h3 class="category-section-title">Escolha por Categoria</h3>
-                    <span class="category-section-badge">Acesso Rápido</span>
-                </div>
-                <div id="live-categories" class="category-quick-grid" role="tablist" aria-label="Categorias de Canais">
-                    <button class="cat-quick-box active">● Carregando categorias...</button>
                 </div>
             </section>
 
@@ -3778,8 +3667,9 @@
                     <div style="min-width: 0;">
                         <div class="downloads-modal-title">Memória da TV & YouTube</div>
                         <div id="vod-disk-badge" class="vod-disk-badge">
-                            💾 Espaço TV: Verificando...
+                            💾 VPS: Verificando...
                         </div>
+                        <div id="vod-drive-badge" class="vod-disk-badge" style="display: none;" aria-live="polite"></div>
                     </div>
                 </div>
                 <button class="modal-close-icon-btn" onclick="closeDownloadsModal()" aria-label="Fechar Memória da TV">✕</button>
@@ -3887,6 +3777,7 @@
             <div id="modal-series-plot-text" class="modal-series-plot" onclick="toggleSeriesPlot(this)">Sinopse da série...</div>
             
             <div class="series-seasons-section">
+                <div id="series-watch-progress" hidden style="font-size:13px; color:var(--text-muted); margin-bottom:10px;" role="status"></div>
                 <div class="series-section-label" style="color: var(--gold);">TEMPORADAS:</div>
                 <div id="series-seasons-bar" class="season-chips">
                     <div class="season-chip active">Temporadas</div>
@@ -3909,7 +3800,7 @@
             
             <div class="vod-modal-hero">
                 <div class="vod-modal-hero-top">
-                    <img id="vod-modal-poster-img" class="vod-modal-poster" src="" alt="" onerror="this.outerHTML='<div class=\\'vod-modal-poster\\'>🎬</div>'">
+                    <img id="vod-modal-poster-img" class="vod-modal-poster" src="" alt="" onerror="this.onerror=null; this.style.display='none';">
                     <div class="vod-modal-badges-col">
                         <div id="vod-modal-badge" class="badge-route badge-direct" style="font-size:12px;">🎬 VÍDEO SALVO</div>
                         <div id="vod-modal-ep-pill" class="vod-modal-ep-pill" style="display: none;">🏷️ S01E05</div>
@@ -4018,18 +3909,14 @@
                 </div>
             </div>
 
-            <!-- Busca com Microfone dentro da Gaveta -->
+            <!-- Pesquisa de categorias -->
             <div class="drawer-search-row">
                 <div class="drawer-search-wrapper">
                     <span class="material-symbols-outlined drawer-search-lead-icon">search</span>
                     <input id="drawer-cat-search-input" class="drawer-cat-input" type="text"
-                           placeholder="Buscar categoria ou falar no microfone..."
+                           placeholder="Buscar categoria..."
                            oninput="onDrawerCatSearch(this.value)" autocomplete="off">
                     <div class="drawer-search-actions">
-                        <button class="btn-voice-search btn-drawer-voice" type="button" onclick="startVoiceSearch('drawer-cat-search-input', 'drawer')" aria-label="Falar">
-                            <span class="material-symbols-outlined">mic</span>
-                            <span>Falar</span>
-                        </button>
                         <button id="drawer-cat-clear" class="btn-clear-search" onclick="clearDrawerCatSearch()" style="display:none;" aria-label="Limpar">
                             <span class="material-symbols-outlined">backspace</span>
                         </button>
@@ -4045,235 +3932,9 @@
         </div>
     </div>
 
-    <!-- MODAL DE COMANDO DE VOZ SÊNIOR (OUVINDO...) -->
-    <div id="voice-modal" class="voice-modal" style="display: none;" onclick="stopVoiceSearch()">
-        <div class="voice-modal-box" onclick="event.stopPropagation()">
-            <div class="voice-wave-ring">
-                <span class="material-symbols-outlined voice-mic-icon">mic</span>
-            </div>
-            <div class="voice-status-title">Ouvindo... Fale agora!</div>
-            <div id="voice-transcript-text" class="voice-transcript-text">
-                "Diga o canal, filme ou série..."
-            </div>
-            <p class="voice-tip-text">Você também pode dizer "Filmes", "Séries" ou "Ao Vivo".</p>
-            <div style="display: flex; gap: 10px; width: 100%; justify-content: center; flex-wrap: wrap;">
-                <button id="btn-voice-confirm" class="btn-voice-confirm" type="button" onclick="confirmVoiceSearch()" style="display: none;">
-                    <span class="material-symbols-outlined">search</span>
-                    <span>Buscar Agora</span>
-                </button>
-                <button class="btn-voice-cancel" type="button" onclick="stopVoiceSearch()">
-                    <span class="material-symbols-outlined">close</span>
-                    <span>Cancelar</span>
-                </button>
-            </div>
-        </div>
-    </div>
 
     <script>
 
-        // ==================== RECONHECIMENTO DE VOZ & COMANDOS SÊNIOR ====================
-        let speechRecognitionInstance = null;
-        let activeVoiceInputId = null;
-        let activeVoiceContext = null;
-        let currentVoiceTranscript = '';
-        let voiceHandled = false;
-
-        async function startVoiceSearch(targetInputId, context = 'general') {
-            triggerHaptic();
-            activeVoiceInputId = targetInputId;
-            activeVoiceContext = context;
-            currentVoiceTranscript = '';
-            voiceHandled = false;
-
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (!SpeechRecognition) {
-                showActionBanner('🎤 Seu navegador não suporta reconhecimento de voz direto. Digite no campo de busca.', 'warn', 5000);
-                return;
-            }
-
-            const vModal = document.getElementById('voice-modal');
-            const vText = document.getElementById('voice-transcript-text');
-            const confirmBtn = document.getElementById('btn-voice-confirm');
-            if (vText) vText.innerText = 'Diga o canal, filme ou série...';
-            if (confirmBtn) confirmBtn.style.display = 'none';
-            if (vModal) vModal.style.display = 'flex';
-
-            document.querySelectorAll('.btn-voice-search').forEach(b => b.classList.add('listening'));
-
-            // Solicitação proativa de permissão de microfone em navegadores mobile
-            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-                try {
-                    const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                    audioStream.getTracks().forEach(t => t.stop());
-                } catch (micErr) {
-                    console.warn('Permissão de microfone não concedida via getUserMedia:', micErr);
-                    if (micErr.name === 'NotAllowedError' || micErr.name === 'PermissionDeniedError') {
-                        showActionBanner('🎤 Acesso ao microfone negado! Permita o microfone no topo do navegador.', 'warn', 6000);
-                        stopVoiceSearch();
-                        return;
-                    }
-                }
-            }
-
-            try {
-                if (speechRecognitionInstance) {
-                    try { speechRecognitionInstance.abort(); } catch(e) {}
-                }
-
-                speechRecognitionInstance = new SpeechRecognition();
-                speechRecognitionInstance.lang = 'pt-BR';
-                speechRecognitionInstance.continuous = false;
-                speechRecognitionInstance.interimResults = true;
-                speechRecognitionInstance.maxAlternatives = 1;
-
-                speechRecognitionInstance.onresult = (event) => {
-                    let fullTranscript = '';
-                    let isFinal = false;
-
-                    for (let i = 0; i < event.results.length; ++i) {
-                        const item = event.results[i];
-                        if (item[0] && item[0].transcript) {
-                            fullTranscript += ' ' + item[0].transcript;
-                        }
-                        if (item.isFinal) isFinal = true;
-                    }
-
-                    fullTranscript = fullTranscript.trim();
-                    if (fullTranscript) {
-                        currentVoiceTranscript = fullTranscript;
-                        if (vText) vText.innerText = `"${fullTranscript}"`;
-                        if (confirmBtn) confirmBtn.style.display = 'inline-flex';
-                    }
-
-                    if (isFinal && fullTranscript && !voiceHandled) {
-                        voiceHandled = true;
-                        setTimeout(() => {
-                            handleVoiceTranscript(fullTranscript);
-                        }, 400);
-                    }
-                };
-
-                speechRecognitionInstance.onerror = (event) => {
-                    console.warn('Erro de reconhecimento de voz:', event.error);
-                    if (event.error === 'not-allowed') {
-                        showActionBanner('🎤 Acesso ao microfone negado. Permita o microfone nas configurações do navegador.', 'warn', 6000);
-                        stopVoiceSearch();
-                    } else if (event.error === 'no-speech') {
-                        if (currentVoiceTranscript && !voiceHandled) {
-                            voiceHandled = true;
-                            handleVoiceTranscript(currentVoiceTranscript);
-                        } else {
-                            showActionBanner('🎤 Nenhuma fala detectada. Fale mais perto do microfone.', 'warn', 4000);
-                            stopVoiceSearch();
-                        }
-                    } else {
-                        showActionBanner(`🎤 Aviso de voz: ${event.error}`, 4000);
-                        stopVoiceSearch();
-                    }
-                };
-
-                speechRecognitionInstance.onend = () => {
-                    if (currentVoiceTranscript && !voiceHandled) {
-                        voiceHandled = true;
-                        handleVoiceTranscript(currentVoiceTranscript);
-                    } else {
-                        stopVoiceSearch();
-                    }
-                };
-
-                speechRecognitionInstance.start();
-            } catch (err) {
-                console.error('Falha ao iniciar reconhecimento de voz:', err);
-                showActionBanner('🎤 Erro ao iniciar reconhecimento de voz. Tente novamente.', 'warn', 4000);
-                stopVoiceSearch();
-            }
-        }
-
-        function confirmVoiceSearch() {
-            if (currentVoiceTranscript && !voiceHandled) {
-                voiceHandled = true;
-                handleVoiceTranscript(currentVoiceTranscript);
-            } else {
-                stopVoiceSearch();
-            }
-        }
-
-        function stopVoiceSearch() {
-            document.querySelectorAll('.btn-voice-search').forEach(b => b.classList.remove('listening'));
-            const vModal = document.getElementById('voice-modal');
-            if (vModal) vModal.style.display = 'none';
-
-            if (speechRecognitionInstance) {
-                try { speechRecognitionInstance.stop(); } catch(e) {}
-                speechRecognitionInstance = null;
-            }
-        }
-
-        function handleVoiceTranscript(rawText) {
-            triggerHaptic();
-            stopVoiceSearch();
-            if (!rawText) return;
-
-            const textLower = rawText.toLowerCase().trim();
-
-            if (textLower === 'filmes' || textLower === 'filme' || textLower === 'cinema' || textLower.includes('ir para filmes')) {
-                switchAppMode('cinema');
-                showActionBanner('🎬 Abrindo Filmes pelo comando de voz!', 3500);
-                return;
-            }
-            if (textLower === 'séries' || textLower === 'series' || textLower === 'série' || textLower === 'serie' || textLower === 'novelas' || textLower.includes('ir para séries')) {
-                switchAppMode('series');
-                showActionBanner('🍿 Abrindo Séries pelo comando de voz!', 3500);
-                return;
-            }
-            if (textLower === 'ao vivo' || textLower === 'tv' || textLower === 'canais' || textLower === 'canal' || textLower.includes('ir para canais')) {
-                switchAppMode('live');
-                showActionBanner('📺 Abrindo TV Ao Vivo pelo comando de voz!', 3500);
-                return;
-            }
-            if (textLower === 'salvos' || textLower === 'salvo' || textLower === 'memória' || textLower === 'memoria' || textLower === 'pendrive') {
-                switchAppMode('saved');
-                showActionBanner('💾 Abrindo Salvos na TV pelo comando de voz!', 3500);
-                return;
-            }
-            if (textLower.includes('todas as categorias') || textLower === 'categorias') {
-                const targetType = (currentAppMode === 'cinema') ? 'movie' : (currentAppMode === 'series' ? 'series' : 'live');
-                openCategoriesDrawer(targetType);
-                showActionBanner('📂 Abrindo Todas as Categorias!', 3500);
-                return;
-            }
-
-            let cleanQuery = rawText.replace(/^(assistir|colocar|por|põe|ver|procurar|buscar|pesquisar|canal|filme|série|serie|tocar)\s+/i, '').trim();
-            if (!cleanQuery) cleanQuery = rawText;
-
-            if (activeVoiceInputId) {
-                const inputEl = document.getElementById(activeVoiceInputId);
-                if (inputEl) {
-                    inputEl.value = cleanQuery;
-                    inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-                }
-            }
-
-            if (activeVoiceContext === 'drawer') {
-                onDrawerCatSearch(cleanQuery);
-                showActionBanner(`🔍 Filtrando categorias por: "${cleanQuery}"`, 3500);
-            } else if (activeVoiceContext === 'movie' || currentAppMode === 'cinema') {
-                const mInp = document.getElementById('movie-search-input');
-                if (mInp) { mInp.value = cleanQuery; mInp.dispatchEvent(new Event('input', { bubbles: true })); }
-                onMovieSearch(cleanQuery);
-                showActionBanner(`🔍 Buscando filmes por: "${cleanQuery}"`, 3500);
-            } else if (activeVoiceContext === 'series' || currentAppMode === 'series') {
-                const sInp = document.getElementById('series-search-input');
-                if (sInp) { sInp.value = cleanQuery; sInp.dispatchEvent(new Event('input', { bubbles: true })); }
-                onSeriesSearch(cleanQuery);
-                showActionBanner(`🔍 Buscando séries por: "${cleanQuery}"`, 3500);
-            } else if (activeVoiceContext === 'live' || currentAppMode === 'live') {
-                const cInp = document.getElementById('channel-search-input');
-                if (cInp) { cInp.value = cleanQuery; cInp.dispatchEvent(new Event('input', { bubbles: true })); }
-                onChannelSearch(cleanQuery);
-                showActionBanner(`🔍 Buscando canais por: "${cleanQuery}"`, 3500);
-            }
-        }
 
         // ==================== GAVETA DE CATEGORIAS (DRAWER SÊNIOR) ====================
         let currentDrawerType = 'movie';
@@ -5395,7 +5056,103 @@
         }
 
         // Carrega Filmes Salvos da TV (/api/vod/status)
+        let localSavedMovies = [];
+        let localSavedMoviesFetchedAt = 0;
+        let continueWatching = [];
+
+        async function loadLocalSavedMovies() {
+            if (Date.now() - localSavedMoviesFetchedAt < 30000) return;
+            try {
+                const res = await fetch('/api/channels', { cache: 'no-store', signal: AbortSignal.timeout(4000) });
+                if (!res.ok) return;
+                const channels = await res.json();
+                localSavedMovies = Object.values(channels)
+                    .filter(ch => ch && ch.category === 'Meus Filmes' && typeof ch.id === 'string' && ch.id.startsWith('movie-'))
+                    .map(ch => ({ id: ch.id, name: String(ch.name || 'Filme local') }));
+                localSavedMoviesFetchedAt = Date.now();
+            } catch (e) {
+                // Mantém a última lista válida quando a conexão oscila.
+            }
+        }
+
+        function playLocalSavedMovie(index) {
+            const movie = localSavedMovies[index];
+            if (movie) return playChannel({ id: movie.id, name: movie.name, is_eco: false });
+        }
+
+        function getSeriesWatchEntry() {
+            if (!selectedSeries) return null;
+            const key = 'catalog:' + String(selectedSeries.id);
+            const normalize = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+            const name = normalize(selectedSeries.name);
+            return (continueWatching || []).find(entry => {
+                if (entry.series_key === key) return true;
+                // Imported Star episodes have their own edition identity.
+                return entry.series_key === 'import:istanbullu-star' && name === 'anoivadeistambul';
+            }) || null;
+        }
+
+        function renderSeriesWatchProgress() {
+            const label = document.getElementById('series-watch-progress');
+            if (!label) return;
+            const entry = getSeriesWatchEntry();
+            label.hidden = !entry;
+            if (!entry) { label.textContent = ''; return; }
+            const season = entry.season_number != null ? 'Temporada ' + entry.season_number + ' · ' : '';
+            const prefix = entry.position_source === 'selected' ? 'Último episódio iniciado: ' : 'Onde você parou: ';
+            label.textContent = prefix + season + 'Episódio ' + entry.episode_number;
+        }
+
+        function renderVodStorage(data) {
+            const diskBadge = document.getElementById('vod-disk-badge');
+            const savedDisk = document.getElementById('saved-disk-info');
+            const savedDiskProgress = document.getElementById('saved-disk-progress');
+            const formatGb = value => `${value.toLocaleString('pt-BR', { maximumFractionDigits: 1 })} GB`;
+            const disk = data.disk || {};
+            if (Number.isFinite(disk.total_gb) && disk.total_gb > 0 && Number.isFinite(disk.free_gb) && disk.free_gb >= 0) {
+                const pctFree = Math.max(0, Math.min(100, Math.round(disk.free_gb / disk.total_gb * 100)));
+                if (diskBadge) diskBadge.textContent = `💾 VPS: ${formatGb(disk.free_gb)} livres de ${formatGb(disk.total_gb)}`;
+                if (savedDisk) savedDisk.textContent = `${formatGb(disk.free_gb)} livres (${pctFree}%)`;
+                if (savedDiskProgress) savedDiskProgress.style.width = `${100 - pctFree}%`;
+            } else {
+                if (diskBadge) diskBadge.textContent = '💾 VPS: espaço indisponível';
+                if (savedDisk) savedDisk.textContent = 'Indisponível no momento';
+                if (savedDiskProgress) savedDiskProgress.style.width = '0%';
+            }
+
+            const drive = data.drive || {};
+            const driveBox = document.getElementById('saved-drive-box');
+            const driveBadge = document.getElementById('vod-drive-badge');
+            const driveInfo = document.getElementById('saved-drive-info');
+            const driveTrack = document.getElementById('saved-drive-track');
+            const driveProgress = document.getElementById('saved-drive-progress');
+            const storageDesc = document.getElementById('saved-storage-desc');
+            const enabled = drive.enabled === true;
+            if (driveBox) driveBox.style.display = enabled ? 'flex' : 'none';
+            if (driveBadge) driveBadge.style.display = enabled ? 'block' : 'none';
+            if (storageDesc) storageDesc.textContent = enabled
+                ? 'Novos vídeos são salvos no Google Drive. A reprodução na TV usa internet.'
+                : 'Vídeos preparados para assistir na TV.';
+            if (!enabled) return;
+
+            const hasFree = drive.available === true && Number.isFinite(drive.free_gb) && drive.free_gb >= 0;
+            const hasTotal = Number.isFinite(drive.total_gb) && drive.total_gb > 0;
+            let driveText = drive.updating ? 'Consultando espaço...' : 'Espaço indisponível no momento';
+            if (hasFree) {
+                driveText = `${formatGb(drive.free_gb)} livres`;
+                if (hasTotal) driveText += ` de ${formatGb(drive.total_gb)}`;
+            }
+            if (driveInfo) driveInfo.textContent = driveText;
+            if (driveBadge) driveBadge.textContent = `☁️ Google Drive: ${driveText}`;
+            if (driveTrack) driveTrack.style.display = hasFree && hasTotal ? 'block' : 'none';
+            if (driveProgress) {
+                const usedPct = hasFree && hasTotal ? Math.max(0, Math.min(100, 100 - drive.free_gb / drive.total_gb * 100)) : 0;
+                driveProgress.style.width = `${usedPct}%`;
+            }
+        }
+
         async function pollVodStatus() {
+            await loadLocalSavedMovies();
             try {
                 const res = await fetch('/api/vod/status', { signal: AbortSignal.timeout(4000) });
                 if (!res.ok) return;
@@ -5403,6 +5160,7 @@
 
                 activeVodTask = data.active_vod;
                 vodTasks = data.tasks || [];
+                continueWatching = data.continue_watching || [];
 
                 // 1. Atualiza Central Universal da TV no Topo (Modo Cinema VOD / Séries / YouTube)
                 if (activeVodTask) {
@@ -5428,22 +5186,9 @@
                 }
                 renderTvBanner();
 
-                // 2. Atualiza Espaço Livre na TV (Stitch Redesign)
-                const diskBadge = document.getElementById('vod-disk-badge');
-                const savedDisk = document.getElementById('saved-disk-info');
-                const savedDiskProgress = document.getElementById('saved-disk-progress');
-                if (data.disk && data.disk.total_gb > 0) {
-                    const freeGb = data.disk.free_gb || 0;
-                    const totalGb = data.disk.total_gb || 1;
-                    const pctFree = Math.round((freeGb / totalGb) * 100);
-                    const pctUsed = Math.max(0, Math.min(100, 100 - pctFree));
-                    const diskText = `💾 Espaço TV: <strong>${freeGb} GB livres</strong> de ${totalGb} GB`;
-                    if (diskBadge) diskBadge.innerHTML = diskText;
-                    if (savedDisk) savedDisk.innerText = `${freeGb} GB Livres (${pctFree}%)`;
-                    if (savedDiskProgress) savedDiskProgress.style.width = `${pctUsed}%`;
-                }
+                renderVodStorage(data);
 
-                const inProgressTasks = vodTasks.filter(t => ['processing', 'queued', 'pending', 'downloading', 'converting'].includes(t.status));
+                const inProgressTasks = vodTasks.filter(t => ['processing', 'queued', 'pending', 'downloading', 'converting', 'uploading'].includes(t.status));
                 const readyTasks = vodTasks.filter(t => t.status === 'ready');
 
                 // 4. Notificação Automática quando um Conteúdo termina o download e fica pronto
@@ -5463,6 +5208,7 @@
                 }
 
                 renderSavedShelf();
+                renderSeriesWatchProgress();
 
                 // 5. Se o modal de série estiver aberto, atualiza episódios dinamicamente
                 const sModal = document.getElementById('series-modal');
@@ -5493,13 +5239,13 @@
             };
 
             const readyTasks = (vodTasks || []).filter(t => t.status === 'ready').sort(sortByRecent);
-            const inProgressTasks = (vodTasks || []).filter(t => ['processing', 'queued', 'pending', 'downloading', 'converting'].includes(t.status)).sort(sortByRecent);
+            const inProgressTasks = (vodTasks || []).filter(t => ['processing', 'queued', 'pending', 'downloading', 'converting', 'uploading'].includes(t.status)).sort(sortByRecent);
             const errorTasks = (vodTasks || []).filter(t => t.status === 'error').sort(sortByRecent);
 
             // Atualiza contadores dos filtros
-            const allCount = readyTasks.length;
+            const allCount = readyTasks.length + localSavedMovies.length;
             const seriesCount = readyTasks.filter(isSeriesTask).length;
-            const moviesCount = readyTasks.filter(isMovieTask).length;
+            const moviesCount = readyTasks.filter(isMovieTask).length + localSavedMovies.length;
             const ytCount = readyTasks.filter(isYtTask).length;
             const torrentCount = readyTasks.filter(isTorrentTask).length;
 
@@ -5546,7 +5292,9 @@
                     const speed = task.speed ? escapeHtml(task.speed) : '';
 
                     let routeHtml = '';
-                    if (isTorrentTask(task)) {
+                    if (task.status === 'uploading') {
+                        routeHtml = `<span class="badge-route">☁️ Enviando ao Google Drive</span>`;
+                    } else if (isTorrentTask(task)) {
                         routeHtml = `<span class="badge-route" style="background:#0284c7; border-color:#38bdf8;">🧲 BitTorrent P2P</span>`;
                     } else if (isYtTask(task)) {
                         routeHtml = `<span class="badge-route badge-yt">▶️ Vídeo do YouTube</span>`;
@@ -5560,7 +5308,7 @@
 
                     const fallbackIcon = isTorrentTask(task) ? '🧲' : (isSeriesTask(task) ? '🍿' : (isYtTask(task) ? '▶️' : '🎬'));
                     const posterImg = task.poster 
-                        ? `<img class="vod-poster-thumb" src="${escapeHtml(task.poster)}" alt="" onerror="this.outerHTML='<div class=\\'vod-poster-thumb\\'>${fallbackIcon}</div>'">`
+                        ? `<img class="vod-poster-thumb" src="${escapeHtml(task.poster)}" alt="" onerror="this.onerror=null; this.outerHTML='<div class=vod-poster-thumb>${fallbackIcon}</div>'">`
                         : `<div class="vod-poster-thumb">${fallbackIcon}</div>`;
 
                     activeHtml += `
@@ -5585,7 +5333,7 @@
 
                             <div style="display: flex; justify-content: flex-end; margin-top: 6px;">
                                 <button class="btn-cancel-vod" onclick="cancelVodTask('${safeId}', '${title}')">
-                                    ✕ Cancelar Download
+                                    ✕ ${task.status === 'uploading' ? 'Cancelar envio' : 'Cancelar Download'}
                                 </button>
                             </div>
                         </div>
@@ -5645,17 +5393,19 @@
 
             if (shelfElements.length === 0) return;
 
+            const showLocalMovies = savedFilter === 'all' || savedFilter === 'movies';
+            const visibleLocalMovies = showLocalMovies ? localSavedMovies : [];
             let emptyHtml = '';
-            if (readyTasks.length === 0) {
+            if (allCount === 0) {
                 emptyHtml = `
                     <div style="text-align: center; padding: 32px 14px; background: var(--surface); border: 2px dashed var(--border); border-radius: var(--btn-radius); color: var(--text-muted); font-size: 16px; line-height: 1.5; grid-column: 1 / -1;">
                         💾 Nenhum filme ou série salvo na TV ainda.<br>
                         <span style="font-size: 15px; color: var(--gold); margin-top: 8px; display: inline-block;">
-                            Abra o catálogo de <strong>SÉRIES</strong> ou <strong>FILMES</strong> e toque em <strong>Baixar para a TV</strong> para assistir sem internet e sem travar!
+                            Abra o catálogo de <strong>SÉRIES</strong> ou <strong>FILMES</strong> e toque em <strong>Baixar para a TV</strong> para preparar o vídeo e assistir depois.
                         </span>
                     </div>
                 `;
-            } else if (filteredTasks.length === 0) {
+            } else if (filteredTasks.length === 0 && visibleLocalMovies.length === 0) {
                 let filterName = 'itens correspondentes';
                 if (savedFilter === 'series') filterName = 'séries salvas';
                 else if (savedFilter === 'movies') filterName = 'filmes salvos';
@@ -5677,6 +5427,24 @@
             }
 
             let html = '';
+            if (showLocalMovies) {
+                localSavedMovies.forEach((movie, index) => {
+                    const title = escapeHtml(movie.name);
+                    html += `
+                        <div class="vod-grid-card" role="region" aria-label="${title}">
+                            <div class="vod-grid-poster-wrap">
+                                <div class="vod-grid-poster-fallback">🎬</div>
+                                <span class="vod-grid-badge">ARQUIVO LOCAL</span>
+                            </div>
+                            <div class="vod-grid-body">
+                                <div class="vod-grid-title" title="${title}">${title}</div>
+                                <button class="btn-vod-grid-play" onclick="playLocalSavedMovie(${index})" aria-label="Assistir ${title} na TV">
+                                    ▶️ ASSISTIR NA TV
+                                </button>
+                            </div>
+                        </div>`;
+                });
+            }
             filteredTasks.forEach(task => {
                 const isPlaying = (task.id === activeVodTask);
                 let rawTitle = (task.title || task.display_name || 'Vídeo').trim().replace(/^@\s*/, '');
@@ -5717,7 +5485,7 @@
 
                 const fallbackIcon = isTor ? '🧲' : (isSeries ? '🍿' : (isYt ? '▶️' : '🎬'));
                 const posterImg = task.poster 
-                    ? `<img class="vod-grid-poster-img" src="${escapeHtml(task.poster)}" alt="" loading="lazy" onerror="this.outerHTML='<div class=\\'vod-grid-poster-fallback\\'>${fallbackIcon}</div>'">`
+                    ? `<img class="vod-grid-poster-img" src="${escapeHtml(task.poster)}" alt="" loading="lazy" onerror="this.onerror=null; this.outerHTML='<div class=vod-grid-poster-fallback>${fallbackIcon}</div>'">`
                     : `<div class="vod-grid-poster-fallback">${fallbackIcon}</div>`;
 
                 html += `
@@ -6022,6 +5790,8 @@
                     headers: { 'Content-Type': 'application/json', 'X-Auth-PIN': pin },
                     body: JSON.stringify({ task_id: taskId, pin: pin })
                 });
+                const result = await res.json();
+                if (!res.ok || !result.success) throw new Error('Não foi possível cancelar a tarefa.');
                 showActionBanner(`Download cancelado com sucesso.`, 'info');
                 pollVodStatus();
             } catch (err) {
@@ -6034,18 +5804,23 @@
             triggerHaptic();
             const task = vodTasks ? vodTasks.find(t => String(t.id) === String(taskId)) : null;
             const displayTitle = title || (task ? (task.title || task.display_name) : 'Vídeo');
-            if (!confirm(`Deseja mesmo excluir "${displayTitle}" da TV para liberar espaço?`)) return;
+            const storageName = task && task.storage === 'gdrive' ? 'Google Drive' : 'armazenamento da VPS';
+            if (!confirm(`Deseja mesmo excluir "${displayTitle}" do ${storageName}?`)) return;
             const pin = getAuthPin();
 
             try {
-                await fetch('/api/vod/delete', {
+                const res = await fetch('/api/vod/delete', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-Auth-PIN': pin },
                     body: JSON.stringify({ task_id: taskId, pin: pin })
                 });
-                showActionBanner(`✓ "${escapeHtml(displayTitle)}" removido da TV.`, 'info');
+                const result = await res.json();
+                if (!res.ok || !result.success) throw new Error('Não foi possível excluir o vídeo. Tente novamente.');
+                showActionBanner(`✓ "${escapeHtml(displayTitle)}" excluído.`, 'info');
                 pollVodStatus();
-            } catch (err) {}
+            } catch (err) {
+                showActionBanner('Não foi possível excluir o vídeo. Tente novamente.', 'warn');
+            }
         }
 
         // Voltar do Cinema ou YouTube para a TV Ao Vivo
@@ -6919,6 +6694,7 @@
             const pImg = document.getElementById('modal-series-poster-img');
             if (pImg) pImg.src = getPosterUrl(selectedSeries.poster) || '';
 
+            renderSeriesWatchProgress();
             const seasonsBar = document.getElementById('series-seasons-bar');
             const epList = document.getElementById('series-episodes-list');
             if (seasonsBar) seasonsBar.innerHTML = '<div class="season-chip active">Carregando temporadas...</div>';
@@ -6958,7 +6734,7 @@
                     if (s.episodes && s.episodes.length) {
                         for (const ep of s.episodes) {
                             const task = findTaskForEpisode(ep);
-                            if (task && (task.status === 'ready' || ['processing', 'queued', 'pending', 'downloading', 'converting'].includes(task.status))) {
+                            if (task && (task.status === 'ready' || ['processing', 'queued', 'pending', 'downloading', 'converting', 'uploading'].includes(task.status))) {
                                 targetSeasonNum = s.season_number;
                                 hasSaved = true;
                             }
@@ -7023,21 +6799,21 @@
                     cardClass += ' is-ready';
                     const safeTaskId = escapeHtml(task.id);
                     actionsHtml = `
-                        <button type="button" class="btn-ep-ready-play" onclick="event.stopPropagation(); playSavedEpisode('${safeTaskId}')" title="Assistir direto da memória da TV">
+                        <button type="button" class="btn-ep-ready-play" onclick="event.stopPropagation(); playSavedEpisode('${safeTaskId}')" title="Assistir vídeo salvo na TV">
                             <span>✅ NA TV (▶ Assistir)</span>
                         </button>
                         <button type="button" class="btn-ep-ready-del" onclick="event.stopPropagation(); deleteEpisodeVodFromModal('${safeTaskId}', '${seasonNum}')" title="Remover da TV">
                             <span>🗑️</span>
                         </button>
                     `;
-                } else if (task && ['processing', 'queued', 'pending', 'downloading', 'converting'].includes(task.status)) {
+                } else if (task && ['processing', 'queued', 'pending', 'downloading', 'converting', 'uploading'].includes(task.status)) {
                     cardClass += ' is-downloading';
                     const prog = Math.round(task.progress || 0);
                     actionsHtml = `
                         <button type="button" class="btn-ep-downloading" disabled>
-                            <span>⏳ Baixando (${prog}%)</span>
+                            <span>${task.status === 'uploading' ? '☁️ Enviando ao Drive' : '⏳ Baixando'} (${prog}%)</span>
                         </button>
-                        <button type="button" class="btn-ep-play-senior" onclick="event.stopPropagation(); playEpisode('${seasonNum}', ${epIdx})" title="Assistir agora na TV via internet" aria-label="Assistir episódio agora na TV">
+                        <button type="button" class="btn-ep-play-senior" onclick="event.stopPropagation(); playEpisode('${seasonNum}', ${epIdx})" title="Assistir agora na TV via internet" aria-label="Assistir episódio agora na TV" ${task.status === 'uploading' ? 'disabled' : ''}>
                             <span>▶</span>
                         </button>
                     `;
@@ -7102,16 +6878,19 @@
             triggerHaptic();
             const task = vodTasks ? vodTasks.find(t => String(t.id) === String(taskId)) : null;
             const displayTitle = task ? (task.title || task.display_name) : 'Episódio';
-            if (!confirm(`Deseja remover "${displayTitle}" da TV para liberar espaço?`)) return;
+            const storageName = task && task.storage === 'gdrive' ? 'Google Drive' : 'armazenamento da VPS';
+            if (!confirm(`Deseja excluir "${displayTitle}" do ${storageName}?`)) return;
             const pin = getAuthPin();
 
             try {
-                await fetch('/api/vod/delete', {
+                const res = await fetch('/api/vod/delete', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-Auth-PIN': pin },
                     body: JSON.stringify({ task_id: taskId, pin: pin })
                 });
-                showActionBanner(`✓ Episódio removido da TV.`, 'info');
+                const result = await res.json();
+                if (!res.ok || !result.success) throw new Error('Não foi possível excluir o episódio.');
+                showActionBanner('✓ Episódio excluído.', 'info');
                 await pollVodStatus();
                 renderEpisodesForSeason(seasonNum);
             } catch (err) {
@@ -8229,7 +8008,6 @@
                 closeMovieModal();
                 closeSeriesModal();
                 closeCategoriesDrawer();
-                stopVoiceSearch();
             }
 
             // Se o Web Player estiver aberto:

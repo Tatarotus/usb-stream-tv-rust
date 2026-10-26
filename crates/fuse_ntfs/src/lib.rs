@@ -17,6 +17,9 @@
 
 pub mod contract;
 pub mod engine;
+// Host-side favorites contracts. No runtime activation until transport,
+// template and physical validation are integrated.
+pub mod favorites;
 pub mod observability;
 pub mod vfs;
 

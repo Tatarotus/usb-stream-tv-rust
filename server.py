@@ -23,6 +23,12 @@ import socket
 import collections
 import base64
 import signal
+import tempfile
+import atexit
+
+from vod_storage import GDriveStorage, StorageError
+from vod_playback_cache import CurrentVideoCache
+from vod_history import VodHistory, resolve_episode_identity
 
 try:
     from pwa_icons import PWA_ICON_192_B64, PWA_ICON_512_B64
@@ -99,6 +105,17 @@ MOVIES_DIR = os.environ.get("MOVIES_DIR", os.path.join(CONFIG_DIR, "filmes"))
 EVENT_LOG = os.path.join(CONFIG_DIR, "server_events.log")
 VOD_DIR = os.environ.get("VOD_DIR", os.path.join(CONFIG_DIR, "vod_cache"))
 os.makedirs(VOD_DIR, exist_ok=True)
+WATCH_HISTORY_FILE = os.environ.get("WATCH_HISTORY_FILE", os.path.join(VOD_DIR, "watch_history.json"))
+VOD_HISTORY = VodHistory(WATCH_HISTORY_FILE)
+GDRIVE_STORAGE = GDriveStorage.from_env()
+VOD_MIN_FREE_BYTES = int(float(os.environ.get("VOD_MIN_FREE_GB", "8")) * 1024**3)
+VOD_PLAYBACK_CACHE = CurrentVideoCache(
+    os.path.join(VOD_DIR, ".playback_cache"), GDRIVE_STORAGE.read,
+    max_bytes=int(float(os.environ.get("VOD_CURRENT_CACHE_GB", "6")) * 1024**3),
+    min_free_bytes=VOD_MIN_FREE_BYTES,
+)
+atexit.register(GDRIVE_STORAGE.close)
+atexit.register(VOD_PLAYBACK_CACHE.close)
 CATALOG_CACHE_DIR = os.environ.get("CATALOG_CACHE_DIR", os.path.join(CONFIG_DIR, "catalog_cache"))
 os.makedirs(CATALOG_CACHE_DIR, exist_ok=True)
 POSTER_CACHE_DIR = os.path.join(CATALOG_CACHE_DIR, "posters")
@@ -156,7 +173,9 @@ if not XTREAM_UPSTREAM:
 VOD_TASKS = {}
 VOD_TASKS_LOCK = threading.Lock()
 ACTIVE_VOD_TASK = None
-VOD_SEMAPHORE = threading.Semaphore(2)
+VOD_SELECTION_GENERATION = 0
+VOD_SELECTION_TASK = None
+VOD_SEMAPHORE = threading.Semaphore(1 if GDRIVE_STORAGE.enabled else 2)
 VOD_RUNNING_PROCS = {}
 VOD_RUNNING_PROCS_LOCK = threading.Lock()
 VOD_RUNNING_THREADS = set()
@@ -180,12 +199,106 @@ def load_vod_tasks():
         except Exception:
             VOD_TASKS = {}
 
-def save_vod_tasks():
+def save_vod_tasks(strict=False):
+    tmp_path = None
     try:
-        with open(VOD_META_FILE, "w") as f:
+        with tempfile.NamedTemporaryFile(mode="w", dir=VOD_DIR, prefix=".vod-meta-", delete=False) as f:
+            tmp_path = f.name
             json.dump(VOD_TASKS, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, VOD_META_FILE)
+        tmp_path = None
+        directory_fd = os.open(VOD_DIR, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     except Exception:
-        pass
+        if strict:
+            raise
+        print("[!] Não foi possível salvar o catálogo VOD")
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+def vod_media_available(task):
+    if task.get("storage") == "gdrive":
+        return bool(GDRIVE_STORAGE.enabled and task.get("remote_path") and task.get("file_size", 0) > 0)
+    return bool(task.get("file_path") and os.path.isfile(task["file_path"]))
+
+
+def vod_media_size(task):
+    if task.get("storage") == "gdrive":
+        return int(task.get("file_size", 0))
+    path = task.get("file_path", "")
+    return os.path.getsize(path) if path and os.path.isfile(path) else int(task.get("file_size", 0))
+
+
+def upload_prepared_vod(task_id, task, seed_cache=True):
+    """Publish verified media before releasing its only local source.
+
+    Upload failures keep the prepared MP4 for retry, without fetching/converting
+    the original again. A deleted task cannot be published by its old worker.
+    """
+    local_path = task["file_path"]
+    if not GDRIVE_STORAGE.enabled:
+        with VOD_TASKS_LOCK:
+            if VOD_TASKS.get(task_id) is not task:
+                return False
+            task.update(storage="local", status="ready", upload_pending=False,
+                        progress=100, status_msg="Pronto para assistir", error=None)
+            save_vod_tasks(strict=True)
+        return True
+    with VOD_TASKS_LOCK:
+        if VOD_TASKS.get(task_id) is not task or task.get("status") == "deleting":
+            return False
+        task.update(status="uploading", upload_pending=True, progress=99,
+                    status_msg="Enviando e verificando no Google Drive...", speed="")
+        save_vod_tasks(strict=True)
+    try:
+        remote = GDRIVE_STORAGE.upload(local_path, task_id)
+        with VOD_TASKS_LOCK:
+            cancelled = VOD_TASKS.get(task_id) is not task or task.get("status") == "deleting"
+            if not cancelled:
+                previous = dict(task)
+                task.update(remote)
+                task.update(status="ready", upload_pending=False, progress=100,
+                            status_msg="Pronto para assistir — Google Drive", error=None, updated_at=time.time())
+                try:
+                    save_vod_tasks(strict=True)
+                except Exception:
+                    task.clear()
+                    task.update(previous)
+                    raise
+        if cancelled:
+            GDRIVE_STORAGE.delete(dict(remote, id=task_id))
+            return False
+        # A hard-link seed retains at most one local movie. It does not change
+        # the active TV selection or delete another movie's permanent copy.
+        if seed_cache and ACTIVE_VOD_TASK in (None, task_id):
+            try:
+                VOD_PLAYBACK_CACHE.start(task, seed_path=local_path)
+            except Exception:
+                print("[VOD] Cache local indisponível; cópia do Drive preservada")
+        try:
+            os.unlink(local_path)
+        except OSError:
+            print("[VOD] Upload concluído; arquivo temporário ainda requer limpeza")
+        return True
+    except Exception:
+        with VOD_TASKS_LOCK:
+            if VOD_TASKS.get(task_id) is task:
+                task.update(status="error", upload_pending=True,
+                            status_msg="Falha no envio ao Google Drive; vídeo preservado na VPS",
+                            error="Não foi possível publicar no Google Drive. Tente novamente.",
+                            updated_at=time.time())
+                save_vod_tasks()
+        raise StorageError("Não foi possível publicar no Google Drive; arquivo local preservado") from None
 
 load_vod_tasks()
 
@@ -284,7 +397,9 @@ def format_fat_media_name(raw_title, max_len=36):
             ep_str = f"S{season:02d}E{episode:02d}"
             
     if not ep_str:
-        m = re.search(r"\b(?:Epis[oó]dio|Ep\.?)\s*(\d{1,3})\b", raw, re.IGNORECASE)
+        m = re.search(r"\b(?:Epis[oó]dio|Ep\.?)\s*(\d{1,3})\b", raw, re.IGNORECASE) or \
+            re.search(r"\b(\d{1,3})\s*-\s*Star\b", raw, re.IGNORECASE) or \
+            re.search(r"noiva de istambul\s+(\d{1,3})\b", raw, re.IGNORECASE)
         if m:
             episode = int(m.group(1))
             ep_str = f"EP{episode:02d}"
@@ -296,6 +411,8 @@ def format_fat_media_name(raw_title, max_len=36):
         clean = re.sub(r"Temporada\s*\d{1,2}.*?Epis[oó]dio\s*\d{1,3}", "", clean, flags=re.IGNORECASE)
         clean = re.sub(r"\bT\d{1,2}\s*E\d{1,3}\b", "", clean, flags=re.IGNORECASE)
         clean = re.sub(r"\b(?:Epis[oó]dio|Ep\.?)\s*\d{1,3}\b", "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"\b\d{1,3}\s*-\s*Star.*", "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"(noiva de istambul)\s+\d{1,3}\b.*", r"\1", clean, flags=re.IGNORECASE)
         
         # Elimina repetições de nomes com hífen (ex: "Largados e Pelados - Largados e Pelados")
         parts = [p.strip() for p in clean.split(" - ") if p.strip()]
@@ -331,7 +448,9 @@ def extract_series_key(title):
         re.search(r"\b(\d{1,2})x(\d{1,3})\b", clean, re.IGNORECASE) or \
         re.search(r"Temporada\s*(\d{1,2}).*?Epis[oó]dio\s*(\d{1,3})", clean, re.IGNORECASE) or \
         re.search(r"\bT(\d{1,2})\s*E(\d{1,3})\b", clean, re.IGNORECASE) or \
-        re.search(r"\b(?:Epis[oó]dio|Ep\.?)\s*(\d{1,3})\b", clean, re.IGNORECASE)
+        re.search(r"\b(?:Epis[oó]dio|Ep\.?)\s*(\d{1,3})\b", clean, re.IGNORECASE) or \
+        re.search(r"\b(\d{1,3})\s*-\s*Star\b", clean, re.IGNORECASE) or \
+        re.search(r"noiva de istambul\s+(\d{1,3})\b", clean, re.IGNORECASE)
     if not m:
         return ""
     clean = re.sub(r"\bS\d{1,2}\s*E\d{1,3}\b", "", clean, flags=re.IGNORECASE)
@@ -339,6 +458,8 @@ def extract_series_key(title):
     clean = re.sub(r"Temporada\s*\d{1,2}.*?Epis[oó]dio\s*\d{1,3}", "", clean, flags=re.IGNORECASE)
     clean = re.sub(r"\bT\d{1,2}\s*E\d{1,3}\b", "", clean, flags=re.IGNORECASE)
     clean = re.sub(r"\b(?:Epis[oó]dio|Ep\.?)\s*\d{1,3}\b", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\b\d{1,3}\s*-\s*Star.*", "", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"(noiva de istambul)\s+\d{1,3}\b.*", r"\1", clean, flags=re.IGNORECASE)
     parts = [p.strip() for p in clean.split(" - ") if p.strip()]
     if parts:
         clean = parts[0]
@@ -359,6 +480,10 @@ def extract_episode_num(title):
     if m:
         return int(m.group(1)) * 1000 + int(m.group(2))
     m = re.search(r"\b(?:Epis[oó]dio|Ep\.?)\s*(\d{1,3})\b", raw, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"\b(\d{1,3})\s*-\s*Star\b", raw, re.IGNORECASE) or \
+        re.search(r"noiva de istambul\s+(\d{1,3})\b", raw, re.IGNORECASE)
     if m:
         return int(m.group(1))
     return 0
@@ -384,8 +509,7 @@ def get_series_playlist(task_id):
         series_tasks = []
         for tid, t in VOD_TASKS.items():
             if t.get("status") == "ready":
-                fp = t.get("file_path") or os.path.join(VOD_DIR, f"{tid}.mp4")
-                if os.path.exists(fp):
+                if vod_media_available(t):
                     if extract_series_key(t.get("title") or "") == skey:
                         series_tasks.append(t)
                         
@@ -437,11 +561,11 @@ def refresh_vod_templates():
             if task.get("status") == "ready":
                 out_file = task.get("file_path") or os.path.join(VOD_DIR, f"{tid}.mp4")
                 out_tmpl = task.get("template_path") or os.path.join(VOD_DIR, f"{tid}.bin")
-                if os.path.exists(out_file):
+                if vod_media_available(task):
                     raw_title = task.get("title") or task.get("display_name") or "Vídeo"
                     new_fat_name = format_fat_media_name(raw_title)
                     old_disp = task.get("display_name")
-                    cur_fsize = os.path.getsize(out_file)
+                    cur_fsize = vod_media_size(task)
                     if old_disp != new_fat_name or not os.path.exists(out_tmpl) or task.get("file_size") != cur_fsize:
                         task["display_name"] = new_fat_name
                         task["template_path"] = out_tmpl
@@ -2039,17 +2163,6 @@ class StreamHub:
 
     def _mark_live_commit_locked(self):
         """Marca o commit live; chamado sob self.lock pelo switch."""
-        # RC-001 iter8: o commit descarta o backlog do canal anterior de cada
-        # assinante. Sem isto, um assinante atrasado continua consumindo chunks
-        # antigos (até queue.Queue(maxsize=2500) = 156 MiB ~ 284 s a 4.6 Mbps)
-        # DEPOIS do SWITCH_OK. Um chunk já retirado pelo writer HTTP segue em
-        # voo; a continuidade MPEG-TS do splice é preservada pelo restamper.
-        for q in list(self.subscribers):
-            while True:
-                try:
-                    q.get_nowait()
-                except queue.Empty:
-                    break
         self.slate_mode = False
         self.slate_start_time = 0
         self.stream_health = "ok"
@@ -2387,10 +2500,6 @@ class StreamHub:
 
                 eco_desc = " [⚡ MODO ECONÔMICO: STREAM COPY -c:v copy (~2% CPU)]" if target_is_eco else " [🔥 MODO TRANSCODE: libx264]"
                 print(f"\n[⚡] INICIANDO SINTONIA MAKE-BEFORE-BREAK: {target_name} ({target_url}){eco_desc}")
-                log_event(
-                    f"SWITCH_REQ {target_id} url={target_url} eco={target_is_eco} "
-                    f"resolve={(time.time() - t_sw0):.2f}s"
-                )
                 log_event(f"SWITCH_BEGIN {self.current_channel_id} -> {target_id} eco={target_is_eco}")
                 def wait_for_stream_chunk(p, timeout_sec):
                     deadline = time.time() + timeout_sec
@@ -2423,7 +2532,6 @@ class StreamHub:
                         target_is_eco = False
                     else:
                         cmd_eco = build_ffmpeg_cmd(target_url, is_live=True, is_eco=True)
-                        log_event(f"SWITCH_SPAWN {target_id} mode=eco at={(time.time() - t_sw0):.2f}s")
                         try:
                             new_p = subprocess.Popen(
                                 cmd_eco,
@@ -2450,7 +2558,6 @@ class StreamHub:
                 # Tentativa 2 / Modo Padrão: Transcodificação forçada (libx264)
                 if not first_chunk_data:
                     cmd_transcode = build_ffmpeg_cmd(target_url, is_live=True, is_eco=False)
-                    log_event(f"SWITCH_SPAWN {target_id} mode=transcode at={(time.time() - t_sw0):.2f}s")
                     try:
                         new_p = subprocess.Popen(
                             cmd_transcode,
@@ -2471,11 +2578,6 @@ class StreamHub:
                         except Exception:
                             pass
                     return
-
-                log_event(
-                    f"SWITCH_FIRST_CHUNK {target_id} bytes={len(first_chunk_data)} "
-                    f"at={(time.time() - t_sw0):.2f}s"
-                )
 
                 # Chaveamento atômico instantâneo!
                 with self.lock:
@@ -2781,17 +2883,23 @@ def _prepare_vod_thread_inner(task_id, url, title, poster=""):
         task = VOD_TASKS.get(task_id)
         if not task:
             return
+        retry_upload = bool(task.get("upload_pending") and os.path.isfile(task.get("file_path", "")))
         task["status"] = "queued"
-        task["status_msg"] = "Na fila (máx 2 simultâneos)..."
+        task["status_msg"] = "Na fila de preparação..."
         task["poster"] = poster or task.get("poster", "")
         task["title"] = title or task.get("title", "Filme VOD")
         task["url"] = url
         save_vod_tasks()
 
     with VOD_SEMAPHORE:
+        if retry_upload:
+            try:
+                upload_prepared_vod(task_id, task)
+            except StorageError:
+                pass
+            return
         with VOD_TASKS_LOCK:
-            task = VOD_TASKS.get(task_id)
-            if not task:
+            if VOD_TASKS.get(task_id) is not task:
                 return
             task["status"] = "processing"
             task["progress"] = 5
@@ -2819,6 +2927,8 @@ def _prepare_vod_thread_inner(task_id, url, title, poster=""):
         duration = 0
 
         try:
+            if GDRIVE_STORAGE.enabled and shutil.disk_usage(VOD_DIR).free < VOD_MIN_FREE_BYTES:
+                raise RuntimeError("Espaço temporário insuficiente na VPS")
             if is_torrent:
                 if (not title or title in ("Filme VOD", "Vídeo VOD", "Vídeo")):
                     clean_title = extract_torrent_title(url, fallback=clean_title)
@@ -3331,10 +3441,13 @@ def _prepare_vod_thread_inner(task_id, url, title, poster=""):
                 gen_template.build_fat_template(file_name=fat_name, file_size=fat_size, out_path=out_tmpl)
 
             with VOD_TASKS_LOCK:
+                if VOD_TASKS.get(task_id) is not task:
+                    return
                 if task_id in VOD_TASKS:
-                    task["status"] = "ready"
-                    task["progress"] = 100
-                    task["status_msg"] = f"Pronto para assistir ({final_res})" if final_res else "Pronto para assistir"
+                    task["status"] = "uploading" if GDRIVE_STORAGE.enabled else "ready"
+                    task["progress"] = 99 if GDRIVE_STORAGE.enabled else 100
+                    task["status_msg"] = "Enviando ao Google Drive..." if GDRIVE_STORAGE.enabled else (f"Pronto para assistir ({final_res})" if final_res else "Pronto para assistir")
+                    task["storage"] = "local"
                     task["final_resolution"] = final_res
                     task["final_codec"] = final_codec
                     task["file_path"] = out_file
@@ -3345,13 +3458,16 @@ def _prepare_vod_thread_inner(task_id, url, title, poster=""):
                     task["speed"] = ""
                     task["updated_at"] = time.time()
                     save_vod_tasks()
+            if GDRIVE_STORAGE.enabled and not upload_prepared_vod(task_id, task):
+                return
             print(f"[✓] VOD pronto: {clean_title} ({file_size / (1024*1024):.1f} MB)")
         except Exception as e:
             print(f"[!] Erro no VOD {task_id}: {e}")
             with VOD_TASKS_LOCK:
-                if task_id in VOD_TASKS:
+                if VOD_TASKS.get(task_id) is task:
                     task["status"] = "error"
-                    task["status_msg"] = "Erro no processamento"
+                    if not task.get("upload_pending"):
+                        task["status_msg"] = "Erro no processamento"
                     task["error"] = str(e)
                     task["updated_at"] = time.time()
                     save_vod_tasks()
@@ -3365,8 +3481,81 @@ def _prepare_vod_thread(task_id, url, title, poster=""):
             print(f"[*] Tarefa VOD {task_id} já possui thread em execução, ignorando duplicata.")
             return
         VOD_RUNNING_THREADS.add(task_id)
+    disk_stop = threading.Event()
+    def watch_disk():
+        while not disk_stop.wait(1):
+            try:
+                if shutil.disk_usage(VOD_DIR).free >= VOD_MIN_FREE_BYTES:
+                    continue
+                with VOD_TASKS_LOCK:
+                    task = VOD_TASKS.get(task_id)
+                    if not task or task.get("status") != "processing":
+                        continue
+                    task["disk_pressure"] = True
+                with VOD_RUNNING_PROCS_LOCK:
+                    proc = VOD_RUNNING_PROCS.get(task_id)
+                if proc and proc.poll() is None:
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except OSError:
+                        proc.kill()
+            except OSError:
+                pass
+    if GDRIVE_STORAGE.enabled:
+        threading.Thread(target=watch_disk, name="vod-disk-guard", daemon=True).start()
     try:
         _prepare_vod_thread_inner(task_id, url, title, poster)
+    finally:
+        disk_stop.set()
+        with VOD_RUNNING_THREADS_LOCK:
+            VOD_RUNNING_THREADS.discard(task_id)
+
+def _migrate_vod_thread(task_id):
+    try:
+        with VOD_SEMAPHORE:
+            with VOD_TASKS_LOCK:
+                task = VOD_TASKS.get(task_id)
+                if not task or task.get("status") == "deleting":
+                    return
+                if ACTIVE_VOD_TASK == task_id:
+                    task["status"] = "ready"
+                    task["status_msg"] = "Migração adiada: tarefa em reprodução na TV"
+                    save_vod_tasks()
+                    return
+                state = getattr(VOD_PLAYBACK_CACHE, "_state", None)
+                if state and state.get("key") and state["key"][0] == task_id:
+                    task["status"] = "ready"
+                    task["status_msg"] = "Migração adiada: tarefa em aquecimento no cache da TV"
+                    save_vod_tasks()
+                    return
+                if task.get("status") == "ready" and task.get("storage") == "gdrive":
+                    return
+                local_path = task.get("file_path") or os.path.join(VOD_DIR, f"{task_id}.mp4")
+                if not os.path.isfile(local_path):
+                    task.update(status="error", upload_pending=True,
+                                status_msg="Erro: arquivo MP4 local ausente para migração",
+                                error="Arquivo local não encontrado para migração",
+                                updated_at=time.time())
+                    save_vod_tasks()
+                    return
+                task["file_path"] = local_path
+                task["status"] = "uploading"
+                task["upload_pending"] = True
+                task["progress"] = 99
+                task["status_msg"] = "Enviando e verificando no Google Drive (migração)..."
+                task["updated_at"] = time.time()
+                save_vod_tasks(strict=True)
+
+            upload_prepared_vod(task_id, task, seed_cache=False)
+    except Exception as e:
+        print(f"[VOD Migrate] Erro ao migrar {task_id}: {e}")
+        with VOD_TASKS_LOCK:
+            t = VOD_TASKS.get(task_id)
+            if t and t.get("status") == "uploading":
+                t.update(status="error", upload_pending=True,
+                         status_msg="Falha na migração para Google Drive; vídeo preservado na VPS",
+                         error=str(e), updated_at=time.time())
+                save_vod_tasks()
     finally:
         with VOD_RUNNING_THREADS_LOCK:
             VOD_RUNNING_THREADS.discard(task_id)
@@ -3376,7 +3565,7 @@ def resume_interrupted_vod_tasks():
     with VOD_TASKS_LOCK:
         tasks = list(VOD_TASKS.values())
     for t in tasks:
-        if t.get("status") in ("pending", "queued", "processing"):
+        if t.get("status") in ("pending", "queued", "processing", "uploading") or t.get("upload_pending"):
             tid = t.get("id")
             url = t.get("url")
             title = t.get("title")
@@ -3451,6 +3640,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.handle_vod_stream(path)
         elif path == "/api/vod/status":
             self.send_vod_status()
+        elif path == "/api/vod/history":
+            self.send_vod_history()
         elif path == "/api/status":
             self.send_status_json()
         elif path == "/api/channels":
@@ -3980,10 +4171,17 @@ self.addEventListener('message', (event) => {
             self.handle_switch()
         elif path == "/api/vod/prepare":
             self.handle_vod_prepare()
+        elif path == "/api/vod/migrate":
+            self.handle_vod_migrate()
         elif path == "/api/vod/delete":
             self.handle_vod_delete()
         elif path == "/api/vod/play":
             self.handle_vod_play()
+        elif path == "/api/vod/warm":
+            self.handle_vod_play(warm_only=True)
+        elif path in ("/api/vod/history/checkpoint", "/api/vod/history/completed",
+                      "/api/vod/history/reset", "/api/vod/continue"):
+            self.handle_vod_history(path.rsplit("/", 1)[-1])
         elif path == "/api/vod/live":
             self.handle_vod_live()
         elif path == "/api/youtube":
@@ -4506,14 +4704,6 @@ self.addEventListener('message', (event) => {
             params = urllib.parse.parse_qs(body)
             params = {k: v[0] for k, v in params.items()}
 
-        # Objective C (RC-001 iter 11): stage timing. Request receipt is the
-        # first observable stage; SWITCH_BEGIN/OK inside switch_channel only
-        # cover the make-before-break transaction itself.
-        log_event(
-            f"SWITCH_HTTP_REQ method=POST ch={params.get('channel_id')} "
-            f"url={params.get('url')} at={time.time():.3f}"
-        )
-
         # Validação do PIN de Segurança (1233)
         req_pin = self.headers.get("X-Auth-PIN") or params.get("pin")
         if AUTH_PIN and req_pin != AUTH_PIN:
@@ -4584,10 +4774,6 @@ self.addEventListener('message', (event) => {
 
         ch_id = query.get("id", [""])[0] or query.get("channel_id", [""])[0]
         custom_url = query.get("url", [""])[0]
-        # Objective C (RC-001 iter 11): GET path request receipt.
-        log_event(
-            f"SWITCH_HTTP_REQ method=GET ch={ch_id} url={custom_url} at={time.time():.3f}"
-        )
         custom_name = query.get("name", [""])[0]
         no_reconnect_val = query.get("no_reconnect", ["0"])[0] or query.get("no_usb_reconnect", ["0"])[0]
         no_reconnect = no_reconnect_val in ["1", "true", "True", "yes"]
@@ -4802,6 +4988,10 @@ self.addEventListener('message', (event) => {
         body = self.rfile.read(length).decode("utf-8", errors="replace") if length > 0 else ""
 
         acked = HUB.bus.ack(cmd_id, rc=rc, output=body)
+        if not acked:
+            acked = HUB.bus.ack_legacy(output=body)
+            HUB.tablet_cmd_res = body
+            HUB.tablet_cmd_event.set()
         res = json.dumps({"success": True, "acked": acked, "id": cmd_id}).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -5002,7 +5192,17 @@ self.addEventListener('message', (event) => {
         task_id = hashlib.md5(url.encode("utf-8")).hexdigest()[:8]
         with VOD_TASKS_LOCK:
             existing = VOD_TASKS.get(task_id)
-            if existing and existing.get("status") == "ready" and os.path.exists(existing.get("file_path", "")):
+            with VOD_RUNNING_THREADS_LOCK:
+                cancelling = task_id in VOD_RUNNING_THREADS and (not existing or existing.get("status") == "error")
+            if cancelling:
+                res = json.dumps({"success": False, "error": "Cancelamento em andamento. Tente novamente em instantes."}).encode("utf-8")
+                self.send_response(409)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(res)))
+                self.end_headers()
+                self.wfile.write(res)
+                return
+            if existing and existing.get("status") == "ready" and vod_media_available(existing):
                 if poster and not existing.get("poster"):
                     existing["poster"] = poster
                     save_vod_tasks()
@@ -5020,7 +5220,7 @@ self.addEventListener('message', (event) => {
                 self.wfile.write(res)
                 return
 
-            if existing and existing.get("status") in ("processing", "queued", "pending"):
+            if existing and existing.get("status") in ("processing", "queued", "pending", "uploading", "deleting"):
                 res = json.dumps({
                     "success": True,
                     "task_id": task_id,
@@ -5042,7 +5242,8 @@ self.addEventListener('message', (event) => {
                 except Exception:
                     pass
 
-            VOD_TASKS[task_id] = {
+            retry_prepared = bool(existing and existing.get("upload_pending") and os.path.isfile(existing.get("file_path", "")))
+            VOD_TASKS[task_id] = existing if retry_prepared else {
                 "id": task_id,
                 "url": url,
                 "title": title or "Vídeo VOD",
@@ -5072,8 +5273,165 @@ self.addEventListener('message', (event) => {
         self.end_headers()
         self.wfile.write(res)
 
+    def handle_vod_migrate(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
+        try:
+            params = json.loads(body)
+        except Exception:
+            params = urllib.parse.parse_qs(body)
+            params = {k: v[0] for k, v in params.items()}
+
+        req_pin = self.headers.get("X-Auth-PIN") or params.get("pin")
+        if AUTH_PIN and req_pin != AUTH_PIN:
+            res = json.dumps({"success": False, "error": "PIN incorreto"}).encode("utf-8")
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(res)))
+            self.end_headers()
+            self.wfile.write(res)
+            return
+
+        if not GDRIVE_STORAGE.enabled:
+            res = json.dumps({"success": False, "error": "Google Drive não está habilitado ou disponível"}).encode("utf-8")
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(res)))
+            self.end_headers()
+            self.wfile.write(res)
+            return
+
+        task_id = (params.get("task_id") or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{8}", task_id):
+            res = json.dumps({"success": False, "error": "ID de tarefa inválido (deve ter 8 caracteres hexadecimais)"}).encode("utf-8")
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(res)))
+            self.end_headers()
+            self.wfile.write(res)
+            return
+
+        with VOD_TASKS_LOCK:
+            task = VOD_TASKS.get(task_id)
+            if not task:
+                res = json.dumps({"success": False, "error": "Tarefa VOD não encontrada"}).encode("utf-8")
+                self.send_response(404)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Length", str(len(res)))
+                self.end_headers()
+                self.wfile.write(res)
+                return
+
+            if task.get("status") == "ready" and task.get("storage") == "gdrive":
+                res = json.dumps({
+                    "success": True,
+                    "task_id": task_id,
+                    "status": "ready",
+                    "storage": "gdrive",
+                    "message": "Tarefa já migrada para o Google Drive"
+                }).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Length", str(len(res)))
+                self.end_headers()
+                self.wfile.write(res)
+                return
+
+            if ACTIVE_VOD_TASK == task_id:
+                res = json.dumps({"success": False, "error": "Tarefa ativa na TV; tente novamente mais tarde"}).encode("utf-8")
+                self.send_response(409)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Length", str(len(res)))
+                self.end_headers()
+                self.wfile.write(res)
+                return
+
+            state = getattr(VOD_PLAYBACK_CACHE, "_state", None)
+            if state and state.get("key") and state["key"][0] == task_id:
+                res = json.dumps({"success": False, "error": "Tarefa em aquecimento/reprodução no cache da TV; tente novamente mais tarde"}).encode("utf-8")
+                self.send_response(409)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Length", str(len(res)))
+                self.end_headers()
+                self.wfile.write(res)
+                return
+
+            if task.get("status") == "deleting":
+                res = json.dumps({"success": False, "error": "Tarefa em exclusão"}).encode("utf-8")
+                self.send_response(409)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Length", str(len(res)))
+                self.end_headers()
+                self.wfile.write(res)
+                return
+
+            if task.get("status") in ("processing", "queued", "pending"):
+                res = json.dumps({"success": False, "error": f"Tarefa em preparação ({task.get('status')})"}).encode("utf-8")
+                self.send_response(409)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Length", str(len(res)))
+                self.end_headers()
+                self.wfile.write(res)
+                return
+
+            with VOD_RUNNING_THREADS_LOCK:
+                if task_id in VOD_RUNNING_THREADS or task.get("status") == "uploading":
+                    res = json.dumps({"success": False, "error": "Tarefa já em migração/upload"}).encode("utf-8")
+                    self.send_response(409)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.send_header("Content-Length", str(len(res)))
+                    self.end_headers()
+                    self.wfile.write(res)
+                    return
+
+            local_path = task.get("file_path") or os.path.join(VOD_DIR, f"{task_id}.mp4")
+            if not os.path.isfile(local_path):
+                res = json.dumps({"success": False, "error": "Arquivo MP4 local não encontrado para migração"}).encode("utf-8")
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Content-Length", str(len(res)))
+                self.end_headers()
+                self.wfile.write(res)
+                return
+
+            with VOD_RUNNING_THREADS_LOCK:
+                VOD_RUNNING_THREADS.add(task_id)
+
+            task["file_path"] = local_path
+            task["status"] = "queued"
+            task["upload_pending"] = True
+            task["status_msg"] = "Na fila de migração para o Google Drive..."
+            task["updated_at"] = time.time()
+            save_vod_tasks()
+
+        threading.Thread(target=_migrate_vod_thread, args=(task_id,), daemon=True).start()
+
+        res = json.dumps({
+            "success": True,
+            "task_id": task_id,
+            "status": "queued",
+            "message": "Migração iniciada em segundo plano"
+        }).encode("utf-8")
+        self.send_response(202)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", str(len(res)))
+        self.end_headers()
+        self.wfile.write(res)
+
     def handle_vod_delete(self):
-        global ACTIVE_VOD_TASK
+        global ACTIVE_VOD_TASK, VOD_SELECTION_GENERATION, VOD_SELECTION_TASK
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
         try:
@@ -5094,7 +5452,7 @@ self.addEventListener('message', (event) => {
             return
 
         task_id = params.get("task_id")
-        if not task_id:
+        if not isinstance(task_id, str) or not re.fullmatch(r"[0-9a-f]{8}", task_id):
             res = json.dumps({"success": False, "error": "ID da tarefa não informado"}).encode("utf-8")
             self.send_response(400)
             self.send_header("Content-Type", "application/json")
@@ -5116,6 +5474,31 @@ self.addEventListener('message', (event) => {
                 self.wfile.write(res)
                 return
 
+            previous_status = task.get("status")
+            task["status"] = "deleting"
+            if VOD_SELECTION_TASK == task_id:
+                VOD_SELECTION_GENERATION += 1
+                VOD_SELECTION_TASK = None
+
+        if task.get("storage") == "gdrive":
+            try:
+                GDRIVE_STORAGE.delete(task)
+            except Exception:
+                with VOD_TASKS_LOCK:
+                    if VOD_TASKS.get(task_id) is task:
+                        task["status"] = previous_status
+                res = json.dumps({"success": False, "error": "Não foi possível excluir do Google Drive. Tente novamente."}).encode("utf-8")
+                self.send_response(502)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(res)))
+                self.end_headers()
+                self.wfile.write(res)
+                return
+
+        with VOD_TASKS_LOCK:
+            if VOD_TASKS.get(task_id) is not task:
+                self.send_error(409, "VOD task changed")
+                return
             # Aborta processo ffmpeg / yt-dlp ativo e todo o grupo de processos filhos
             with VOD_RUNNING_PROCS_LOCK:
                 proc = VOD_RUNNING_PROCS.pop(task_id, None)
@@ -5133,6 +5516,7 @@ self.addEventListener('message', (event) => {
                     pass
 
             if ACTIVE_VOD_TASK == task_id or getattr(HUB, "tablet_vod_mode", "") == task_id:
+                VOD_PLAYBACK_CACHE.stop()
                 set_active_vod(None)
                 HUB.tablet_vod_mode = ""
                 dispatch_device_cmd("sh /data/local/tmp/switch_live.sh")
@@ -5158,26 +5542,144 @@ self.addEventListener('message', (event) => {
         self.end_headers()
         self.wfile.write(res)
 
+    def _read_vod_json(self):
+        """Read a small authenticated VOD control request without logging it."""
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            raise ValueError("Invalid request body")
+        if length < 0 or length > 64 * 1024:
+            raise ValueError("Invalid request body")
+        body = self.rfile.read(length).decode("utf-8") if length else "{}"
+        try:
+            params = json.loads(body)
+        except Exception:
+            params = urllib.parse.parse_qs(body)
+            params = {key: value[0] for key, value in params.items()}
+        if not isinstance(params, dict):
+            raise ValueError("Invalid request body")
+        return params
+
+    def _send_vod_json(self, status, payload):
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _check_vod_pin(self, params=None):
+        params = params or {}
+        req_pin = self.headers.get("X-Auth-PIN") or params.get("pin")
+        if AUTH_PIN and req_pin != AUTH_PIN:
+            self._send_vod_json(401, {"success": False, "error": "PIN incorreto"})
+            return False
+        return True
+
+    def _vod_tasks_snapshot(self):
+        with VOD_TASKS_LOCK:
+            return {task_id: dict(task) for task_id, task in VOD_TASKS.items()}
+
+    def send_vod_history(self):
+        # Keep the detailed history behind the existing PIN.  The dashboard gets
+        # its compact continuation cards in /api/vod/status as it already gets
+        # the VOD catalog there.
+        if not self._check_vod_pin():
+            return
+        self._send_vod_json(200, {"success": True,
+                                  "continue_watching": VOD_HISTORY.summary(self._vod_tasks_snapshot())})
+
+    def handle_vod_history(self, action):
+        try:
+            params = self._read_vod_json()
+        except ValueError as exc:
+            self._send_vod_json(400, {"success": False, "error": str(exc)})
+            return
+        if not self._check_vod_pin(params):
+            return
+        if action == "reset":
+            series_key = params.get("series_key")
+            if not isinstance(series_key, str) or not series_key:
+                self._send_vod_json(400, {"success": False, "error": "Série inválida"})
+                return
+            removed = VOD_HISTORY.reset(series_key)
+            self._send_vod_json(200 if removed else 404,
+                                {"success": removed, "series_key": series_key,
+                                 "error": None if removed else "Histórico não encontrado"})
+            return
+
+        if action == "continue":
+            series_key = params.get("series_key")
+            entries = VOD_HISTORY.summary(self._vod_tasks_snapshot())
+            entry = next((item for item in entries if item.get("series_key") == series_key), None)
+            if not entry:
+                self._send_vod_json(404, {"success": False, "error": "Nenhum episódio para continuar"})
+                return
+            if not entry.get("available"):
+                self._send_vod_json(409, {"success": False, "error": "O próximo episódio ainda não está pronto",
+                                          "task_id": entry.get("task_id")})
+                return
+            self._send_vod_json(200, {"success": True, "task_id": entry.get("task_id"),
+                                      "episode_number": entry.get("episode_number")})
+            return
+
+        task_id = params.get("task_id")
+        if not isinstance(task_id, str) or not re.fullmatch(r"[0-9a-f]{8}", task_id):
+            self._send_vod_json(400, {"success": False, "error": "VOD inválido"})
+            return
+        with VOD_TASKS_LOCK:
+            task = VOD_TASKS.get(task_id)
+            task = dict(task) if task else None
+        if not task:
+            self._send_vod_json(404, {"success": False, "error": "VOD não encontrado"})
+            return
+        if task.get("status") != "ready" or not vod_media_available(task):
+            self._send_vod_json(409, {"success": False, "error": "VOD não está pronto"})
+            return
+        try:
+            if action == "checkpoint":
+                event = VOD_HISTORY.checkpoint(task, params.get("position_seconds"), source="manual")
+            elif action == "completed":
+                event = VOD_HISTORY.complete(task)
+            else:
+                self._send_vod_json(404, {"success": False, "error": "Ação desconhecida"})
+                return
+        except ValueError:
+            self._send_vod_json(400, {"success": False, "error": "Posição inválida"})
+            return
+        if not event:
+            self._send_vod_json(400, {"success": False, "error": "Este vídeo não é um episódio identificado"})
+            return
+        self._send_vod_json(200, {"success": True, "event": event,
+                                  "continue_watching": VOD_HISTORY.summary(self._vod_tasks_snapshot())})
+
     def send_vod_status(self):
         global ACTIVE_VOD_TASK
         with VOD_TASKS_LOCK:
             tasks_list = []
             for t in VOD_TASKS.values():
                 t_dict = dict(t)
-                tid = t.get("id")
-                dest = os.path.join(VOD_DIR, f"{tid}.ts")
-                if os.path.exists(dest):
-                    try:
-                        sz = os.path.getsize(dest)
-                        t_dict["file_size_bytes"] = sz
-                        if sz >= 1024**3:
-                            t_dict["file_size_str"] = f"{sz / (1024**3):.1f} GB"
-                        elif sz >= 1024**2:
-                            t_dict["file_size_str"] = f"{sz / (1024**2):.1f} MB"
-                        else:
-                            t_dict["file_size_str"] = f"{sz / 1024:.0f} KB"
-                    except Exception:
-                        pass
+                identity = resolve_episode_identity(t_dict)
+                if identity:
+                    # UI metadata only; the canonical record remains server-side.
+                    t_dict["history_episode"] = {
+                        "series_key": identity["series_key"],
+                        "series_title": identity["series_title"],
+                        "season_number": identity["season_number"],
+                        "episode_number": identity["episode_number"],
+                    }
+                try:
+                    sz = vod_media_size(t)
+                    t_dict["file_size_bytes"] = sz
+                    if sz >= 1024**3:
+                        t_dict["file_size_str"] = f"{sz / (1024**3):.1f} GB"
+                    elif sz >= 1024**2:
+                        t_dict["file_size_str"] = f"{sz / (1024**2):.1f} MB"
+                    else:
+                        t_dict["file_size_str"] = f"{sz / 1024:.0f} KB"
+                except (OSError, ValueError, TypeError):
+                    pass
                 tasks_list.append(t_dict)
 
         # Coloca os VODs mais recentes no topo da pilha (ordem decrescente de criação/atualização)
@@ -5199,14 +5701,18 @@ self.addEventListener('message', (event) => {
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
+        history = VOD_HISTORY.summary({item.get("id"): item for item in tasks_list if item.get("id")})
         self.wfile.write(json.dumps({
             "active_vod": ACTIVE_VOD_TASK,
             "tasks": tasks_list,
-            "disk": disk_info
+            "disk": dict(disk_info, label="VPS"),
+            "drive": GDRIVE_STORAGE.quota(),
+            "storage": "gdrive" if GDRIVE_STORAGE.enabled else "local",
+            "continue_watching": history,
         }).encode("utf-8"))
 
-    def handle_vod_play(self):
-        global ACTIVE_VOD_TASK
+    def handle_vod_play(self, warm_only=False):
+        global ACTIVE_VOD_TASK, VOD_SELECTION_GENERATION, VOD_SELECTION_TASK
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
         try:
@@ -5227,9 +5733,12 @@ self.addEventListener('message', (event) => {
             return
 
         task_id = params.get("task_id")
+        if not isinstance(task_id, str) or not re.fullmatch(r"[0-9a-f]{8}", task_id):
+            self.send_error(400, "Invalid VOD id")
+            return
         with VOD_TASKS_LOCK:
             task = VOD_TASKS.get(task_id)
-        if not task or task.get("status") != "ready":
+        if not task or task.get("status") != "ready" or not vod_media_available(task):
             res = json.dumps({"success": False, "error": "VOD não está pronto"}).encode("utf-8")
             self.send_response(400)
             self.send_header("Content-Type", "application/json")
@@ -5239,12 +5748,50 @@ self.addEventListener('message', (event) => {
             self.wfile.write(res)
             return
 
-        set_active_vod(task_id)
-        HUB.tablet_vod_mode = task_id
-        dispatch_device_cmd(f"sh /data/local/tmp/switch_vod.sh {task_id}")
-        log_event(f"VOD_PLAY {task_id} ({task.get('display_name')})")
+        with VOD_TASKS_LOCK:
+            if VOD_TASKS.get(task_id) is not task or task.get("status") != "ready":
+                self.send_error(409, "VOD selection changed")
+                return
+            if warm_only and (ACTIVE_VOD_TASK not in (None, task_id)
+                              or VOD_SELECTION_TASK not in (None, task_id)):
+                self.send_error(409, "Another VOD is selected")
+                return
+            if not warm_only:
+                VOD_SELECTION_GENERATION += 1
+                VOD_SELECTION_TASK = task_id
+            selection = VOD_SELECTION_GENERATION
+        if task.get("storage") == "gdrive":
+            try:
+                VOD_PLAYBACK_CACHE.start(task)
+            except Exception:
+                res = json.dumps({"success": False, "error": "Não foi possível carregar o vídeo do Google Drive. Tente novamente."}).encode("utf-8")
+                self.send_response(503)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(res)))
+                self.end_headers()
+                self.wfile.write(res)
+                return
+        elif not warm_only:
+            VOD_PLAYBACK_CACHE.stop()
+        with VOD_TASKS_LOCK:
+            if (selection != VOD_SELECTION_GENERATION or VOD_TASKS.get(task_id) is not task
+                    or task.get("status") != "ready"):
+                self.send_error(409, "VOD selection changed")
+                return
+            if not warm_only:
+                set_active_vod(task_id)
+                HUB.tablet_vod_mode = task_id
+                dispatch_device_cmd(f"sh /data/local/tmp/switch_vod.sh {task_id}")
+                # A deliberate play is useful as a *selection* hint for the
+                # household history.  It is never treated as proof that the TV
+                # decoded the episode or that it reached a particular minute.
+                try:
+                    VOD_HISTORY.record_selected(task)
+                except Exception:
+                    print("[VOD] Não foi possível guardar a seleção no histórico")
+        log_event(f"VOD_{'WARM' if warm_only else 'PLAY'} {task_id} ({task.get('display_name')})")
 
-        res = json.dumps({"success": True, "task_id": task_id, "display_name": task.get("display_name")}).encode("utf-8")
+        res = json.dumps({"success": True, "task_id": task_id, "display_name": task.get("display_name"), "warmed": warm_only}).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -5253,22 +5800,19 @@ self.addEventListener('message', (event) => {
         self.wfile.write(res)
 
     def handle_vod_live(self):
-        global ACTIVE_VOD_TASK
-        if ACTIVE_VOD_TASK is None and not getattr(HUB, "tablet_vod_mode", ""):
-            res = json.dumps({"success": True, "status": "already_live"}).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Content-Length", str(len(res)))
-            self.end_headers()
-            self.wfile.write(res)
-            return
-        set_active_vod(None)
-        HUB.tablet_vod_mode = ""
-        dispatch_device_cmd("sh /data/local/tmp/switch_live.sh")
-        log_event("VOD_RETURN_LIVE")
+        global ACTIVE_VOD_TASK, VOD_SELECTION_GENERATION, VOD_SELECTION_TASK
+        with VOD_TASKS_LOCK:
+            VOD_SELECTION_GENERATION += 1
+            VOD_SELECTION_TASK = None
+            VOD_PLAYBACK_CACHE.stop()
+            already_live = ACTIVE_VOD_TASK is None and not getattr(HUB, "tablet_vod_mode", "")
+            if not already_live:
+                set_active_vod(None)
+                HUB.tablet_vod_mode = ""
+                dispatch_device_cmd("sh /data/local/tmp/switch_live.sh")
+                log_event("VOD_RETURN_LIVE")
 
-        res = json.dumps({"success": True, "status": "live"}).encode("utf-8")
+        res = json.dumps({"success": True, "status": "already_live" if already_live else "live"}).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -5321,6 +5865,8 @@ self.addEventListener('message', (event) => {
                 self.send_header("Accept-Ranges", "bytes")
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
+                if self.command == "HEAD":
+                    return
                 with open(file_path, "rb") as f:
                     f.seek(start)
                     rem = content_len
@@ -5338,6 +5884,8 @@ self.addEventListener('message', (event) => {
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
+        if self.command == "HEAD":
+            return
         with open(file_path, "rb") as f:
             while True:
                 chunk = f.read(131072)
@@ -5345,12 +5893,71 @@ self.addEventListener('message', (event) => {
                     break
                 self.wfile.write(chunk)
 
+    def stream_vod_task(self, task):
+        if task.get("storage") != "gdrive":
+            return self.stream_mp4_file(task.get("file_path"))
+        size = vod_media_size(task)
+        start, end = 0, size - 1
+        requested = self.headers.get("Range")
+        if requested:
+            match = re.fullmatch(r"bytes=(\d*)-(\d*)", requested.strip())
+            valid = bool(match and (match[1] or match[2]))
+            if valid:
+                if match[1]:
+                    start = int(match[1])
+                    end = min(int(match[2]), size - 1) if match[2] else size - 1
+                else:
+                    length = int(match[2])
+                    valid = length > 0
+                    start = max(0, size - length)
+            if not valid or start >= size or start > end:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+        remaining = end - start + 1
+        first = b""
+        if self.command != "HEAD":
+            try:
+                first = VOD_PLAYBACK_CACHE.read(task, start, min(131072, remaining))
+                if not first:
+                    raise StorageError("Empty VOD range")
+            except Exception:
+                self.send_error(503, "Google Drive video temporarily unavailable")
+                return
+        self.send_response(206 if requested else 200)
+        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Content-Length", str(remaining))
+        self.send_header("Accept-Ranges", "bytes")
+        if requested:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        if self.command == "HEAD":
+            return
+        try:
+            chunk = first
+            while remaining:
+                if not chunk or len(chunk) > remaining:
+                    raise StorageError("Invalid VOD range body")
+                self.wfile.write(chunk)
+                start += len(chunk)
+                remaining -= len(chunk)
+                if remaining:
+                    chunk = VOD_PLAYBACK_CACHE.read(task, start, min(131072, remaining))
+        except (OSError, StorageError):
+            self.close_connection = True
+
     def handle_vod_stream(self, path):
         parts = [p for p in path.strip("/").split("/") if p]
         if len(parts) < 3:
             self.send_error(404, "Invalid VOD path")
             return
         task_id = parts[1]
+        if not re.fullmatch(r"[0-9a-f]{8}", task_id):
+            self.send_error(400, "Invalid VOD id")
+            return
         filename = parts[2]
 
         touch_vod_stream(task_id)
@@ -5414,18 +6021,18 @@ self.addEventListener('message', (event) => {
                 if file_idx < len(playlist):
                     target_task = playlist[file_idx]
                     target_path = target_task.get("file_path")
-                    if target_path and os.path.exists(target_path):
-                        self.stream_mp4_file(target_path)
+                    if vod_media_available(target_task):
+                        self.stream_vod_task(target_task)
                         return
             self.send_error(404, "Episode not found")
             return
 
         if filename in ("movie.mp4", "movie.ts"):
             file_path = task.get("file_path")
-            if not file_path or not os.path.exists(file_path):
+            if task.get("status") != "ready" or not vod_media_available(task):
                 self.send_error(404, "Movie file not found")
                 return
-            self.stream_mp4_file(file_path)
+            self.stream_vod_task(task)
             return
 
         self.send_error(404, "Not Found")
@@ -7913,8 +8520,9 @@ EMBEDDED_DASHBOARD_HTML = r"""<!DOCTYPE html>
                     <div style="min-width: 0;">
                         <div class="downloads-modal-title">Memória da TV & YouTube</div>
                         <div id="vod-disk-badge" class="vod-disk-badge">
-                            💾 Espaço TV: Verificando...
+                            💾 VPS: Verificando...
                         </div>
+                        <div id="vod-drive-badge" class="vod-disk-badge" style="display:none"></div>
                     </div>
                 </div>
                 <button class="modal-close-icon-btn" onclick="closeDownloadsModal()" aria-label="Fechar Memória da TV">✕</button>
@@ -8790,6 +9398,54 @@ EMBEDDED_DASHBOARD_HTML = r"""<!DOCTYPE html>
         }
 
         // Carrega Filmes Salvos da TV (/api/vod/status)
+        function renderVodStorage(data) {
+            const diskBadge = document.getElementById('vod-disk-badge');
+            const savedDisk = document.getElementById('saved-disk-info');
+            const savedDiskProgress = document.getElementById('saved-disk-progress');
+            const formatGb = value => `${value.toLocaleString('pt-BR', { maximumFractionDigits: 1 })} GB`;
+            const disk = data.disk || {};
+            if (Number.isFinite(disk.total_gb) && disk.total_gb > 0 && Number.isFinite(disk.free_gb) && disk.free_gb >= 0) {
+                const pctFree = Math.max(0, Math.min(100, Math.round(disk.free_gb / disk.total_gb * 100)));
+                if (diskBadge) diskBadge.textContent = `💾 VPS: ${formatGb(disk.free_gb)} livres de ${formatGb(disk.total_gb)}`;
+                if (savedDisk) savedDisk.textContent = `${formatGb(disk.free_gb)} livres (${pctFree}%)`;
+                if (savedDiskProgress) savedDiskProgress.style.width = `${100 - pctFree}%`;
+            } else {
+                if (diskBadge) diskBadge.textContent = '💾 VPS: espaço indisponível';
+                if (savedDisk) savedDisk.textContent = 'Indisponível no momento';
+                if (savedDiskProgress) savedDiskProgress.style.width = '0%';
+            }
+
+            const drive = data.drive || {};
+            const driveBox = document.getElementById('saved-drive-box');
+            const driveBadge = document.getElementById('vod-drive-badge');
+            const driveInfo = document.getElementById('saved-drive-info');
+            const driveTrack = document.getElementById('saved-drive-track');
+            const driveProgress = document.getElementById('saved-drive-progress');
+            const storageDesc = document.getElementById('saved-storage-desc');
+            const enabled = drive.enabled === true;
+            if (driveBox) driveBox.style.display = enabled ? 'flex' : 'none';
+            if (driveBadge) driveBadge.style.display = enabled ? 'block' : 'none';
+            if (storageDesc) storageDesc.textContent = enabled
+                ? 'Novos vídeos são salvos no Google Drive. A reprodução na TV usa internet.'
+                : 'Vídeos preparados para assistir na TV.';
+            if (!enabled) return;
+
+            const hasFree = drive.available === true && Number.isFinite(drive.free_gb) && drive.free_gb >= 0;
+            const hasTotal = Number.isFinite(drive.total_gb) && drive.total_gb > 0;
+            let driveText = drive.updating ? 'Consultando espaço...' : 'Espaço indisponível no momento';
+            if (hasFree) {
+                driveText = `${formatGb(drive.free_gb)} livres`;
+                if (hasTotal) driveText += ` de ${formatGb(drive.total_gb)}`;
+            }
+            if (driveInfo) driveInfo.textContent = driveText;
+            if (driveBadge) driveBadge.textContent = `☁️ Google Drive: ${driveText}`;
+            if (driveTrack) driveTrack.style.display = hasFree && hasTotal ? 'block' : 'none';
+            if (driveProgress) {
+                const usedPct = hasFree && hasTotal ? Math.max(0, Math.min(100, 100 - drive.free_gb / drive.total_gb * 100)) : 0;
+                driveProgress.style.width = `${usedPct}%`;
+            }
+        }
+
         async function pollVodStatus() {
             try {
                 const res = await fetch('/api/vod/status', { signal: AbortSignal.timeout(4000) });
@@ -8815,18 +9471,14 @@ EMBEDDED_DASHBOARD_HTML = r"""<!DOCTYPE html>
                 }
                 renderTvBanner();
 
-                // 2. Atualiza Espaço Livre na TV
-                const diskBadge = document.getElementById('vod-disk-badge');
-                if (diskBadge && data.disk && data.disk.total_gb > 0) {
-                    diskBadge.innerHTML = `💾 Espaço TV: <strong>${data.disk.free_gb} GB livres</strong> de ${data.disk.total_gb} GB`;
-                }
+                renderVodStorage(data);
 
                 // 3. Atualiza Badge Dinâmica de Mídia no Glance Header
                 const headerMediaBadge = document.getElementById('header-media-badge');
                 const headerMediaText = document.getElementById('header-media-text');
                 const headerMediaIcon = document.getElementById('header-media-icon');
 
-                const inProgressTasks = vodTasks.filter(t => ['processing', 'queued', 'pending', 'downloading', 'converting'].includes(t.status));
+                const inProgressTasks = vodTasks.filter(t => ['processing', 'queued', 'pending', 'downloading', 'converting', 'uploading'].includes(t.status));
                 const readyTasks = vodTasks.filter(t => t.status === 'ready');
 
                 if (headerMediaBadge && headerMediaText) {
@@ -8882,7 +9534,7 @@ EMBEDDED_DASHBOARD_HTML = r"""<!DOCTYPE html>
             };
 
             const readyTasks = vodTasks.filter(t => t.status === 'ready').sort(sortByRecent);
-            const inProgressTasks = vodTasks.filter(t => ['processing', 'queued', 'pending', 'downloading', 'converting'].includes(t.status)).sort(sortByRecent);
+            const inProgressTasks = vodTasks.filter(t => ['processing', 'queued', 'pending', 'downloading', 'converting', 'uploading'].includes(t.status)).sort(sortByRecent);
             const errorTasks = vodTasks.filter(t => t.status === 'error').sort(sortByRecent);
 
             // 1. Renderiza Fila de Downloads Ativos e Falhas (Largura Total para Máxima Legibilidade)

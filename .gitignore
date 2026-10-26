@@ -39,3 +39,9 @@ catalog_cache/
 .aider*
 
 target/
+
+# Serena MCP local state
+.serena/
+
+# Backups locais de savepoint
+backups/

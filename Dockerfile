@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-dejavu-core \
     quickjs \
     aria2 \
+    rclone \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir yt-dlp
 
@@ -15,6 +16,7 @@ WORKDIR /app
 
 # Copy application files
 COPY server.py ./
+COPY vod_storage.py vod_playback_cache.py vod_history.py gen_template.py ./
 COPY torrent_downloader.py ./
 COPY channels.json ./
 COPY generate_slate.sh ./

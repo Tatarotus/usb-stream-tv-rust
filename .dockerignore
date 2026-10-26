@@ -1,0 +1,16 @@
+.git
+.env
+.env.*
+!.env.example
+.serena
+.venv
+__pycache__
+**/__pycache__
+*.log
+*.bak
+scratch
+target
+filmes
+vod_cache
+catalog_cache
+**/rclone.conf

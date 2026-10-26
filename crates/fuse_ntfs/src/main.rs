@@ -2,6 +2,14 @@
 //!
 //! Usage: `fuse_ntfs [mount_point] [target] [template_path]`
 //!
+//! Optional Live Favorites mode is disabled unless every flag below is
+//! supplied (all use `=VALUE`, so the legacy positionals keep working):
+//! `--favorites-layout=`, `--favorites-package=`, `--favorites-manifest=`,
+//! `--favorites-template-archive=`, `--favorites-template-image=`,
+//! `--favorites-session=`, `--favorites-media=host:port` and
+//! `--favorites-token-file=`. Any missing/mismatched piece aborts before the
+//! mount; the default Single Live/VOD path is unchanged.
+//!
 //! * `mount_point`   — where /dev/fuse is mounted (default
 //!   `/data/local/tmp/ntfs_mnt`).
 //! * `target`        — live source: a FIFO path, an `http://` URL, or a
@@ -25,6 +33,9 @@ use std::thread;
 use std::time::Duration;
 
 use fuse_ntfs::contract::StreamBackend;
+use fuse_ntfs::favorites::runtime::{FavoritesRuntime, SourceTransport};
+use fuse_ntfs::favorites::startup::{FavoritesStartup, FavoritesStartupOptions};
+use fuse_ntfs::favorites::transport::TcpFrameTransport;
 use fuse_ntfs::observability::{
     self, BootClock, Component, Event, EventKind, Observer, Reason, StderrSink, Worker,
 };
@@ -292,6 +303,36 @@ fn feeder_loop(fifo_path: String, engine: Arc<fuse_ntfs::engine::LiveEngine>, ob
     }
 }
 
+/// Drives the opt-in favorites worker outside the FUSE read path. Network
+/// reads, frame validation, splicing and commit all happen here; FUSE only
+/// serves already-published bytes.
+fn favorites_worker_loop(runtime: Arc<FavoritesRuntime>, mut transport: TcpFrameTransport) {
+    let mut last_error: Option<String> = None;
+    let mut last_log = std::time::Instant::now();
+    while RUNNING.load(Ordering::SeqCst) {
+        let report = runtime.process(&mut transport, runtime.now_ms());
+        if let Some(error) = report.error.as_ref() {
+            if last_error.as_deref() != Some(error.as_str())
+                && last_log.elapsed() >= Duration::from_secs(2)
+            {
+                eprintln!("[favorites] worker: {error}");
+                last_error = Some(error.clone());
+                last_log = std::time::Instant::now();
+            }
+        } else {
+            last_error = None;
+        }
+        if report.frames == 0 && report.committed.is_none() {
+            thread::sleep(Duration::from_millis(10));
+        } else {
+            thread::yield_now();
+        }
+    }
+    if let Some(request) = runtime.pending_request() {
+        transport.cancel(&request);
+    }
+}
+
 fn main() {
     install_signals();
 
@@ -320,14 +361,50 @@ fn main() {
     let target = positional.get(1).map(|s| s.as_str()).unwrap_or(DEF_TARGET);
     let template_path = positional.get(2).map(|s| s.as_str()).unwrap_or(DEF_TEMPLATE);
 
-    // ---- metadata source: sparse template, synthesized when absent ----
-    let mut template = match NtfsTemplate::open(template_path) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("[!] Template {template_path} unreadable ({e}); using synthesized NTFS geometry");
-            NtfsTemplate::synthesized()
+    // ---- opt-in favorites: validate everything before touching /dev/fuse ----
+    let favorites_startup = match FavoritesStartupOptions::from_args(&args) {
+        Ok(Some(options)) => match FavoritesStartup::load(options) {
+            Ok(startup) => Some(startup),
+            Err(error) => {
+                eprintln!("[x] Favoritos desabilitado (falha fechada): {error}");
+                std::process::exit(2);
+            }
+        },
+        Ok(None) => None,
+        Err(error) => {
+            eprintln!("[x] Favoritos: {error}");
+            std::process::exit(2);
         }
     };
+    let (mut template, favorites_runtime, favorites_media, favorites_token) =
+        match favorites_startup {
+            Some(startup) => {
+                eprintln!(
+                    "[✓] Favoritos: {} arquivo(s), sessão={}, manifesto={}, mídia={}",
+                    startup.file_count,
+                    startup.session_id,
+                    startup.manifest_id,
+                    startup.media_address
+                );
+                (
+                    startup.template,
+                    Some(startup.runtime),
+                    Some(startup.media_address),
+                    Some(startup.token),
+                )
+            }
+            None => {
+                // ---- metadata source: sparse template, synthesized when absent ----
+                let template = match NtfsTemplate::open(template_path) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        eprintln!("[!] Template {template_path} unreadable ({e}); using synthesized NTFS geometry");
+                        NtfsTemplate::synthesized()
+                    }
+                };
+                (template, None, None, None)
+            }
+        };
     // Anti-cache tier 2: a fresh Volume Serial Number per mount forces the
     // Samsung firmware to treat the volume as a brand-new filesystem.
     template.randomize_serial();
@@ -337,7 +414,9 @@ fn main() {
         template.serial,
         template.layout.data_start_byte,
         live_size,
-        if Path::new(template_path).exists() {
+        if favorites_runtime.is_some() {
+            "favorites package"
+        } else if Path::new(template_path).exists() {
             template_path
         } else {
             "synthesized"
@@ -373,10 +452,13 @@ fn main() {
         }
     }
 
-    let server = Arc::new(
+    let mut server_builder =
         fuse_ntfs::vfs::dispatcher::NtfsServer::new(template, catalog, backend)
-            .with_observer(obs.clone()),
-    );
+            .with_observer(obs.clone());
+    if let Some(runtime) = &favorites_runtime {
+        server_builder = server_builder.with_favorites(runtime.clone());
+    }
+    let server = Arc::new(server_builder);
 
     // ---- mount /dev/fuse ----
     let _ = fs::create_dir_all(mnt);
@@ -440,6 +522,35 @@ fn main() {
         std::process::exit(1);
     }
     eprintln!("[✓] fuse_ntfs montado em {mnt}");
+
+    if let (Some(runtime), Some(media), Some(token)) =
+        (favorites_runtime.clone(), favorites_media, favorites_token)
+    {
+        match TcpFrameTransport::new(&media, &token) {
+            Ok(transport) => {
+                let spawned = thread::Builder::new()
+                    .name("favorites-worker".into())
+                    .stack_size(2 * 1024 * 1024)
+                    .spawn(move || favorites_worker_loop(runtime, transport));
+                if let Err(error) = spawned {
+                    eprintln!("[x] Favoritos: falha ao iniciar worker ({error}); desmontando");
+                    unsafe {
+                        libc::umount2(c_mnt.as_ptr(), libc::MNT_DETACH);
+                        libc::close(fuse_fd);
+                    }
+                    std::process::exit(2);
+                }
+            }
+            Err(error) => {
+                eprintln!("[x] Favoritos: transporte inválido ({error:?}); desmontando");
+                unsafe {
+                    libc::umount2(c_mnt.as_ptr(), libc::MNT_DETACH);
+                    libc::close(fuse_fd);
+                }
+                std::process::exit(2);
+            }
+        }
+    }
 
     // ---- protocol loop ----
     let run = dispatcher::run(fuse_fd, server, &RUNNING);

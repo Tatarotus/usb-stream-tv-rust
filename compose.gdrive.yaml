@@ -1,0 +1,11 @@
+# Override opcional: credenciais ficam fora da imagem e do repositório.
+# Montar diretório permite que rclone renove o token OAuth atomicamente.
+services:
+  usb-stream-tv:
+    environment:
+      VOD_GDRIVE_REMOTE: ${VOD_GDRIVE_REMOTE:?Configure o remote de destino VOD}
+      RCLONE_CONFIG: /run/rclone/rclone.conf
+    volumes:
+      - type: bind
+        source: ${RCLONE_CONFIG_DIR:?Configure o diretório privado do rclone}
+        target: /run/rclone
