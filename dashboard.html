@@ -5025,7 +5025,7 @@
             return !isSeriesTask(task) && !isYtTask(task) && !isTorrentTask(task);
         }
 
-        function findTaskForEpisode(ep) {
+        function findTaskForEpisode(ep, seasonNumber) {
             if (!ep || !vodTasks || !vodTasks.length) return null;
             const epUrl = (ep.url || '').trim();
             if (epUrl) {
@@ -5039,11 +5039,22 @@
 
             if (selectedSeries && ep.episode_num) {
                 const sName = (selectedSeries.name || '').toLowerCase().trim();
-                const epNum = String(ep.episode_num);
+                const epNum = Number(ep.episode_num);
+                const seasonNum = (seasonNumber != null && seasonNumber !== '') ? Number(seasonNumber) : null;
                 let task = vodTasks.find(t => {
                     const tTitle = (t.title || t.display_name || '').toLowerCase();
                     if (!tTitle.includes(sName)) return false;
-                    const regex = new RegExp(`(^|\\b|\\s)(s\\d+e0*${epNum}|ep(is[oó]dio)?\\s*0*${epNum}|0*${epNum})(\\s*[-–—:]|\\s*$|\\s)`, 'i');
+
+                    // Título no formato SxxEyy / xx x yy: exige temporada e episódio exatos.
+                    const se = tTitle.match(/\bs\s*(\d{1,2})\s*e\s*0*(\d{1,4})\b/) || tTitle.match(/\b(\d{1,2})\s*x\s*0*(\d{1,4})\b/);
+                    if (se) {
+                        if (Number(se[2]) !== epNum) return false;
+                        if (seasonNum != null && Number(se[1]) !== seasonNum) return false;
+                        return true;
+                    }
+
+                    // Sem temporada no título (ex.: "A Noiva de Istambul 216"): só o número.
+                    const regex = new RegExp(`(^|\\b|\\s)(ep(is[oó]dio)?\\s*0*${epNum}|0*${epNum})(\\s*[-–—:]|\\s*$|\\s)`, 'i');
                     return regex.test(tTitle);
                 });
                 if (task) return task;
@@ -6742,7 +6753,7 @@
                 // (baixado ou baixando), não na última.
                 const availableStatuses = ['processing', 'queued', 'pending', 'downloading', 'converting', 'uploading'];
                 const seasonsWithEpisodes = data.seasons.filter((s) => (s.episodes || []).some((ep) => {
-                    const task = findTaskForEpisode(ep);
+                    const task = findTaskForEpisode(ep, s.season_number);
                     return task && (task.status === 'ready' || availableStatuses.includes(task.status));
                 }));
                 seasonsWithEpisodes.sort((a, b) => Number(a.season_number) - Number(b.season_number));
@@ -6803,7 +6814,7 @@
                 let epDur = (ep.duration && ep.duration !== '00:00:00' && ep.duration !== '0') ? ep.duration : 'HD';
                 if (typeof epDur === 'string' && epDur.startsWith('00:')) epDur = epDur.substring(3);
 
-                const task = findTaskForEpisode(ep);
+                const task = findTaskForEpisode(ep, seasonNum);
                 let cardClass = 'episode-card';
                 let actionsHtml = '';
 
