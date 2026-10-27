@@ -2612,6 +2612,7 @@
             gap: 8px;
             z-index: 5;
         }
+
         .btn-clear-search {
             position: static !important;
             right: auto !important;
@@ -3242,6 +3243,7 @@
         }
 
 
+
         /* Barra de Navegação Inferior Fixa (Bottom Mode Nav) */
         .bottom-mode-nav {
             position: fixed !important;
@@ -3480,8 +3482,10 @@
                         <button id="movie-search-clear" class="btn-clear-search" onclick="clearMovieSearch()" style="display: none;" aria-label="Limpar busca">
                             <span class="material-symbols-outlined">backspace</span>
                         </button>
+
                     </div>
                 </div>
+
             </section>
 
             <!-- Status do Catálogo (Contador e Página) -->
@@ -3539,8 +3543,10 @@
                          <button id="series-search-clear" class="btn-clear-search" onclick="clearSeriesSearch()" style="display: none;" aria-label="Limpar busca">
                              <span class="material-symbols-outlined">backspace</span>
                          </button>
+
                      </div>
                  </div>
+
              </section>
 
              <!-- Status do Catálogo de Séries (Contador e Página) -->
@@ -3603,8 +3609,10 @@
                         <button id="channel-search-clear" class="btn-clear-search" onclick="clearChannelSearch()" style="display: none;" aria-label="Limpar busca">
                             <span class="material-symbols-outlined">backspace</span>
                         </button>
+
                     </div>
                 </div>
+
             </section>
 
             <!-- Status do Catálogo de Canais (Contador e Página) -->
@@ -3917,6 +3925,7 @@
                            placeholder="Buscar categoria..."
                            oninput="onDrawerCatSearch(this.value)" autocomplete="off">
                     <div class="drawer-search-actions">
+
                         <button id="drawer-cat-clear" class="btn-clear-search" onclick="clearDrawerCatSearch()" style="display:none;" aria-label="Limpar">
                             <span class="material-symbols-outlined">backspace</span>
                         </button>
@@ -3933,7 +3942,9 @@
     </div>
 
 
+
     <script>
+
 
 
         // ==================== GAVETA DE CATEGORIAS (DRAWER SÊNIOR) ====================
@@ -5000,7 +5011,7 @@
             const url = (task.url || '').toLowerCase();
             if (url.includes('/series/')) return true;
             const title = (task.title || task.display_name || '').toLowerCase();
-            return /\bs\d{1,2}e\d{1,2}\b/i.test(title) || /temporada|epis[oó]dio/i.test(title);
+            return /\bs\d{1,2}e\d{1,2}\b/i.test(title) || /temporada|epis[oó]dio/i.test(title) || /noiva de istambul/i.test(title);
         }
 
         function isYtTask(task) {
@@ -5017,37 +5028,38 @@
         function findTaskForEpisode(ep) {
             if (!ep || !vodTasks || !vodTasks.length) return null;
             const epUrl = (ep.url || '').trim();
-            if (!epUrl) return null;
-
-            const cleanEpUrl = epUrl.split('?')[0];
-            let task = vodTasks.find(t => {
-                if (!t.url) return false;
-                return t.url.split('?')[0] === cleanEpUrl;
-            });
-            if (task) return task;
+            if (epUrl) {
+                const cleanEpUrl = epUrl.split('?')[0];
+                let task = vodTasks.find(t => {
+                    if (!t.url) return false;
+                    return t.url.split('?')[0] === cleanEpUrl;
+                });
+                if (task) return task;
+            }
 
             if (selectedSeries && ep.episode_num) {
                 const sName = (selectedSeries.name || '').toLowerCase().trim();
                 const epNum = String(ep.episode_num);
-                task = vodTasks.find(t => {
-                    if (!t.url || !t.url.includes('/series/')) return false;
+                let task = vodTasks.find(t => {
                     const tTitle = (t.title || t.display_name || '').toLowerCase();
                     if (!tTitle.includes(sName)) return false;
-                    const regex = new RegExp(`(s\\d+e0*${epNum}|ep(is[oó]dio)?\\s*0*${epNum})\\b`, 'i');
+                    const regex = new RegExp(`(^|\\b|\\s)(s\\d+e0*${epNum}|ep(is[oó]dio)?\\s*0*${epNum}|0*${epNum})(\\s*[-–—:]|\\s*$|\\s)`, 'i');
                     return regex.test(tTitle);
                 });
+                if (task) return task;
             }
-            return task;
+            return null;
         }
 
         function isTaskForSeries(task, s) {
             if (!task || !s) return false;
             if (task.series_id && String(task.series_id) === String(s.id)) return true;
-            if (!task.url || !task.url.includes('/series/')) return false;
             const sName = (s.name || '').toLowerCase().trim();
             if (!sName) return false;
             const tTitle = (task.title || task.display_name || '').toLowerCase().trim().replace(/^@\s*/, '');
-            return tTitle.startsWith(sName) || tTitle.includes(sName);
+            if (tTitle.includes(sName)) return true;
+            if (task.url && task.url.includes('/series/')) return true;
+            return false;
         }
 
         function countSavedEpisodesForSeries(s) {
@@ -6726,20 +6738,20 @@
                     return;
                 }
 
-                // Identifica se há episódios salvos ou baixando nesta série para abrir direto na temporada correta
+                // Abre na primeira temporada que tenha episódio disponível
+                // (baixado ou baixando), não na última.
+                const availableStatuses = ['processing', 'queued', 'pending', 'downloading', 'converting', 'uploading'];
+                const seasonsWithEpisodes = data.seasons.filter((s) => (s.episodes || []).some((ep) => {
+                    const task = findTaskForEpisode(ep);
+                    return task && (task.status === 'ready' || availableStatuses.includes(task.status));
+                }));
+                seasonsWithEpisodes.sort((a, b) => Number(a.season_number) - Number(b.season_number));
+
                 let targetSeasonNum = data.seasons[0].season_number;
                 let hasSaved = false;
-
-                for (const s of data.seasons) {
-                    if (s.episodes && s.episodes.length) {
-                        for (const ep of s.episodes) {
-                            const task = findTaskForEpisode(ep);
-                            if (task && (task.status === 'ready' || ['processing', 'queued', 'pending', 'downloading', 'converting', 'uploading'].includes(task.status))) {
-                                targetSeasonNum = s.season_number;
-                                hasSaved = true;
-                            }
-                        }
-                    }
+                if (seasonsWithEpisodes.length) {
+                    targetSeasonNum = seasonsWithEpisodes[0].season_number;
+                    hasSaved = true;
                 }
 
                 // Renderiza Temporadas
@@ -6836,7 +6848,7 @@
                 `;
 
                 html += `
-                    <div class="${cardClass}">
+                    <div class="${cardClass}" data-ep-num="${escapeHtml(String(epRawNum))}">
                         <div class="episode-main-info">
                             ${epNumBadge}
                             <div class="episode-title-group">
@@ -6854,9 +6866,16 @@
 
             if (autoScroll) {
                 setTimeout(() => {
-                    const readyCards = epList.querySelectorAll('.episode-card.is-ready, .episode-card.is-downloading');
-                    if (readyCards.length > 0) {
-                        const targetCard = readyCards[readyCards.length - 1];
+                    const cards = Array.from(epList.querySelectorAll('.episode-card.is-ready, .episode-card.is-downloading'));
+                    if (cards.length > 0) {
+                        // Abre no primeiro episódio disponível (menor número), não no último.
+                        const epNumber = (card) => {
+                            const value = parseFloat(card.dataset.epNum);
+                            return Number.isFinite(value) ? value : Number.POSITIVE_INFINITY;
+                        };
+                        const readyCards = cards.filter(card => card.classList.contains('is-ready'));
+                        const pool = readyCards.length ? readyCards : cards;
+                        const targetCard = pool.reduce((best, card) => (epNumber(card) < epNumber(best) ? card : best));
                         const cardTop = targetCard.offsetTop - epList.offsetTop;
                         const targetScroll = cardTop - (epList.clientHeight / 2) + (targetCard.clientHeight / 2);
                         epList.scrollTo({ top: Math.max(0, targetScroll), behavior: 'smooth' });
@@ -8008,6 +8027,7 @@
                 closeMovieModal();
                 closeSeriesModal();
                 closeCategoriesDrawer();
+
             }
 
             // Se o Web Player estiver aberto:
