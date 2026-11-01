@@ -1,0 +1,22 @@
+{
+  "capture": {
+    "bytes": 15446268,
+    "requested_duration": 60.0,
+    "returncode": 0,
+    "stderr_categories": {},
+    "wall_seconds": 50.276
+  },
+  "catalog_name": "SBT RJ FHD\u00b9",
+  "channel_id": "207198",
+  "decode": {
+    "categories": {},
+    "checked_seconds": 60.0,
+    "lines": 0,
+    "returncode": 0,
+    "wall_seconds": 4.515
+  },
+  "duration_s": 60.0,
+  "identity": "sbt",
+  "status": "approved",
+  "verdict": "decode_ok"
+}

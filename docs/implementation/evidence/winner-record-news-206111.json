@@ -1,0 +1,74 @@
+{
+  "capture": {
+    "bytes": 149674884,
+    "returncode": 0,
+    "stderr_categories": {
+      "source_reconnect": 16
+    },
+    "wall_seconds": 95.734
+  },
+  "catalog_name": "RECORD NEWS FHD\u00b9",
+  "category": "Noticias",
+  "channel_id": "206111",
+  "duration_s": 300.0,
+  "filename": "Record News.trp",
+  "identity": "record-news",
+  "media": {
+    "audio": {
+      "audio_duration_s": 299.99,
+      "audio_packets": 13974,
+      "audio_pts_gaps_over_1000ms": 0,
+      "audio_pts_gaps_over_500ms": 0,
+      "audio_pts_max_gap_ms": 218.8
+    },
+    "audio_bit_rate": "127898",
+    "audio_channels": 2,
+    "audio_codec": "aac",
+    "audio_sample_rate": "48000",
+    "b_frames_seen": 14926,
+    "fps": "60000/1001",
+    "frames_decoded": 17983,
+    "has_b_frames": 2,
+    "height": 720,
+    "heights_seen": [
+      720
+    ],
+    "i_frames_seen": 199,
+    "idr_gap_max_s": 1.602,
+    "idr_gap_median_s": 1.602,
+    "level": 32,
+    "media_duration_s": 299.99,
+    "p_frames_seen": 2858,
+    "pcr": {
+      "pcr_count": 3755,
+      "pcr_gaps_over_100ms": 8,
+      "pcr_gaps_over_40ms": 3596,
+      "pcr_max_gap_ms": 100.1,
+      "pcr_median_gap_ms": 83.41,
+      "pcr_pid": "0x100",
+      "pcr_pids": 1
+    },
+    "pix_fmt": "yuv420p",
+    "profile": "High",
+    "slices": {
+      "b_frames": 14931,
+      "frames": 17996,
+      "i_frames": 199,
+      "multislice_frames": 8,
+      "p_frames": 2866,
+      "slices_max": 2,
+      "slices_median": 1.0
+    },
+    "ts_kbps_total": 3991,
+    "video_codec": "h264",
+    "video_kbps": 3688,
+    "width": 1280,
+    "widths_seen": [
+      1280
+    ]
+  },
+  "phase": "winner",
+  "quality_label": "FHD1",
+  "region": "national",
+  "verdict": "not_1080p"
+}

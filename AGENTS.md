@@ -70,6 +70,75 @@ Qualquer reinicialização ou troca para Live TV deve garantir o acionamento dos
 2. Randomizar o *Volume Serial Number* do setor de boot NTFS (offset `0x48`).
 3. Alternar a *Inquiry String* SCSI USB entre `LIVETV1` e `LIVETV2`.
 
+### 2.4. Medição e verificação de fontes (REGRA BÁSICA)
+
+**Comando de referência**, aplicado ao **arquivo capturado** (nunca à conexão viva):
+
+```bash
+# vídeo e áudio decodificados para descarte; NUNCA `-f null`
+ffmpeg -hide_banner -nostdin -v error -threads 1 -i <captura.ts> \
+       -map 0:v:0 -f rawvideo -y /dev/null \
+       -map 0:a:0 -f s16le   -y /dev/null
+```
+
+1. **Uma thread e saídas cruas.** `-threads 1` fixa o caminho de decodificação;
+   `-f null` é proibido porque o **estágio de muxagem** emite por conta própria
+   `non monotonically increasing dts`. Isso é **medido**: a linha desaparece quando
+   o muxer sai do caminho; ela é ruído de ferramenta, não dano no fluxo.
+   Atenção: `-f rawvideo` não carrega trilha de áudio — mapear áudio para rawvideo
+   faz o ffmpeg falhar com `Encoder not found` (rc 8), erro de ferramenta que
+   **não** é veredito sobre o stream. Áudio vai em `s16le`, em seu próprio
+   `/dev/null`.
+2. **Medir sempre de arquivo salvo**, com a captura crua preservada, para que a
+   verificação seja repetível. Veredito tirado só da conexão viva não é evidência.
+3. **Zero linhas em `-v error` é critério conservador de TRIAGEM**, não prova de
+   qualidade nem de estabilidade. Uma amostra com `POC`/`SPS` repetidos é
+   **reprovada por precaução enquanto se investiga** — a reprovação é da amostra,
+   não uma conclusão sobre a origem do defeito.
+4. **Classificar a falha pelo estágio**, separadamente: decodificação (ex.: `POC`,
+   `SPS`, `corrupt`), demuxagem/contêiner (ex.: `PES`, `TS`, continuidade),
+   timestamp (`dts`/`pts`) e muxagem de saída (ruído de `-f null`). Não somar
+   estágios diferentes numa única contagem sem dizer de onde veio cada linha.
+5. **Evidência × hipótese.** Reprodutibilidade de um comando prova que **aquele
+   comando** é determinístico; **não** identifica causa nem culpado. Em particular:
+   - a flag `K` num pacote **não** prova NAL IDR nem que SPS/PPS precedam o quadro;
+   - o transporte **TCP** garante entrega ordenada dos bytes **recebidos**, e não
+     que o defeito nasceu no encoder ou no provedor — captura, segmentação e
+     qualquer etapa intermediária continuam candidatas;
+   - **não** declarar incompatibilidade física com o decodificador da TV
+     (MStar 2013) sem teste físico: comportamento de hardware não se infere de
+     `stderr`.
+   Escreva sempre `medido:` para o que foi observado e `hipótese:` para o resto.
+6. **Rota importa.** Propriedades da fonte (resolução, codec, bitrate, fatias,
+   PCR) medem igual em qualquer rota; **estabilidade e erros podem variar por
+   rota**. Medição feita de host diferente daquele que alimenta a TV prova a
+   fonte, não substitui o teste físico na TV.
+7. **Prioridade do usuário**: um alvo por **canal distinto**; não sondar outra
+   variante de canal já aprovado, para a grade ganhar diversidade.
+
+### 2.5. Quando escalar para revisão externa (aider-argon)
+
+Use `aider-argon` (Gemini 4 Argon, via `--read <arquivo> -m "<pergunta>"`) quando:
+
+1. a **mesma falha resistir a duas tentativas** de correção;
+2. a tarefa passar de **~40 minutos** de execução contínua sem convergir;
+3. houver **dúvida metodológica** (o que medir, qual critério, o que é artefato de
+   ferramenta) ou contradição entre dois dados medidos;
+4. envolver concorrência, invariante físico do decodificador ou segurança.
+
+Regra de uso: mande o **dado cru sanitizado** (nunca credenciais, URLs ou PIN) e
+exija resposta com **critério numérico e comando exato**; **verifique a resposta
+contra medição própria antes de adotar**. Duas correções já vieram dessa
+verificação, e ambas devem ficar registradas como limite da revisão externa:
+
+- `medido:` o comando sugerido (`-f rawvideo` com a trilha de áudio mapeada)
+  falhava com `Encoder not found` (rc 8) e produzia "erros" que eram da ferramenta;
+  a forma correta leva o áudio em `s16le`.
+- `medido:` a hipótese "a captura começa antes de um IDR" **não se sustentou** nos
+  dados disponíveis. `hipótese:` o primeiro pacote tinha flag `K`, mas isso **não
+  prova** NAL IDR nem que SPS/PPS venham antes — a contradição foi observada, a
+  explicação do mecanismo continua aberta.
+
 ---
 
 ## 3. Padrão de Compilação e Deploy no Tablet
@@ -92,6 +161,8 @@ Qualquer reinicialização ou troca para Live TV deve garantir o acionamento dos
 
 - **Orquestração Primeiro**: Para qualquer diagnóstico, refatoração ou auditoria não-trivial, atue como Líder Técnico. Decomponha o problema em subagentes especializados concorrentes.
 - **Posse Disjunta de Arquivos**: Se múltiplos subagentes implementarem alterações em paralelo, eles devem possuir diretórios/arquivos estritamente separados.
+- **Orquestração paralela no Pi**: Quando `subagent` estiver disponível e houver trabalho independente, decomponha a tarefa em frentes específicas e acione múltiplos subagentes em uma única chamada paralela (`tasks`), por exemplo `verifier` para suítes independentes, `reviewer` para revisão e `scout` para investigação. Descreva objetivo, escopo, arquivos e resultado esperado de cada frente. Enquanto os subagentes executam, o agente principal deve avançar em trabalho independente quando o ambiente permitir; se a ferramenta bloquear até todos retornarem, inclua as frentes independentes na mesma chamada paralela e prossiga assim que ela concluir. Não crie subagentes desnecessários para tarefas simples.
+- **Isolamento de testes**: Antes de paralelizar suítes, verifique se compartilham arquivos temporários, portas, bancos de dados, dispositivos ou outros recursos mutáveis. Execute sequencialmente as que possam interferir entre si; não use `--test-threads=1` automaticamente sem verificar a necessidade. Consolide os resultados, trate falhas e informe as verificações realizadas. Se `subagent` não estiver disponível, execute a verificação diretamente.
 - **Verificação Crítica e Antialucinação**: Nunca assuma que uma alteração funcionou sem validar:
   - Compilação estática sem warnings graves.
   - Telemetria em tempo real no tablet (`fuse_ntfs.log` com `near_starve=0`, `nulls=0`).

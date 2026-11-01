@@ -455,16 +455,40 @@ impl Layout {
 pub struct ManifestMap {
     pub manifest_id: String,
     pub files: HashMap<String, (u32, String, u64)>,
+    pub vod_files: Vec<crate::vfs::dispatcher::VodFile>,
 }
 
 /// Extracts the manifest identity map used by [`Layout::build_runtime_files`].
 /// The canonical `manifest_id` and every entry are validated by
 /// `Manifest::from_json`; a tampered manifest cannot be paired with the layout.
 pub fn manifest_file_ids(manifest_bytes: &[u8]) -> Result<ManifestMap, LayoutError> {
-    let manifest = crate::favorites::manifest::Manifest::from_json(manifest_bytes)
-        .map_err(|error| LayoutError::Manifest(format!("{error:?}")))?;
+    manifest_file_ids_for_volume(manifest_bytes, crate::favorites::manifest::VOLUME_128_GIB)
+}
+
+/// Same as [`manifest_file_ids`] but validates the capacity against the volume
+/// actually declared by the package layout instead of the 128 GiB baseline, so a
+/// package larger than the baseline is not rejected.
+pub fn manifest_file_ids_for_volume(
+    manifest_bytes: &[u8],
+    volume_bytes: u64,
+) -> Result<ManifestMap, LayoutError> {
+    let capacity = crate::favorites::manifest::CapacityPolicy {
+        volume_bytes,
+        ..crate::favorites::manifest::CapacityPolicy::default()
+    };
+    let manifest =
+        crate::favorites::manifest::Manifest::from_json_with_capacity(manifest_bytes, &capacity)
+            .map_err(|error| LayoutError::Manifest(format!("{error:?}")))?;
     let mut files = HashMap::new();
+    let mut vod_files = Vec::new();
     for entry in manifest.entries {
+        if entry.kind == crate::favorites::manifest::EntryKind::Vod {
+            vod_files.push(crate::vfs::dispatcher::VodFile {
+                file_id: entry.file_id,
+                task_id: entry.channel_id.clone(),
+                logical_size: entry.logical_size,
+            });
+        }
         files.insert(
             entry.path(),
             (entry.file_id, entry.channel_id, entry.logical_size),
@@ -473,6 +497,7 @@ pub fn manifest_file_ids(manifest_bytes: &[u8]) -> Result<ManifestMap, LayoutErr
     Ok(ManifestMap {
         manifest_id: manifest.manifest_id,
         files,
+        vod_files,
     })
 }
 
@@ -723,5 +748,27 @@ mod tests {
         assert!(manifest_file_ids(tampered.to_json().as_bytes()).is_err());
         let vod = json.replace("\"live\"", "\"vod\"");
         assert!(manifest_file_ids(vod.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn manifest_map_keeps_vod_identity_and_exact_size() {
+        use crate::favorites::manifest::{CapacityPolicy, EntryKind, Manifest, ManifestEntry};
+        let vod = ManifestEntry {
+            file_id: 8,
+            namespace: "vod".into(),
+            channel_id: "1a2b3c4d".into(),
+            kind: EntryKind::Vod,
+            folder: vec!["Series".into(), "A Noiva de Istambul".into()],
+            filename: "Episodio 01.mp4".into(),
+            logical_size: 1_234_567,
+            bootstrap_id: String::new(),
+        };
+        let manifest = Manifest::build(1, vec![vod], &CapacityPolicy::default()).unwrap();
+        let map = manifest_file_ids(manifest.to_json().as_bytes()).unwrap();
+        assert_eq!(map.vod_files.len(), 1);
+        assert_eq!(map.vod_files[0].file_id, 8);
+        assert_eq!(map.vod_files[0].task_id, "1a2b3c4d");
+        assert_eq!(map.vod_files[0].logical_size, 1_234_567);
+        assert_eq!(map.files["Series/A Noiva de Istambul/Episodio 01.mp4"].0, 8);
     }
 }

@@ -1,0 +1,75 @@
+{
+  "capture": {
+    "bytes": 82416756,
+    "returncode": 0,
+    "stderr_categories": {
+      "decode_error": 1,
+      "source_reconnect": 16
+    },
+    "wall_seconds": 86.332
+  },
+  "catalog_name": "CNN BRASIL FHD\u00b9",
+  "category": "Noticias",
+  "channel_id": "206087",
+  "duration_s": 300.0,
+  "filename": "CNN Brasil.trp",
+  "identity": "cnn-brasil",
+  "media": {
+    "audio": {
+      "audio_duration_s": 300.0,
+      "audio_packets": 13634,
+      "audio_pts_gaps_over_1000ms": 1,
+      "audio_pts_gaps_over_500ms": 1,
+      "audio_pts_max_gap_ms": 8128.0
+    },
+    "audio_bit_rate": "128106",
+    "audio_channels": 2,
+    "audio_codec": "aac",
+    "audio_sample_rate": "48000",
+    "b_frames_seen": 4205,
+    "fps": "30/1",
+    "frames_decoded": 8761,
+    "has_b_frames": 1,
+    "height": 720,
+    "heights_seen": [
+      720
+    ],
+    "i_frames_seen": 193,
+    "idr_gap_max_s": 10.0,
+    "idr_gap_median_s": 2.0,
+    "level": 31,
+    "media_duration_s": 300.0,
+    "p_frames_seen": 4363,
+    "pcr": {
+      "pcr_count": 3042,
+      "pcr_gaps_over_100ms": 0,
+      "pcr_gaps_over_40ms": 2919,
+      "pcr_max_gap_ms": 100.0,
+      "pcr_median_gap_ms": 100.0,
+      "pcr_pid": "0x100",
+      "pcr_pids": 1
+    },
+    "pix_fmt": "yuv420p",
+    "profile": "High",
+    "slices": {
+      "b_frames": 4206,
+      "frames": 8764,
+      "i_frames": 195,
+      "multislice_frames": 8761,
+      "p_frames": 4363,
+      "slices_max": 3,
+      "slices_median": 2.0
+    },
+    "ts_kbps_total": 2198,
+    "video_codec": "h264",
+    "video_kbps": 1964,
+    "width": 1280,
+    "widths_seen": [
+      1280
+    ]
+  },
+  "phase": "winner",
+  "quality_label": "FHD1",
+  "region": "national",
+  "verdict": "not_1080p"
+}

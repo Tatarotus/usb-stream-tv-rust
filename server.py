@@ -18,8 +18,11 @@ from socketserver import ThreadingMixIn
 import json
 import re
 import hashlib
+import hmac
+import secrets
 import shutil
 import socket
+import shlex
 import collections
 import base64
 import signal
@@ -28,7 +31,9 @@ import atexit
 
 from vod_storage import GDriveStorage, StorageError
 from vod_playback_cache import CurrentVideoCache
+from scripts.mixed_cache_signal import MixedCacheSignal, next_episode
 from vod_history import VodHistory, resolve_episode_identity
+from vod_revision import (REVISION_HEADER, content_revision, is_valid_revision)
 
 try:
     from pwa_icons import PWA_ICON_192_B64, PWA_ICON_512_B64
@@ -114,6 +119,20 @@ VOD_PLAYBACK_CACHE = CurrentVideoCache(
     max_bytes=int(float(os.environ.get("VOD_CURRENT_CACHE_GB", "6")) * 1024**3),
     min_free_bytes=VOD_MIN_FREE_BYTES,
 )
+MIXED_CACHE_SIGNAL = MixedCacheSignal()
+
+
+def _mixed_cache_hint(task, start, length):
+    """Treat sequential reads as a cache hint, never as viewing history."""
+    try:
+        if not MIXED_CACHE_SIGNAL.observe(task, start, length):
+            return
+        with VOD_TASKS_LOCK:
+            tasks = [dict(value) for value in VOD_TASKS.values()]
+        upcoming = next_episode(task, tasks)
+        VOD_PLAYBACK_CACHE.select_episode(task, upcoming)
+    except Exception as exc:
+        print(f"[VOD] Cache hint ignored: {type(exc).__name__}")
 atexit.register(GDRIVE_STORAGE.close)
 atexit.register(VOD_PLAYBACK_CACHE.close)
 CATALOG_CACHE_DIR = os.environ.get("CATALOG_CACHE_DIR", os.path.join(CONFIG_DIR, "catalog_cache"))
@@ -2163,6 +2182,12 @@ class StreamHub:
 
     def _mark_live_commit_locked(self):
         """Marca o commit live; chamado sob self.lock pelo switch."""
+        for q in list(self.subscribers):
+            while True:
+                try:
+                    q.get_nowait()
+                except queue.Empty:
+                    break
         self.slate_mode = False
         self.slate_start_time = 0
         self.stream_health = "ok"
@@ -2500,6 +2525,10 @@ class StreamHub:
 
                 eco_desc = " [⚡ MODO ECONÔMICO: STREAM COPY -c:v copy (~2% CPU)]" if target_is_eco else " [🔥 MODO TRANSCODE: libx264]"
                 print(f"\n[⚡] INICIANDO SINTONIA MAKE-BEFORE-BREAK: {target_name} ({target_url}){eco_desc}")
+                log_event(
+                    f"SWITCH_REQ {target_id} url={target_url} eco={target_is_eco} "
+                    f"resolve={(time.time() - t_sw0):.2f}s"
+                )
                 log_event(f"SWITCH_BEGIN {self.current_channel_id} -> {target_id} eco={target_is_eco}")
                 def wait_for_stream_chunk(p, timeout_sec):
                     deadline = time.time() + timeout_sec
@@ -2532,6 +2561,7 @@ class StreamHub:
                         target_is_eco = False
                     else:
                         cmd_eco = build_ffmpeg_cmd(target_url, is_live=True, is_eco=True)
+                        log_event(f"SWITCH_SPAWN {target_id} mode=eco at={(time.time() - t_sw0):.2f}s")
                         try:
                             new_p = subprocess.Popen(
                                 cmd_eco,
@@ -2558,6 +2588,7 @@ class StreamHub:
                 # Tentativa 2 / Modo Padrão: Transcodificação forçada (libx264)
                 if not first_chunk_data:
                     cmd_transcode = build_ffmpeg_cmd(target_url, is_live=True, is_eco=False)
+                    log_event(f"SWITCH_SPAWN {target_id} mode=transcode at={(time.time() - t_sw0):.2f}s")
                     try:
                         new_p = subprocess.Popen(
                             cmd_transcode,
@@ -2578,6 +2609,11 @@ class StreamHub:
                         except Exception:
                             pass
                     return
+
+                log_event(
+                    f"SWITCH_FIRST_CHUNK {target_id} bytes={len(first_chunk_data)} "
+                    f"at={(time.time() - t_sw0):.2f}s"
+                )
 
                 # Chaveamento atômico instantâneo!
                 with self.lock:
@@ -2770,8 +2806,587 @@ class StreamHub:
 # run() calls HUB.start() before serving; direct StreamHub() still starts.
 HUB = StreamHub(start_workers=False)
 
-def dispatch_device_cmd(cmd, dedupe_key=None):
-    """Envia comando para o dispositivo ativo (Tablet via CommandBus ou Xiaomi)."""
+_MODE_GUARD_OWNER_RE = re.compile(r"^[A-Za-z0-9_.:@-]{1,64}$")
+_MODE_GUARD_PHASE_RE = re.compile(r"^[a-z_]{1,32}$")
+_MODE_GUARD_TTL_DEFAULT = 60
+_MODE_GUARD_TTL_MIN = 15
+_MODE_GUARD_TTL_MAX = 120
+
+
+def _mode_guard_token_eq(supplied, expected):
+    """Constant-time token comparison that never raises on non-string input."""
+    if not isinstance(supplied, str) or not isinstance(expected, str):
+        return False
+    return hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8"))
+
+
+class ModeGuard:
+    """Exclusive, short-lived lease over the tablet's USB playback mode.
+
+    A mixed-media publisher acquires the lease (proving the TV is idle), then
+    switches the USB LUN / starts playback.  While the lease is live this
+    server refuses to start any other playback or mode switch, closing the
+    race that a second, isolated /api/status poll cannot close: playback is
+    started through this process, so the authority must live here.
+
+    The token is only returned to the acquirer; every public view (status,
+    /api/status, 409 holder payloads) is token-free.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._state = None
+
+    @staticmethod
+    def _coerce_ttl(ttl):
+        if ttl is None:
+            ttl = _MODE_GUARD_TTL_DEFAULT
+        try:
+            value = int(ttl)
+        except (TypeError, ValueError):
+            return None
+        return max(_MODE_GUARD_TTL_MIN, min(_MODE_GUARD_TTL_MAX, value))
+
+    @staticmethod
+    def _public(state, now):
+        if state is None:
+            return {"held": False, "owner": None, "phase": None,
+                    "expires_in": 0, "expired": False}
+        remaining = state["expires_at"] - now
+        return {
+            "held": True,
+            "owner": state["owner"],
+            "phase": state["phase"],
+            "expires_in": max(0, int(round(remaining))),
+            "expired": False,
+        }
+
+    def holder(self):
+        """Internal accessor: live holder state (with token) or None.
+
+        An expired lease is treated as free and cleared.  Callers inside this
+        module use the token to let the holder dispatch its own commands.
+        """
+        now = time.time()
+        with self._lock:
+            state = self._state
+            if state is None:
+                return None
+            if state["expires_at"] <= now:
+                self._state = None
+                return None
+            return dict(state)
+
+    def status(self):
+        """Token-free public view.  Expired leases are cleared."""
+        now = time.time()
+        with self._lock:
+            state = self._state
+            if state is None:
+                return self._public(None, now)
+            if state["expires_at"] <= now:
+                self._state = None
+                view = self._public(None, now)
+                view["expired"] = True
+                return view
+            return self._public(state, now)
+
+    def acquire(self, owner, ttl, phase):
+        if not isinstance(owner, str) or not _MODE_GUARD_OWNER_RE.fullmatch(owner):
+            return {"ok": False, "invalid": True, "error": "invalid_owner"}
+        if not isinstance(phase, str) or not _MODE_GUARD_PHASE_RE.fullmatch(phase):
+            return {"ok": False, "invalid": True, "error": "invalid_phase"}
+        ttl = self._coerce_ttl(ttl)
+        if ttl is None:
+            return {"ok": False, "invalid": True, "error": "invalid_ttl"}
+
+        now = time.time()
+        with self._lock:
+            state = self._state
+            if state is not None and state["expires_at"] > now:
+                return {"ok": False, "busy": True,
+                        "holder": self._public(state, now)}
+            token = secrets.token_hex(16)
+            self._state = {
+                "token": token,
+                "owner": owner,
+                "phase": phase,
+                "acquired_at": now,
+                "expires_at": now + ttl,
+            }
+            return {"ok": True, "token": token, "expires_in": ttl,
+                    "phase": phase, "owner": owner}
+
+    def renew(self, token, ttl):
+        ttl = self._coerce_ttl(ttl)
+        if ttl is None:
+            return {"ok": False}
+        now = time.time()
+        with self._lock:
+            state = self._state
+            if state is None or state["expires_at"] <= now:
+                self._state = None
+                return {"ok": False}
+            if not _mode_guard_token_eq(token, state["token"]):
+                return {"ok": False}
+            state["expires_at"] = now + ttl
+            return {"ok": True, "expires_in": ttl, "phase": state["phase"],
+                    "owner": state["owner"]}
+
+    def release(self, token):
+        """Only the exact token may release; a third party never can."""
+        now = time.time()
+        with self._lock:
+            state = self._state
+            if state is None or state["expires_at"] <= now:
+                self._state = None
+                return False
+            if not _mode_guard_token_eq(token, state["token"]):
+                return False
+            self._state = None
+            return True
+
+    def allows(self, token):
+        """True when no lease is held or the supplied token owns it."""
+        state = self.holder()
+        return state is None or _mode_guard_token_eq(token, state["token"])
+
+
+MODE_GUARD = ModeGuard()
+
+
+# ---------------------------------------------------------------------------
+# Mixed virtual pendrive: manual update reusing the existing "NA TV" button.
+#
+# The heavy work (prepare, validate and publish a coherent generation and
+# reconnect the virtual pendrive) lives in scripts/mixed_generation_service.py,
+# owned and invoked out of process.  This module never interpolates the task id
+# into a shell string, never touches VOD history and never bypasses the
+# ModeGuard: it only authenticates, validates, refuses while a foreign lease is
+# live, launches the publisher in the background (list form, no shell) and
+# reports the journalled state back to the dashboard.
+# ---------------------------------------------------------------------------
+
+_MIXED_TASK_ID_RE = re.compile(r"^[0-9a-f]{8}$")
+_MIXED_APPLY_CMD_ENV = "MIXED_APPLY_CMD"
+_MIXED_APP_DIR_ENV = "MIXED_APP_DIR"
+_MIXED_STATE_FILE_ENV = "MIXED_STATE_FILE"
+_MIXED_BRIDGE_SPOOL_ENV = "MIXED_BRIDGE_SPOOL"
+_MIXED_SERVICE_REL = os.path.join("scripts", "mixed_generation_service.py")
+_MIXED_BRIDGE_REL = os.path.join("scripts", "mixed_bridge.py")
+_MIXED_DEFAULT_STATE_REL = os.path.join("scratch", "mixed_generation_state.json")
+
+# Apply states that mean "an update for this task is still in flight".  A
+# repeated click while one of these is recorded must NOT launch a second
+# publication; it reports idempotently instead.
+_MIXED_IN_PROGRESS_STATES = frozenset({
+    "started", "in_progress", "running", "applying", "checking", "preparing",
+    "prepared", "staging", "publishing", "transferring", "transferred",
+    "activating", "queued", "pending", "busy",
+})
+
+# Read-only tablet confirmation is bounded: the publisher probes adb once.
+_MIXED_CONFIRM_TIMEOUT_ENV = "MIXED_CONFIRM_TIMEOUT"
+
+
+def _mixed_confirm_timeout():
+    try:
+        value = float(os.environ.get(_MIXED_CONFIRM_TIMEOUT_ENV, "25"))
+    except (TypeError, ValueError):
+        return 25.0
+    return max(5.0, min(120.0, value))
+
+
+def _mixed_parse_json_output(text):
+    """Last JSON object printed by the publisher (progress logs may precede)."""
+    if not isinstance(text, str):
+        return None
+    text = text.strip()
+    if not text:
+        return None
+    try:
+        payload = json.loads(text)
+        return payload if isinstance(payload, dict) else None
+    except ValueError:
+        pass
+    start = text.rfind("\n{")
+    if start == -1:
+        return None
+    try:
+        payload = json.loads(text[start + 1:])
+        return payload if isinstance(payload, dict) else None
+    except ValueError:
+        return None
+
+# Candidate keys under which the publisher may record the ordered index of task
+# ids that belong to the ACTIVE generation.  ``selected_in_active`` is derived
+# strictly from this recorded index; the server never guesses it from the live
+# VOD catalog.
+_MIXED_INDEX_KEYS = (
+    "active_index", "index", "active_task_ids", "active_tasks", "task_index",
+    "active_generation_index", "included_tasks", "active_vod_task_ids",
+)
+
+# Candidate keys under which the publisher may record the current/last manual
+# apply request.  A tolerated set keeps the server compatible with slightly
+# different journal spellings while remaining explicit about what it reads.
+_MIXED_APPLY_RECORD_KEYS = (
+    "apply", "current_apply", "apply_request", "apply_status", "last_apply",
+)
+
+_MIXED_STATE_MESSAGES = {
+    "already_current": "Lista atualizada",
+    "active": "Lista atualizada",
+    "started": "Atualizando a lista do pendrive...",
+    "in_progress": "Atualizando a lista do pendrive...",
+    "running": "Atualizando a lista do pendrive...",
+    "applying": "Atualizando a lista do pendrive...",
+    "checking": "Verificando a lista do pendrive...",
+    "preparing": "Preparando a lista do pendrive...",
+    "prepared": "Lista pronta; atualização pendente do seu toque",
+    "staging": "Preparando a lista do pendrive...",
+    "publishing": "Publicando a lista do pendrive...",
+    "transferring": "Publicando a lista do pendrive...",
+    "transferred": "Publicando a lista do pendrive...",
+    "activating": "Reconectando o pendrive para a TV...",
+    "queued": "Atualizando a lista do pendrive...",
+    "pending": "Atualizando a lista do pendrive...",
+    "busy": "Atualizando a lista do pendrive...",
+    "blocked": "TV em uso; aguardando janela livre",
+    "failed": "Falha ao atualizar a lista",
+    "incomplete": "Atualização incompleta",
+    "unconfirmed": "Atualização não confirmada pela TV",
+    "unavailable": "Modo de mídia mista indisponível",
+    "idle": "",
+    "empty": "",
+    "done": "Lista atualizada",
+    "completed": "Lista atualizada",
+}
+
+_MIXED_SESSION_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+
+
+def _mixed_app_dir():
+    """Directory that holds scripts/ and scratch/ for the mixed service."""
+    return os.environ.get(_MIXED_APP_DIR_ENV) or CONFIG_DIR
+
+
+def _mixed_state_file():
+    """Resolved publication journal path (env override wins)."""
+    override = os.environ.get(_MIXED_STATE_FILE_ENV)
+    if override:
+        return os.path.abspath(os.path.expanduser(override))
+    return os.path.join(_mixed_app_dir(), _MIXED_DEFAULT_STATE_REL)
+
+
+def _mixed_apply_command():
+    """Publisher argv as a list, or None when mixed apply is unavailable.
+
+    Never a shell string: callers append the task id as its own argv element.
+    ``MIXED_APPLY_CMD`` is split with ``shlex`` (no shell evaluation) and takes
+    precedence; otherwise the repo default is used only when it exists.
+    """
+    configured = os.environ.get(_MIXED_APPLY_CMD_ENV)
+    if configured:
+        try:
+            argv = shlex.split(configured)
+        except ValueError:
+            argv = []
+        if argv:
+            return argv
+    script = os.path.join(_mixed_app_dir(), _MIXED_SERVICE_REL)
+    if os.path.isfile(script):
+        return [sys.executable, script]
+    return None
+
+
+def _mixed_bridge_spool():
+    """Shared spool directory of the container<->publisher bridge, or None.
+
+    When it is configured the container needs neither ``adb`` nor ``ssh``: it
+    only drops a small, owner-proven request file and reads the answer. The
+    privileged publisher stays on the host that owns the tablet connection.
+    """
+    spool = os.environ.get(_MIXED_BRIDGE_SPOOL_ENV, "").strip()
+    if not spool:
+        return None
+    return os.path.abspath(os.path.expanduser(spool))
+
+
+def _mixed_bridge_client_argv(action, task_id):
+    """argv that asks the bridge daemon for ``action`` on ``task_id``."""
+    spool = _mixed_bridge_spool()
+    if spool is None:
+        return None
+    script = os.path.join(_mixed_app_dir(), _MIXED_BRIDGE_REL)
+    if not os.path.isfile(script):
+        return None
+    argv = [sys.executable, script, "client", "--spool", spool,
+            "--action", action, "--timeout",
+            str(int(_mixed_confirm_timeout()))]
+    if task_id:
+        argv += ["--task-id", task_id]
+    owner = os.environ.get("MIXED_BRIDGE_REQUEST_UID", "").strip()
+    if owner:
+        if not owner.isdecimal():
+            return None
+        argv += ["--request-owner-uid", owner]
+    return argv
+
+
+def _mixed_available():
+    """True when an action can actually be delivered to a publisher."""
+    if _mixed_bridge_client_argv("apply", "00000000") is not None:
+        return True
+    return _mixed_apply_command() is not None
+
+
+def _mixed_action_argv(action, task_id):
+    """argv that performs ``action`` for ``task_id``, or None when unavailable.
+
+    Two transports are supported and never mixed:
+
+    * ``bridge`` — the container drops a small owner-proven request into the
+      shared spool and reads the answer. It needs neither adb nor ssh nor any
+      privileged tooling inside the container.
+    * ``direct`` — ``MIXED_APPLY_CMD`` (or the repo default) executed as-is, for
+      deployments where the publisher and the web server share one host.
+    """
+    if action not in ("apply", "verify", "refresh", "verify_inventory"):
+        raise ValueError("unsupported mixed action")
+    if action == "verify_inventory":
+        bridge = _mixed_bridge_client_argv(action, None)
+        if bridge is not None:
+            return bridge
+        command = _mixed_apply_command()
+        return list(command) + ["--verify-inventory", "--json"] if command else None
+    if action == "refresh":
+        # Inventory-only: there is no video to name, which is exactly the case
+        # where the last ready VOD was deleted.
+        bridge = _mixed_bridge_client_argv("refresh", None)
+        if bridge is not None:
+            return bridge
+        command = _mixed_apply_command()
+        if command is None:
+            return None
+        return list(command) + ["--refresh", "--json"]
+    if not isinstance(task_id, str) or not _MIXED_TASK_ID_RE.fullmatch(task_id):
+        return None
+    bridge = _mixed_bridge_client_argv(action, task_id)
+    if bridge is not None:
+        return bridge
+    command = _mixed_apply_command()
+    if command is None:
+        return None
+    argv = list(command) + ["--apply", "--task-id", task_id]
+    if action == "verify":
+        argv.append("--verify")
+    argv.append("--json")
+    return argv
+
+
+def _mixed_read_state():
+    """Best-effort, never-raising read of the publication journal."""
+    try:
+        with open(_mixed_state_file(), "r", encoding="utf-8") as handle:
+            payload = handle.read()
+    except (FileNotFoundError, OSError):
+        return None
+    try:
+        state = json.loads(payload)
+    except Exception:
+        return None
+    return state if isinstance(state, dict) else None
+
+
+def _mixed_int_or_none(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _mixed_index_has(index, task_id):
+    """Recursive membership test over an arbitrary JSON index shape."""
+    if isinstance(index, dict):
+        if index.get("task_id") == task_id or index.get("id") == task_id:
+            return True
+        if task_id in index:
+            return True
+        return any(_mixed_index_has(value, task_id) for value in index.values())
+    if isinstance(index, (list, tuple, set)):
+        for item in index:
+            if isinstance(item, str):
+                if item == task_id:
+                    return True
+            elif _mixed_index_has(item, task_id):
+                return True
+        return False
+    return False
+
+
+def _mixed_index_contains(state, task_id):
+    """True only when the ACTIVE generation's recorded index holds task_id."""
+    if not isinstance(state, dict):
+        return False
+    if not isinstance(task_id, str) or not _MIXED_TASK_ID_RE.fullmatch(task_id):
+        return False
+    for key in _MIXED_INDEX_KEYS:
+        if key in state and _mixed_index_has(state[key], task_id):
+            return True
+    return False
+
+
+def _mixed_apply_records(state):
+    """Every apply record the journal exposes, most specific first."""
+    records = []
+    if not isinstance(state, dict):
+        return records
+    for key in _MIXED_APPLY_RECORD_KEYS:
+        record = state.get(key)
+        if isinstance(record, dict):
+            records.append(record)
+    flat_task = state.get("apply_task_id") or state.get("applying_task_id")
+    if isinstance(flat_task, str) and flat_task:
+        flat = {"task_id": flat_task}
+        flat_state = state.get("apply_state") or state.get("applying_state")
+        if isinstance(flat_state, str):
+            flat["state"] = flat_state
+        if isinstance(state.get("apply_interrupts_playback"), bool):
+            flat["interrupts_playback"] = state["apply_interrupts_playback"]
+        records.append(flat)
+    return records
+
+
+def _mixed_apply_progress(state):
+    """(task_id, state) of an in-flight apply, else (None, None)."""
+    for record in _mixed_apply_records(state):
+        task_id = record.get("task_id")
+        state_name = record.get("state")
+        if (isinstance(task_id, str) and isinstance(state_name, str)
+                and state_name.lower() in _MIXED_IN_PROGRESS_STATES):
+            return task_id, state_name
+    return None, None
+
+
+_MIXED_INTERRUPTIBLE_PREFIXES = ("active_vod_selected:", "active_live_stream:")
+
+
+def _mixed_is_interruptible(reason):
+    """True only for the legacy playback signals a human may explicitly confirm.
+
+    Unknown, stale or unreadable states are never interruptible.
+    """
+    return bool(isinstance(reason, str)
+                and reason.startswith(_MIXED_INTERRUPTIBLE_PREFIXES))
+
+
+def _mixed_status_view(state, task_id=None):
+    """Token-free, path-free public status payload for the dashboard.
+
+    Pure derivation from the journal: it never returns the mode-guard token,
+    the PIN or any filesystem path.  ``selected_in_active`` comes only from the
+    ACTIVE generation's recorded index.
+    """
+    available = _mixed_available()
+
+    generation = None
+    pending_generation = None
+    active_session = None
+    selected_in_active = False
+    reason = None
+    message = ""
+    interrupts_playback = False
+    reconnected = None
+    confirmed = None
+    apply_updated_ts = None
+    state_name = "unavailable" if not available else "idle"
+
+    if isinstance(state, dict):
+        generation = _mixed_int_or_none(state.get("active_generation"))
+        pending_generation = _mixed_int_or_none(state.get("pending_generation"))
+        session = state.get("active_session")
+        if isinstance(session, str) and _MIXED_SESSION_RE.fullmatch(session):
+            active_session = session
+        selected_in_active = _mixed_index_contains(state, task_id)
+
+        records = _mixed_apply_records(state)
+        record = records[0] if records else {}
+        timestamp = record.get("updated_ts")
+        if isinstance(timestamp, (int, float)) and not isinstance(timestamp, bool):
+            apply_updated_ts = timestamp if 0 <= timestamp < 1e12 else None
+        record_state = record.get("state")
+        if isinstance(record_state, str) and record_state.strip():
+            state_name = record_state.strip().lower()
+        else:
+            publication = state.get("publication")
+            publication = publication if isinstance(publication, dict) else {}
+            if publication.get("phase") == "active":
+                state_name = "active"
+            elif pending_generation is not None:
+                state_name = "prepared"
+            else:
+                state_name = "idle"
+
+        if isinstance(record.get("reason"), str):
+            reason = record["reason"]
+        if isinstance(record.get("message"), str) and record["message"].strip():
+            message = record["message"].strip()
+        if isinstance(record.get("interrupts_playback"), bool):
+            interrupts_playback = record["interrupts_playback"]
+        if isinstance(record.get("reconnected"), bool):
+            reconnected = record["reconnected"]
+        if record.get("confirmed") in (True, False):
+            confirmed = record["confirmed"]
+        elif state_name in _MIXED_IN_PROGRESS_STATES or state_name == "prepared":
+            interrupts_playback = True
+
+    if available and pending_generation is not None and state_name in ("active", "already_current", "idle", "empty", "prepared"):
+        # A prior successful apply record describes the old generation.  The
+        # selected item being present cannot prove the *whole* catalog is
+        # current when a newer generation is waiting.
+        state_name = "prepared"
+        message = _MIXED_STATE_MESSAGES.get("prepared", "Lista pronta; atualização pendente")
+        interrupts_playback = True
+        reconnected = None
+        confirmed = None
+        reason = None
+    if not message:
+        message = _MIXED_STATE_MESSAGES.get(state_name, "")
+
+    return {
+        "available": available,
+        "generation": generation,
+        "state": state_name,
+        "message": message,
+        "interrupts_playback": bool(interrupts_playback),
+        "reconnected": reconnected,
+        "confirmed": confirmed,
+        "interruptible": _mixed_is_interruptible(reason),
+        "selected_in_active": bool(selected_in_active),
+        "pending_generation": pending_generation,
+        "apply_updated_ts": apply_updated_ts,
+        "active_session": active_session,
+        "reason": reason,
+    }
+
+
+def dispatch_device_cmd(cmd, dedupe_key=None, guard_token=None):
+    """Envia comando para o dispositivo ativo (Tablet via CommandBus ou Xiaomi).
+
+    While a foreign ModeGuard lease is live the command is refused (returns
+    False) and HUB.pending_command is left untouched, so a coordinator that
+    is switching the USB LUN cannot race a playback/mode command issued here.
+    The lease holder may pass its own ``guard_token``; there is deliberately
+    no unauthenticated bypass.  External publishers talk to the tablet
+    directly over adb, not through this helper, so they simply do not call it.
+    """
+    if not MODE_GUARD.allows(guard_token):
+        log_event(f"DISPATCH_CMD_REFUSED mode_guard {cmd}")
+        print(f"[!] Comando recusado: troca de modo em andamento ({cmd})")
+        return False
+
     log_event(f"DISPATCH_CMD {cmd}")
     print(f"[*] Disparando comando para aparelho: {cmd}")
     HUB.pending_command = f"su -c '{cmd}'"
@@ -3614,6 +4229,8 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         if path == "/":
             self.send_dashboard()
+        elif path == "/tv":
+            self.send_dashboard(legacy_live=True)
         elif path == "/manifest.json":
             self.send_manifest_json()
         elif path == "/sw.js":
@@ -3636,6 +4253,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             m = XTREAM_STREAM_RE.match(path)
             kind, user, pwd, stream_id, ext = m.groups()
             self.handle_xtream_stream(kind or "live", user, pwd, stream_id, ext)
+        elif path.startswith("/api/internal/vod-range/"):
+            self.handle_internal_vod_range(path)
         elif path.startswith("/vod/"):
             self.handle_vod_stream(path)
         elif path == "/api/vod/status":
@@ -3644,6 +4263,12 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.send_vod_history()
         elif path == "/api/status":
             self.send_status_json()
+        elif path == "/api/mode_guard":
+            self.handle_mode_guard()
+        elif path == "/api/mixed/status":
+            self.handle_mixed_status(query)
+        elif path == "/api/mixed/confirm":
+            self.handle_mixed_confirm(query)
         elif path == "/api/channels":
             self.send_channels_json()
         elif path == "/api/switch_channel":
@@ -3819,16 +4444,16 @@ class RequestHandler(BaseHTTPRequestHandler):
             ],
             "shortcuts": [
                 {
-                    "name": "TV ao Vivo",
-                    "short_name": "TV",
-                    "description": "Assistir TV ao Vivo",
-                    "url": "/",
+                    "name": "Filmes",
+                    "short_name": "Filmes",
+                    "description": "Abrir o catálogo de filmes",
+                    "url": "/?tab=cinema",
                     "icons": [{"src": "/api/app-icon.png", "sizes": "192x192", "type": "image/png"}]
                 },
                 {
-                    "name": "Filmes & Séries",
-                    "short_name": "Catálogo",
-                    "description": "Catálogo de Filmes e Séries",
+                    "name": "Salvos",
+                    "short_name": "Salvos",
+                    "description": "Vídeos prontos para tocar na TV",
                     "url": "/?tab=vod",
                     "icons": [{"src": "/api/app-icon.png", "sizes": "192x192", "type": "image/png"}]
                 }
@@ -3895,7 +4520,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         if not sw:
             sw = r"""// Service Worker para PWA do Controle Remoto
-const CACHE_NAME = 'controle-tv-v23';
+const CACHE_NAME = 'controle-tv-v25';
 const STATIC_ASSETS = [
     '/',
     '/manifest.json',
@@ -3974,6 +4599,10 @@ self.addEventListener('fetch', (event) => {
         event.respondWith(
             fetch(event.request).catch(() => caches.match('/'))
         );
+        return;
+    }
+
+    if (url.pathname === '/tv') {
         return;
     }
 
@@ -4184,6 +4813,12 @@ self.addEventListener('message', (event) => {
             self.handle_vod_history(path.rsplit("/", 1)[-1])
         elif path == "/api/vod/live":
             self.handle_vod_live()
+        elif path == "/api/mode_guard":
+            self.handle_mode_guard()
+        elif path == "/api/mixed/apply":
+            self.handle_mixed_apply()
+        elif path == "/api/mixed/refresh":
+            self.handle_mixed_refresh()
         elif path == "/api/youtube":
             self.handle_youtube()
         elif path in ("/player_api.php", "/xmltv.php"):
@@ -4393,7 +5028,12 @@ self.addEventListener('message', (event) => {
             "vod_display_name": vod_title if is_vod_active else None,
             "is_temporary": HUB.current_is_temporary,
             "is_eco": getattr(HUB, "current_is_eco", is_channel_eco(HUB.current_channel_name, HUB.current_url)),
-            "client": client_data
+            "client": client_data,
+            "mode_guard": MODE_GUARD.status(),
+            # Freshness marker: consumers that make automatic decisions (for
+            # example the mixed-media generation service) must be able to prove
+            # that this payload is not a stale replay before trusting it.
+            "server_time": time.time()
         }
         res = json.dumps(data).encode("utf-8")
         self.send_response(200)
@@ -4714,6 +5354,10 @@ self.addEventListener('message', (event) => {
             self.wfile.write(json.dumps({"success": False, "error": "PIN incorreto"}).encode("utf-8"))
             return
 
+        if self._refuse_foreign_mode_guard(params):
+            return
+        guard_token = self._mode_guard_token(params)
+
         ch_id = params.get("channel_id")
         custom_url = params.get("url")
         custom_name = params.get("name")
@@ -4722,9 +5366,13 @@ self.addEventListener('message', (event) => {
 
         global ACTIVE_VOD_TASK
         if ACTIVE_VOD_TASK or getattr(HUB, "tablet_vod_mode", ""):
+            if dispatch_device_cmd("sh /data/local/tmp/switch_live.sh",
+                                   guard_token=guard_token) is False:
+                self._send_vod_json(409, {"success": False,
+                                          "error": "troca de modo em andamento"})
+                return
             set_active_vod(None)
             HUB.tablet_vod_mode = ""
-            dispatch_device_cmd("sh /data/local/tmp/switch_live.sh")
 
         if custom_url and any(x in custom_url.lower() for x in ["youtube.com", "youtu.be"]):
             try:
@@ -4809,6 +5457,10 @@ self.addEventListener('message', (event) => {
             self.wfile.write(json.dumps({"success": False, "error": "PIN incorreto"}).encode("utf-8"))
             return
 
+        if self._refuse_foreign_mode_guard(params):
+            return
+        guard_token = self._mode_guard_token(params)
+
         yt_url = (params.get("url") or "").strip()
         if not yt_url:
             self.send_response(400)
@@ -4840,9 +5492,13 @@ self.addEventListener('message', (event) => {
             return
 
         if ACTIVE_VOD_TASK or getattr(HUB, "tablet_vod_mode", ""):
+            if dispatch_device_cmd("sh /data/local/tmp/switch_live.sh",
+                                   guard_token=guard_token) is False:
+                self._send_vod_json(409, {"success": False,
+                                          "error": "troca de modo em andamento"})
+                return
             set_active_vod(None)
             HUB.tablet_vod_mode = ""
-            dispatch_device_cmd("sh /data/local/tmp/switch_live.sh")
 
         ok = HUB.switch_youtube(meta)
         self.send_response(200)
@@ -5032,6 +5688,13 @@ self.addEventListener('message', (event) => {
             self.end_headers()
             self.wfile.write(res)
             return
+        # The guard holder may drive the tablet through this endpoint by
+        # presenting its token; everyone else is refused while the lease is
+        # live.  (The external publisher normally talks to the tablet over
+        # adb and does not use this endpoint.)
+        if self._refuse_foreign_mode_guard(params):
+            return
+        guard_token = self._mode_guard_token(params)
         cmd = params.get("cmd")
         if not cmd:
             res = json.dumps({"success": False, "error": "Comando ausente"}).encode("utf-8")
@@ -5044,7 +5707,11 @@ self.addEventListener('message', (event) => {
             return
         HUB.tablet_cmd_event.clear()
         HUB.tablet_cmd_res = None
-        item = dispatch_device_cmd(cmd)
+        item = dispatch_device_cmd(cmd, guard_token=guard_token)
+        if item is False:
+            self._send_vod_json(409, {"success": False,
+                                      "error": "troca de modo em andamento"})
+            return
         success = item.event.wait(timeout=15.0) if hasattr(item, "event") else False
         output = item.output if success else (HUB.tablet_cmd_res or "Timeout aguardando execução no tablet (watchdog ativo?).")
         rc = getattr(item, "rc", 0)
@@ -5099,6 +5766,9 @@ self.addEventListener('message', (event) => {
             self.end_headers()
             self.wfile.write(res)
             return
+        if self._refuse_foreign_mode_guard(params):
+            return
+        guard_token = self._mode_guard_token(params)
 
         global LAST_RECONNECT_TIME
         now = time.time()
@@ -5117,7 +5787,10 @@ self.addEventListener('message', (event) => {
         LAST_RECONNECT_TIME = now
 
         cmd = "sh /system/xbin/reconnect_usb.sh || sh /data/local/tmp/reconnect_usb.sh"
-        dispatch_device_cmd(cmd)
+        if dispatch_device_cmd(cmd, guard_token=guard_token) is False:
+            self._send_vod_json(409, {"success": False,
+                                      "error": "troca de modo em andamento"})
+            return
 
         res = json.dumps({
             "success": True,
@@ -5451,6 +6124,11 @@ self.addEventListener('message', (event) => {
             self.wfile.write(res)
             return
 
+        if self._refuse_foreign_mode_guard(params):
+            return
+        guard_token = self._mode_guard_token(params)
+        dispatch_refused = False
+
         task_id = params.get("task_id")
         if not isinstance(task_id, str) or not re.fullmatch(r"[0-9a-f]{8}", task_id):
             res = json.dumps({"success": False, "error": "ID da tarefa não informado"}).encode("utf-8")
@@ -5519,7 +6197,9 @@ self.addEventListener('message', (event) => {
                 VOD_PLAYBACK_CACHE.stop()
                 set_active_vod(None)
                 HUB.tablet_vod_mode = ""
-                dispatch_device_cmd("sh /data/local/tmp/switch_live.sh")
+                if dispatch_device_cmd("sh /data/local/tmp/switch_live.sh",
+                                       guard_token=guard_token) is False:
+                    dispatch_refused = True
 
             f_mp4 = os.path.join(VOD_DIR, f"{task_id}.mp4")
             f_bin = os.path.join(VOD_DIR, f"{task_id}.bin")
@@ -5533,6 +6213,11 @@ self.addEventListener('message', (event) => {
 
             del VOD_TASKS[task_id]
             save_vod_tasks()
+
+        if dispatch_refused:
+            self._send_vod_json(409, {"success": False,
+                                      "error": "troca de modo em andamento"})
+            return
 
         res = json.dumps({"success": True, "task_id": task_id}).encode("utf-8")
         self.send_response(200)
@@ -5576,6 +6261,296 @@ self.addEventListener('message', (event) => {
             self._send_vod_json(401, {"success": False, "error": "PIN incorreto"})
             return False
         return True
+
+    def _mode_guard_token(self, params=None):
+        """Token supplied by the caller that believes it owns the lease.
+
+        Accepted from the ``X-Mode-Guard-Token`` header (preferred, keeps it
+        out of proxy logs) or a ``guard_token`` body field.
+        """
+        params = params or {}
+        supplied = self.headers.get("X-Mode-Guard-Token") or params.get("guard_token") or ""
+        return supplied.strip() if isinstance(supplied, str) else ""
+
+    def _refuse_foreign_mode_guard(self, params=None):
+        """Send 409 and return True when a foreign lease blocks this request."""
+        holder = MODE_GUARD.holder()
+        if holder is None:
+            return False
+        if _mode_guard_token_eq(self._mode_guard_token(params), holder["token"]):
+            return False
+        self._send_vod_json(409, {"success": False,
+                                  "error": "troca de modo em andamento"})
+        return True
+
+    def handle_mixed_status(self, query=None):
+        """Public, token-free status of the manual mixed-generation update."""
+        query = query or {}
+        task_id = None
+        if isinstance(query, dict):
+            values = query.get("task_id") or []
+            task_id = values[0] if values else None
+        if task_id is not None and not _MIXED_TASK_ID_RE.fullmatch(str(task_id)):
+            task_id = None
+        state = _mixed_read_state()
+        self._send_vod_json(200, _mixed_status_view(state, task_id))
+
+    def handle_mixed_confirm(self, query=None):
+        """Read-only proof, taken from the tablet, that the list is current.
+
+        The journal alone can be stale (rollback, disconnection or a switch), so
+        the dashboard must not announce success without this. It never switches
+        the LUN and is safe while the TV is on.
+        """
+        query = query or {}
+        # It shells out to the publisher (one ssh/adb probe), so it is
+        # authenticated like every other mutating-looking endpoint.
+        if not self._check_vod_pin(query):
+            return
+        task_id = None
+        if isinstance(query, dict):
+            values = query.get("task_id") or []
+            task_id = values[0] if values else None
+        if task_id and (not isinstance(task_id, str) or not _MIXED_TASK_ID_RE.fullmatch(task_id)):
+            self._send_vod_json(400, {"ok": False, "error": "Vídeo inválido"})
+            return
+        command = _mixed_apply_command()
+        if not _mixed_available():
+            self._send_vod_json(200, {"ok": True, "available": False,
+                                      "confirmed": None, "state": "unavailable",
+                                      "reason": "mixed_mode_unavailable"})
+            return
+        argv = _mixed_action_argv("verify" if task_id else "verify_inventory", task_id)
+        if argv is None:
+            self._send_vod_json(503, {"ok": False, "available": True,
+                                      "confirmed": None, "state": "unknown",
+                                      "reason": "publisher_unavailable"})
+            return
+        try:
+            completed = subprocess.run(
+                argv, capture_output=True, text=True, timeout=_mixed_confirm_timeout(),
+                stdin=subprocess.DEVNULL, cwd=_mixed_app_dir() or None, check=False)
+        except subprocess.TimeoutExpired:
+            self._send_vod_json(200, {"ok": True, "available": True,
+                                      "confirmed": None, "state": "unknown",
+                                      "reason": "confirmation_timeout"})
+            return
+        except OSError as exc:
+            log_event(f"MIXED_CONFIRM_FAILED {type(exc).__name__}")
+            self._send_vod_json(503, {"ok": False, "available": True,
+                                      "confirmed": None, "state": "unknown",
+                                      "reason": "publisher_unavailable"})
+            return
+        payload = _mixed_parse_json_output(completed.stdout or "")
+        if payload is None:
+            self._send_vod_json(200, {"ok": True, "available": True,
+                                      "confirmed": None, "state": "unknown",
+                                      "reason": "unparseable_confirmation"})
+            return
+        body = {"ok": True, "available": True}
+        for key in ("confirmed", "state", "reason", "generation", "manifest_id",
+                    "size_match", "revision_match"):
+            if key in payload:
+                body[key] = payload[key]
+        if body.get("confirmed") not in (True, False, None):
+            body["confirmed"] = None
+        self._send_vod_json(200, body)
+
+    def handle_mixed_apply(self):
+        """Manual update of the virtual pendrive triggered by the TV button.
+
+        The click is the authorisation. It launches the publisher in the
+        background (list form, never a shell string) and reports the current
+        journalled state; a repeated click while the same task is in flight is
+        idempotent and a different task in flight is refused.
+        """
+        try:
+            params = self._read_vod_json()
+        except ValueError as exc:
+            self._send_vod_json(400, {"ok": False, "error": str(exc)})
+            return
+        if not self._check_vod_pin(params):
+            return
+        if not MODE_GUARD.allows(params.get("guard_token")):
+            self._send_vod_json(409, {"ok": False, "error": "troca de modo em andamento"})
+            return
+        task_id = params.get("task_id")
+        if not isinstance(task_id, str) or not _MIXED_TASK_ID_RE.fullmatch(task_id):
+            self._send_vod_json(400, {"ok": False, "error": "Vídeo inválido"})
+            return
+        with VOD_TASKS_LOCK:
+            task = VOD_TASKS.get(task_id)
+            task = dict(task) if task else None
+        if not task:
+            self._send_vod_json(404, {"ok": False, "error": "VOD não encontrado"})
+            return
+        if task.get("status") != "ready":
+            self._send_vod_json(409, {"ok": False, "error": "VOD não está pronto"})
+            return
+
+        state = _mixed_read_state()
+        if not _mixed_available():
+            # No publisher configured here: the dashboard keeps the legacy path.
+            self._send_vod_json(200, {"ok": True, "available": False,
+                                      "state": "unavailable",
+                                      "message": "Modo de mídia mista indisponível"})
+            return
+
+        in_flight_task, _ = _mixed_apply_progress(state)
+        if in_flight_task == task_id:
+            view = _mixed_status_view(state, task_id)
+            self._send_vod_json(200, {"ok": True, "available": True,
+                                      "state": "in_progress",
+                                      "message": view["message"],
+                                      "interrupts_playback": view["interrupts_playback"]})
+            return
+        if in_flight_task and in_flight_task != task_id:
+            self._send_vod_json(409, {"ok": False,
+                                      "error": "outra atualização em andamento",
+                                      "task_id": in_flight_task})
+            return
+
+        argv = _mixed_action_argv("apply", task_id)
+        if argv is None:
+            self._send_vod_json(200, {"ok": True, "available": False,
+                                      "state": "unavailable",
+                                      "message": "Modo de mídia mista indisponível"})
+            return
+        if params.get("confirm_interrupt") is True:
+            # The user answered the warning: only the manual endpoint may pass
+            # this on, and the publisher still refuses it for unknown states.
+            argv = argv + ["--confirm-interrupt"]
+        if _mixed_bridge_spool() is None:
+            # Direct transport only: the local publisher detaches itself.
+            argv = argv + ["--background"]
+        try:
+            subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             stdin=subprocess.DEVNULL, start_new_session=True,
+                             cwd=_mixed_app_dir() or None)
+        except OSError as exc:
+            log_event(f"MIXED_APPLY_LAUNCH_FAILED {type(exc).__name__}")
+            self._send_vod_json(503, {"ok": False,
+                                      "error": "não foi possível iniciar a atualização"})
+            return
+        log_event(f"MIXED_APPLY_REQUESTED {task_id}")
+        view = _mixed_status_view(state, task_id)
+        self._send_vod_json(200, {"ok": True, "available": True, "state": "started",
+                                  "message": view["message"] or "Lista em atualização",
+                                  "interrupts_playback": view["interrupts_playback"]})
+
+    def handle_mixed_refresh(self):
+        """Publish the CURRENT inventory, with no video to anchor on.
+
+        Deleting the last ready VOD leaves nothing for :meth:`handle_mixed_apply`
+        to name, yet the TV list must still lose that file. This endpoint is the
+        same manual authorisation, minus the task identity: it asks the
+        publisher to compare the live inventory and republish when it differs.
+        """
+        try:
+            params = self._read_vod_json()
+        except ValueError as exc:
+            self._send_vod_json(400, {"ok": False, "error": str(exc)})
+            return
+        if not self._check_vod_pin(params):
+            return
+        if not MODE_GUARD.allows(params.get("guard_token")):
+            self._send_vod_json(409, {"ok": False, "error": "troca de modo em andamento"})
+            return
+        if not _mixed_available():
+            self._send_vod_json(200, {"ok": True, "available": False,
+                                      "state": "unavailable",
+                                      "message": "Modo de mídia mista indisponível"})
+            return
+        state = _mixed_read_state()
+        in_flight_task, in_flight_state = _mixed_apply_progress(state)
+        if in_flight_task:
+            view = _mixed_status_view(state, None)
+            self._send_vod_json(200, {"ok": True, "available": True,
+                                      "state": "in_progress",
+                                      "reason": "another_update_in_progress",
+                                      "task_id": in_flight_task,
+                                      "message": view["message"],
+                                      "interrupts_playback": view["interrupts_playback"]})
+            return
+        argv = _mixed_action_argv("refresh", None)
+        if argv is None:
+            self._send_vod_json(200, {"ok": True, "available": False,
+                                      "state": "unavailable",
+                                      "message": "Modo de mídia mista indisponível"})
+            return
+        if params.get("confirm_interrupt") is True:
+            argv = argv + ["--confirm-interrupt"]
+        if _mixed_bridge_spool() is None:
+            argv = argv + ["--background"]
+        try:
+            subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             stdin=subprocess.DEVNULL, start_new_session=True,
+                             cwd=_mixed_app_dir() or None)
+        except OSError as exc:
+            log_event(f"MIXED_REFRESH_LAUNCH_FAILED {type(exc).__name__}")
+            self._send_vod_json(503, {"ok": False,
+                                      "error": "não foi possível iniciar a atualização"})
+            return
+        log_event("MIXED_REFRESH_REQUESTED inventory")
+        view = _mixed_status_view(state, None)
+        self._send_vod_json(200, {"ok": True, "available": True, "state": "started",
+                                  "message": view["message"] or "Lista em atualização",
+                                  "interrupts_playback": view["interrupts_playback"]})
+
+    def handle_mode_guard(self):
+        """Exclusive lease used by the mixed-media publisher around LUN swaps.
+
+        The publisher talks to the tablet directly over adb; this endpoint is
+        only the coordination authority that makes server-side playback and
+        mode switches fail closed while the swap is in flight.
+        """
+        try:
+            params = self._read_vod_json()
+        except ValueError as exc:
+            self._send_vod_json(400, {"ok": False, "error": str(exc)})
+            return
+        if not self._check_vod_pin(params):
+            return
+
+        action = params.get("action")
+        if not action and self.command == "GET":
+            action = "status"
+
+        if action == "acquire":
+            result = MODE_GUARD.acquire(params.get("owner"), params.get("ttl"),
+                                        params.get("phase"))
+            if result.get("ok"):
+                self._send_vod_json(200, result)
+            elif result.get("busy"):
+                self._send_vod_json(409, {"ok": False, "busy": True,
+                                          "holder": result.get("holder")})
+            else:
+                self._send_vod_json(400, {"ok": False,
+                                          "error": result.get("error", "invalid_request")})
+            return
+
+        if action == "renew":
+            result = MODE_GUARD.renew(params.get("token"), params.get("ttl"))
+            if result.get("ok"):
+                self._send_vod_json(200, result)
+            else:
+                # Never echo the real token, never distinguish mismatch from
+                # expiry: both mean "you no longer own the lease".
+                self._send_vod_json(409, {"ok": False, "expired": True})
+            return
+
+        if action == "release":
+            if MODE_GUARD.release(params.get("token")):
+                self._send_vod_json(200, {"ok": True, "released": True})
+            else:
+                self._send_vod_json(409, {"ok": False, "expired": True})
+            return
+
+        if action == "status":
+            self._send_vod_json(200, MODE_GUARD.status())
+            return
+
+        self._send_vod_json(400, {"ok": False, "error": "invalid_action"})
 
     def _vod_tasks_snapshot(self):
         with VOD_TASKS_LOCK:
@@ -5670,6 +6645,17 @@ self.addEventListener('message', (event) => {
                         "episode_number": identity["episode_number"],
                     }
                 try:
+                    # Authoritative, trusted identity of the published bytes.
+                    # Downstream (generation fingerprint -> manifest -> allowlist
+                    # -> proxy -> FUSE client -> internal range validation) must
+                    # all agree on it so mutated content can never be served
+                    # under an old generation. Omitted when unverifiable.
+                    revision = content_revision(t_dict)
+                    if revision is not None:
+                        t_dict["content_revision"] = revision
+                except Exception:
+                    pass
+                try:
                     sz = vod_media_size(t)
                     t_dict["file_size_bytes"] = sz
                     if sz >= 1024**3:
@@ -5732,6 +6718,13 @@ self.addEventListener('message', (event) => {
             self.wfile.write(res)
             return
 
+        # Refuse before validating the task or touching VOD_SELECTION_* / the
+        # playback cache: a blocked play must leave no trace at all.
+        if self._refuse_foreign_mode_guard(params):
+            return
+        guard_token = self._mode_guard_token(params)
+        dispatch_refused = False
+
         task_id = params.get("task_id")
         if not isinstance(task_id, str) or not re.fullmatch(r"[0-9a-f]{8}", task_id):
             self.send_error(400, "Invalid VOD id")
@@ -5779,16 +6772,23 @@ self.addEventListener('message', (event) => {
                 self.send_error(409, "VOD selection changed")
                 return
             if not warm_only:
-                set_active_vod(task_id)
-                HUB.tablet_vod_mode = task_id
-                dispatch_device_cmd(f"sh /data/local/tmp/switch_vod.sh {task_id}")
-                # A deliberate play is useful as a *selection* hint for the
-                # household history.  It is never treated as proof that the TV
-                # decoded the episode or that it reached a particular minute.
-                try:
-                    VOD_HISTORY.record_selected(task)
-                except Exception:
-                    print("[VOD] Não foi possível guardar a seleção no histórico")
+                if dispatch_device_cmd(f"sh /data/local/tmp/switch_vod.sh {task_id}",
+                                       guard_token=guard_token) is False:
+                    dispatch_refused = True
+                else:
+                    set_active_vod(task_id)
+                    HUB.tablet_vod_mode = task_id
+                    # A deliberate play is useful as a *selection* hint for the
+                    # household history.  It is never treated as proof that the TV
+                    # decoded the episode or that it reached a particular minute.
+                    try:
+                        VOD_HISTORY.record_selected(task)
+                    except Exception:
+                        print("[VOD] Não foi possível guardar a seleção no histórico")
+        if dispatch_refused:
+            self._send_vod_json(409, {"success": False,
+                                      "error": "troca de modo em andamento"})
+            return
         log_event(f"VOD_{'WARM' if warm_only else 'PLAY'} {task_id} ({task.get('display_name')})")
 
         res = json.dumps({"success": True, "task_id": task_id, "display_name": task.get("display_name"), "warmed": warm_only}).encode("utf-8")
@@ -5801,16 +6801,33 @@ self.addEventListener('message', (event) => {
 
     def handle_vod_live(self):
         global ACTIVE_VOD_TASK, VOD_SELECTION_GENERATION, VOD_SELECTION_TASK
+        try:
+            params = self._read_vod_json()
+        except ValueError as exc:
+            self._send_vod_json(400, {"success": False, "error": str(exc)})
+            return
+        if self._refuse_foreign_mode_guard(params):
+            return
+        guard_token = self._mode_guard_token(params)
+        dispatch_refused = False
         with VOD_TASKS_LOCK:
             VOD_SELECTION_GENERATION += 1
             VOD_SELECTION_TASK = None
             VOD_PLAYBACK_CACHE.stop()
             already_live = ACTIVE_VOD_TASK is None and not getattr(HUB, "tablet_vod_mode", "")
             if not already_live:
-                set_active_vod(None)
-                HUB.tablet_vod_mode = ""
-                dispatch_device_cmd("sh /data/local/tmp/switch_live.sh")
+                if dispatch_device_cmd("sh /data/local/tmp/switch_live.sh",
+                                       guard_token=guard_token) is False:
+                    dispatch_refused = True
+                else:
+                    set_active_vod(None)
+                    HUB.tablet_vod_mode = ""
                 log_event("VOD_RETURN_LIVE")
+
+        if dispatch_refused:
+            self._send_vod_json(409, {"success": False,
+                                      "error": "troca de modo em andamento"})
+            return
 
         res = json.dumps({"success": True, "status": "already_live" if already_live else "live"}).encode("utf-8")
         self.send_response(200)
@@ -5819,6 +6836,99 @@ self.addEventListener('message', (event) => {
         self.send_header("Content-Length", str(len(res)))
         self.end_headers()
         self.wfile.write(res)
+
+    def handle_internal_vod_range(self, path):
+        """Serve bounded VOD bytes without changing the active playback selection.
+
+        This is for the mixed-media bridge, not the public player.  It requires
+        an explicit PIN even when the rest of the server has auth disabled;
+        credentials belong in a private header over a trusted transport.
+        """
+        supplied = self.headers.get("X-Auth-PIN", "")
+        if not AUTH_PIN or not hmac.compare_digest(supplied.encode("utf-8"), AUTH_PIN.encode("utf-8")):
+            self.send_error(403, "Forbidden")
+            return
+        match = re.fullmatch(r"/api/internal/vod-range/([0-9a-f]{8})", path)
+        if not match:
+            self.send_error(404, "VOD not found")
+            return
+        with VOD_TASKS_LOCK:
+            original = VOD_TASKS.get(match.group(1))
+            task = dict(original) if original and original.get("status") == "ready" else None
+        if not task or not vod_media_available(task):
+            self.send_error(404, "VOD not available")
+            return
+        # Fail-closed content identity: refuse to serve bytes that cannot be
+        # proven to be the ones this generation was built from. A mutation that
+        # keeps the task id and size (no MD5) changes the revision and is
+        # rejected instead of silently serving stale content to the TV.
+        authoritative = content_revision(task)
+        if authoritative is None:
+            self.send_error(503, "VOD content identity unavailable")
+            return
+        supplied_revision = str(self.headers.get(REVISION_HEADER, "")).strip()
+        if not is_valid_revision(supplied_revision) or not hmac.compare_digest(
+                supplied_revision, authoritative):
+            self.send_response(412)
+            self.send_header("Content-Length", "0")
+            self.send_header(REVISION_HEADER, authoritative)
+            self.end_headers()
+            return
+        try:
+            size = vod_media_size(task)
+        except (OSError, ValueError, TypeError):
+            self.send_error(503, "VOD temporarily unavailable")
+            return
+        if size <= 0:
+            self.send_error(404, "VOD not available")
+            return
+        if self.command == "HEAD":
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Length", str(size))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
+        range_header = self.headers.get("Range", "").strip()
+        requested = re.fullmatch(r"bytes=(\d{1,20})-(\d{1,20})", range_header)
+        if not requested:
+            self.send_error(400, "Explicit byte range required")
+            return
+        start, end = int(requested[1]), int(requested[2])
+        end = min(end, size - 1)
+        length = end - start + 1
+        if start >= size or end < start or length > 4 * 1024 * 1024:
+            self.send_response(416)
+            self.send_header("Content-Range", f"bytes */{size}")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        try:
+            if task.get("storage") == "gdrive":
+                data = VOD_PLAYBACK_CACHE.read(task, start, length)
+            else:
+                with open(task["file_path"], "rb") as media:
+                    media.seek(start)
+                    data = media.read(length)
+            if len(data) != length:
+                raise StorageError("Incomplete VOD range")
+        except (OSError, StorageError, ValueError, TypeError):
+            self.send_error(503, "VOD temporarily unavailable")
+            return
+        if task.get("storage") == "gdrive":
+            _mixed_cache_hint(task, start, length)
+        self.send_response(206)
+        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Content-Length", str(length))
+        self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except OSError:
+            self.close_connection = True
 
     def stream_mp4_file(self, file_path):
         if not file_path or not os.path.exists(file_path):
@@ -6037,7 +7147,7 @@ self.addEventListener('message', (event) => {
 
         self.send_error(404, "Not Found")
 
-    def send_dashboard(self):
+    def send_dashboard(self, legacy_live=False):
         tunnel_url = "http://localhost:8080"
         tunnel_file = os.path.join(CONFIG_DIR, "tunnel_url.txt")
         if os.path.exists(tunnel_file):
@@ -6063,6 +7173,14 @@ self.addEventListener('message', (event) => {
             html = EMBEDDED_DASHBOARD_HTML
 
         html = html.replace("{tunnel_url}", tunnel_url)
+        # /tv serve a mesma página, mas libera a aba "Ao Vivo" (grade completa do provedor).
+        # Vai no <head> porque o script principal (que chama init()) termina no fim do <body>:
+        # assim a flag e a saída da PWA acontecem antes de qualquer pixel ser pintado.
+        if legacy_live:
+            if "</head>" in html:
+                html = html.replace("</head>", LEGACY_LIVE_SNIPPET + "\n</head>", 1)
+            else:
+                print("[!] /tv: marcador </head> ausente; a página legada não foi marcada")
         data = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -6073,6 +7191,22 @@ self.addEventListener('message', (event) => {
         self.end_headers()
         self.wfile.write(data)
 
+
+# Injetado só em /tv: marca a página como legada e tira a PWA instalada de lá antes da
+# primeira pintura. A checagem se repete em init() como segunda camada.
+LEGACY_LIVE_SNIPPET = """<script>
+window.__LEGACY_LIVE__ = true;
+document.documentElement.classList.add('is-legacy-live');
+(function () {
+    try {
+        var pwa = window.navigator.standalone === true || (window.matchMedia && (
+            window.matchMedia('(display-mode: standalone)').matches ||
+            window.matchMedia('(display-mode: fullscreen)').matches ||
+            window.matchMedia('(display-mode: minimal-ui)').matches));
+        if (pwa) window.location.replace('/');
+    } catch (e) { /* segue para a checagem em init() */ }
+})();
+</script>"""
 
 EMBEDDED_DASHBOARD_HTML = r"""<!DOCTYPE html>
 <html lang="pt-BR">
@@ -11473,7 +12607,7 @@ EMBEDDED_DASHBOARD_HTML = r"""<!DOCTYPE html>
             if ('caches' in window) {
                 caches.keys().then((keys) => {
                     keys.forEach((k) => {
-                        if (k !== 'controle-tv-v23') caches.delete(k);
+                        if (k !== 'controle-tv-v25') caches.delete(k);
                     });
                 }).catch(() => {});
             }

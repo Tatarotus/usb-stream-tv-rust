@@ -1,0 +1,22 @@
+{
+  "capture": {
+    "bytes": 0,
+    "requested_duration": 20.0,
+    "returncode": 146,
+    "stderr_categories": {
+      "connection_timeout": 3,
+      "input_open_failed": 1
+    },
+    "wall_seconds": 10.638
+  },
+  "catalog_name": "RECORD NEWS HD\u00b2",
+  "category": "Noticias",
+  "channel_id": "206114",
+  "duration_s": 20.0,
+  "filename": "Record News.trp",
+  "identity": "record-news",
+  "phase": "triage",
+  "quality_label": "HD2",
+  "region": "national",
+  "verdict": "no_media"
+}

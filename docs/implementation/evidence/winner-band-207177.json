@@ -1,0 +1,74 @@
+{
+  "capture": {
+    "bytes": 116967020,
+    "returncode": 0,
+    "stderr_categories": {
+      "source_reconnect": 15
+    },
+    "wall_seconds": 87.633
+  },
+  "catalog_name": "BAND RJ FHD\u00b2",
+  "category": "Abertos",
+  "channel_id": "207177",
+  "duration_s": 300.0,
+  "filename": "Band.trp",
+  "identity": "band",
+  "media": {
+    "audio": {
+      "audio_duration_s": 299.99,
+      "audio_packets": 13582,
+      "audio_pts_gaps_over_1000ms": 1,
+      "audio_pts_gaps_over_500ms": 1,
+      "audio_pts_max_gap_ms": 8853.3
+    },
+    "audio_bit_rate": "130920",
+    "audio_channels": 2,
+    "audio_codec": "aac",
+    "audio_sample_rate": "48000",
+    "b_frames_seen": 0,
+    "fps": "30000/1001",
+    "frames_decoded": 8729,
+    "has_b_frames": 0,
+    "height": 720,
+    "heights_seen": [
+      720
+    ],
+    "i_frames_seen": 36,
+    "idr_gap_max_s": 10.01,
+    "idr_gap_median_s": 10.01,
+    "level": 41,
+    "media_duration_s": 299.99,
+    "p_frames_seen": 8693,
+    "pcr": {
+      "pcr_count": 4384,
+      "pcr_gaps_over_100ms": 0,
+      "pcr_gaps_over_40ms": 4345,
+      "pcr_max_gap_ms": 66.74,
+      "pcr_median_gap_ms": 66.73,
+      "pcr_pid": "0x100",
+      "pcr_pids": 1
+    },
+    "pix_fmt": "yuv420p",
+    "profile": "High",
+    "slices": {
+      "b_frames": 0,
+      "frames": 8729,
+      "i_frames": 36,
+      "multislice_frames": 8,
+      "p_frames": 8693,
+      "slices_max": 2,
+      "slices_median": 1
+    },
+    "ts_kbps_total": 3119,
+    "video_codec": "h264",
+    "video_kbps": 2863,
+    "width": 1280,
+    "widths_seen": [
+      1280
+    ]
+  },
+  "phase": "winner",
+  "quality_label": "FHD2",
+  "region": "rj",
+  "verdict": "not_1080p"
+}

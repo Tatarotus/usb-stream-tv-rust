@@ -1,0 +1,74 @@
+{
+  "capture": {
+    "bytes": 112735892,
+    "returncode": 0,
+    "stderr_categories": {
+      "source_reconnect": 4
+    },
+    "wall_seconds": 270.598
+  },
+  "catalog_name": "SBT NEWS H265",
+  "category": "Noticias",
+  "channel_id": "3030725",
+  "duration_s": 300.0,
+  "filename": "SBT News.trp",
+  "identity": "sbt-news",
+  "media": {
+    "audio": {
+      "audio_duration_s": 299.97,
+      "audio_packets": 14037,
+      "audio_pts_gaps_over_1000ms": 0,
+      "audio_pts_gaps_over_500ms": 0,
+      "audio_pts_max_gap_ms": 233.3
+    },
+    "audio_bit_rate": "131112",
+    "audio_channels": 2,
+    "audio_codec": "aac",
+    "audio_sample_rate": "48000",
+    "b_frames_seen": 0,
+    "fps": "30000/1001",
+    "frames_decoded": 8992,
+    "has_b_frames": 0,
+    "height": 1080,
+    "heights_seen": [
+      1080
+    ],
+    "i_frames_seen": 103,
+    "idr_gap_max_s": 3.003,
+    "idr_gap_median_s": 3.003,
+    "level": 40,
+    "media_duration_s": 299.97,
+    "p_frames_seen": 8889,
+    "pcr": {
+      "pcr_count": 4506,
+      "pcr_gaps_over_100ms": 0,
+      "pcr_gaps_over_40ms": 4485,
+      "pcr_max_gap_ms": 66.74,
+      "pcr_median_gap_ms": 66.73,
+      "pcr_pid": "0x100",
+      "pcr_pids": 1
+    },
+    "pix_fmt": "yuv420p",
+    "profile": "High",
+    "slices": {
+      "b_frames": 8,
+      "frames": 9044,
+      "i_frames": 114,
+      "multislice_frames": 103,
+      "p_frames": 8917,
+      "slices_max": 2,
+      "slices_median": 1.0
+    },
+    "ts_kbps_total": 3007,
+    "video_codec": "h264",
+    "video_kbps": 2747,
+    "width": 1920,
+    "widths_seen": [
+      1920
+    ]
+  },
+  "phase": "winner",
+  "quality_label": "H265",
+  "region": "national",
+  "verdict": "candidate_ok"
+}

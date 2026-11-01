@@ -16,8 +16,14 @@ WORKDIR /app
 
 # Copy application files
 COPY server.py ./
-COPY vod_storage.py vod_playback_cache.py vod_history.py gen_template.py ./
+COPY vod_storage.py vod_playback_cache.py vod_history.py vod_revision.py gen_template.py ./
 COPY torrent_downloader.py ./
+# The dashboard button talks to the privileged publisher on the host through a
+# shared spool directory (scripts/mixed_bridge.py client). Only the transport
+# client is copied: this image deliberately has no adb, ssh or NTFS tooling, so
+# a compromised web container cannot reach the tablet or the USB LUN.
+COPY scripts/mixed_bridge.py ./scripts/mixed_bridge.py
+COPY scripts/mixed_cache_signal.py ./scripts/mixed_cache_signal.py
 COPY channels.json ./
 COPY generate_slate.sh ./
 COPY dashboard.html ./

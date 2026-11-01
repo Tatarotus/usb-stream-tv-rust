@@ -1,0 +1,82 @@
+{
+  "capture": {
+    "bytes": 123124584,
+    "requested_duration": 300.0,
+    "returncode": 0,
+    "stderr_categories": {},
+    "wall_seconds": 292.897
+  },
+  "catalog_name": "HISTORY 4K",
+  "category": "Documentarios",
+  "channel_id": "387622",
+  "duration_s": 300.0,
+  "filename": "History.trp",
+  "identity": "history",
+  "media": {
+    "audio": {
+      "audio_duration_s": 300.0,
+      "audio_gap_max_ms": 0.0,
+      "audio_overlaps": 50,
+      "audio_packets": 12920,
+      "audio_pts_delta_max_ms": 23.3,
+      "audio_pts_gaps_over_1000ms": 0,
+      "audio_pts_gaps_over_2000ms": 0,
+      "audio_pts_gaps_over_500ms": 0,
+      "audio_pts_max_gap_ms": 0.0
+    },
+    "audio_bit_rate": "130835",
+    "audio_channels": 2,
+    "audio_codec": "aac",
+    "audio_sample_rate": "44100",
+    "b_frames_seen": 1500,
+    "capture_coverage": 1.0,
+    "fps": "30/1",
+    "frame_window_s": 150,
+    "frames_decoded": 4500,
+    "has_b_frames": 1,
+    "height": 1080,
+    "heights_seen": [
+      1080
+    ],
+    "i_frames_seen": 750,
+    "idr_gap_max_s": 0.2,
+    "idr_gap_median_s": 0.2,
+    "keyframes_scanned": 1501,
+    "level": 40,
+    "media_duration_s": 300.0,
+    "p_frames_seen": 2250,
+    "pcr": {
+      "pcr_count": 3001,
+      "pcr_gaps_over_100ms": 0,
+      "pcr_gaps_over_40ms": 3000,
+      "pcr_max_gap_ms": 100.0,
+      "pcr_median_gap_ms": 100.0,
+      "pcr_pid": "0x101",
+      "pcr_pids": 1
+    },
+    "pix_fmt": "yuv420p",
+    "profile": "Main",
+    "slices": {
+      "b_frames": 3003,
+      "frames": 9016,
+      "i_frames": 1502,
+      "multislice_frames": 11,
+      "p_frames": 4510,
+      "slices_max": 2,
+      "slices_median": 1.0
+    },
+    "ts_kbps_total": 3283,
+    "video_codec": "h264",
+    "video_internal_gaps_over_1s": 0,
+    "video_kbps": 3018,
+    "video_span_s": 300.0,
+    "width": 1920,
+    "widths_seen": [
+      1920
+    ]
+  },
+  "phase": "winner",
+  "quality_label": "4K",
+  "region": "national",
+  "verdict": "candidate_ok"
+}

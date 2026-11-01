@@ -46,6 +46,9 @@ pub struct ResolverPolicy {
     pub namespace: String,
     pub capacity: CapacityPolicy,
     pub default_logical_size: u64,
+    /// Place categories directly at the volume root (`Abertos/`, ...).
+    /// The historical two-channel MVP nested them under `Favoritos/`.
+    pub root_categories: bool,
     /// Explicit opt-in for diagnostics. The default is strict: any rejection
     /// fails the whole resolution so the active mount never shrinks silently.
     pub allow_partial: bool,
@@ -57,16 +60,19 @@ impl Default for ResolverPolicy {
             namespace: DEFAULT_NAMESPACE.to_string(),
             capacity: CapacityPolicy::default(),
             default_logical_size: DEFAULT_LOGICAL_SIZE,
+            root_categories: true,
             allow_partial: false,
         }
     }
 }
 
 impl ResolverPolicy {
-    /// MVP policy: at most the two authorized channels.
+    /// Historical MVP policy: at most two authorized channels, nested under
+    /// `Favoritos/`, kept for the physical baseline tests.
     pub fn mvp_two_channels() -> Self {
         Self {
             capacity: CapacityPolicy::mvp_two_channels(),
+            root_categories: false,
             ..Self::default()
         }
     }
@@ -137,20 +143,24 @@ struct Candidate {
     bootstrap_id: String,
 }
 
-fn category_folder(category: &[String]) -> Vec<String> {
-    let mut folder = vec![FAVORITES_ROOT.to_string()];
-    if category.is_empty() {
+fn category_folder(category: &[String], root_categories: bool) -> Vec<String> {
+    let mut folder = Vec::new();
+    let mut components = category;
+    if let Some(first) = components.first() {
+        if first.eq_ignore_ascii_case(FAVORITES_ROOT) {
+            // An explicit `Favoritos/...` category keeps its own prefix.
+            folder.push(FAVORITES_ROOT.to_string());
+            components = &components[1..];
+        }
+    }
+    if folder.is_empty() && !root_categories {
+        folder.push(FAVORITES_ROOT.to_string());
+    }
+    if components.is_empty() {
         folder.push(FALLBACK_CATEGORY.to_string());
-        return folder;
+    } else {
+        folder.extend_from_slice(components);
     }
-    if category
-        .first()
-        .map(|c| c.eq_ignore_ascii_case(FAVORITES_ROOT))
-        .unwrap_or(false)
-    {
-        folder.clear();
-    }
-    folder.extend_from_slice(category);
     folder
 }
 
@@ -237,7 +247,7 @@ pub fn resolve_favorites<C: LiveCatalog>(
                 continue;
             }
         };
-        let folder = category_folder(&channel.category);
+        let folder = category_folder(&channel.category, policy.root_categories);
         seen_channels.insert(channel_key, favorite_id.to_string());
         file_ids.insert(file_id, channel.channel_id.clone());
         candidates.push(Candidate {
@@ -368,6 +378,46 @@ mod tests {
             vec!["Favoritos".to_string(), "Abertos".to_string()]
         );
         assert_eq!(sbt.file_id, stable_file_id("live", "207198"));
+    }
+
+    #[test]
+    fn default_policy_places_categories_at_the_volume_root() {
+        let resolution = resolve_favorites(
+            &["207198".into(), "214640".into()],
+            &catalog(),
+            1,
+            &ResolverPolicy::default(),
+        )
+        .unwrap();
+        for entry in &resolution.manifest.entries {
+            assert_eq!(entry.folder, vec!["Abertos".to_string()]);
+            assert!(!entry.path().starts_with("Favoritos/"));
+        }
+    }
+
+    #[test]
+    fn full_grade_of_sixteen_entries_is_accepted() {
+        let mut channels = Vec::new();
+        let mut ids = Vec::new();
+        for i in 0..16u32 {
+            let id = (100000 + i).to_string();
+            channels.push(live("live", &id, &format!("Channel {i}"), &["Abertos"]));
+            ids.push(id);
+        }
+        let resolution = resolve_favorites(
+            &ids,
+            &FakeCatalog(channels),
+            2,
+            &ResolverPolicy::default(),
+        )
+        .unwrap();
+        assert_eq!(resolution.manifest.entries.len(), 16);
+        assert_eq!(resolution.accepted_favorites, 16);
+        assert!(resolution
+            .manifest
+            .entries
+            .iter()
+            .all(|entry| entry.folder.len() == 1));
     }
 
     #[test]

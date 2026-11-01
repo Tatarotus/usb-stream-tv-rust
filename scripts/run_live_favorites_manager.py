@@ -29,17 +29,21 @@ from collections import Counter
 from urllib.parse import urlsplit
 
 from favorites_source_manager import (
+    DEFAULT_OUTPUT_PROFILE,
     FFmpegProvider,
     MAX_IDENTITY,
     OPEN_RE,
+    PROFILES,
     TS_PKT_SZ,
     TransportError,
     frame_bytes,
     parse_open,
 )
 from live_favorites_pcr import PcrBounder
+import build_mixed_media_package
 
 LOG = logging.getLogger("tv_live_favorites")
+MAX_MANIFEST_ENTRIES = 256
 
 
 def log_event(event: str, **fields):
@@ -123,12 +127,12 @@ def manifest_digest(manifest: dict) -> str:
     ))
     u32(len(entries))
     for entry in entries:
-        if entry["kind"] != "live":
-            raise ValueError("manifest contains non-Live entry")
+        if entry["kind"] not in ("live", "vod"):
+            raise ValueError("manifest contains unsupported entry")
         u32(entry["file_id"])
         string(entry["namespace"])
         string(entry["channel_id"])
-        out.append(1)
+        out.append(1 if entry["kind"] == "live" else 2)
         u32(len(entry["folder"]))
         for component in entry["folder"]:
             string(component)
@@ -167,9 +171,119 @@ def live_favorite_channels(live_cache_path: Path, favorites_path: Path) -> dict:
     return channels
 
 
+def file_id_for(channel_id: str) -> int:
+    value = 0x811C9DC5
+    for byte in b"live\0" + channel_id.encode("utf-8"):
+        value = ((value ^ byte) * 0x01000193) & 0xFFFFFFFF
+    return value
+
+
+def _expected_live_entries(config: dict) -> set:
+    """The exact Live entries a manifest must carry for this export.
+
+    Derived from the SAME builder the package is produced with, so the two can
+    never disagree about ``live_root``, category defaults, the ``.trp`` suffix
+    or filename validation: one source of truth, checked instead of duplicated.
+    """
+    entries = build_mixed_media_package.process_live_identities(config)
+    return {(tuple(entry["folder"]), entry["filename"], entry["channel_id"])
+            for entry in entries}
+
+
+def manifest_matches_export(manifest: dict, export_config_path: Path) -> None:
+    """The mounted manifest must be exactly the reviewed export identity set."""
+    config = json.loads(export_config_path.read_text())
+    # Pending/unavailable identities are intentionally absent from the mounted
+    # manifest; the snapshot reports them separately.
+    expected = _expected_live_entries(config)
+    actual = set()
+    for entry in manifest["entries"]:
+        if entry["kind"] == "vod":
+            continue
+        folder = tuple(entry["folder"])
+        # A Live entry lives under its category, optionally nested one level
+        # under ``live_root`` (the TV/ folder). Anything deeper is not a shape
+        # this manager builds, so it stays a hard error rather than a guess.
+        depth_ok = (len(folder) == 1
+                    or (len(folder) == 2 and folder[0] == str(config.get("live_root") or "")))
+        if not depth_ok:
+            raise ValueError("manifest entry is not a category path")
+        actual.add((folder, entry["filename"], entry["channel_id"]))
+        if entry["file_id"] != file_id_for(entry["channel_id"]):
+            raise ValueError("manifest file_id does not match the chosen candidate")
+        if entry["bootstrap_id"] != f"bootstrap-{entry['file_id']:08x}":
+            raise ValueError("manifest bootstrap id mismatch")
+    live_entries = sum(1 for entry in manifest["entries"] if entry["kind"] != "vod")
+    if len(actual) != live_entries:
+        raise ValueError("manifest carries duplicate Live entries")
+    if actual != expected:
+        raise ValueError("manifest does not match the export configuration")
+
+
+def export_allowlist_channels(export_config_path: Path, live_cache_path: Path) -> dict:
+    """Build the exact allowlist from the reviewed export configuration.
+
+    Only identities whose status is `approved` enter the mount. The chosen
+    candidate must exist in the Live catalog; personal favorites are not used
+    as a allowlist, so a better tested variant outside the favorites list is
+    permitted without editing the user's saved list.
+    """
+    if export_config_path.stat().st_size > 4 * 1024 * 1024:
+        raise ValueError("export config exceeds size limit")
+    config = json.loads(export_config_path.read_text())
+    if config.get("schema_version") != 1:
+        raise ValueError("unsupported export config schema")
+    if config.get("provisional"):
+        raise ValueError("provisional export is not mountable")
+    identities = config.get("identities")
+    if not isinstance(identities, list) or not 1 <= len(identities) <= MAX_MANIFEST_ENTRIES:
+        raise ValueError("export identity count outside the supported limit")
+    allowed = {}
+    for item in identities:
+        if not isinstance(item, dict):
+            raise ValueError("export identity is malformed")
+        status = item.get("status")
+        if status in ("pending", "pending_measurement", "unavailable"):
+            # Not mounted; only approved (native 1080p) identities enter the
+            # transport allowlist.
+            continue
+        if status != "approved":
+            raise ValueError("unsupported export status")
+        chosen = item.get("chosen")
+        if not isinstance(chosen, dict):
+            raise ValueError("export identity has no chosen candidate")
+        channel_id = str(chosen.get("channel_id", ""))
+        if not re.fullmatch(r"[1-9][0-9]{0,19}", channel_id):
+            raise ValueError("invalid chosen channel identity")
+        if channel_id in allowed:
+            raise ValueError("duplicate chosen candidate")
+        allowed[channel_id] = None
+    if not allowed:
+        raise ValueError("export config has no approved candidate")
+    if live_cache_path.stat().st_size > 64 * 1024 * 1024:
+        raise ValueError("Live cache exceeds size limit")
+    for row in json.loads(live_cache_path.read_text()):
+        if not isinstance(row, dict):
+            continue
+        channel_id = str(row.get("stream_id", ""))
+        if channel_id not in allowed or allowed[channel_id] is not None:
+            continue
+        if row.get("stream_type") != "live":
+            raise ValueError("chosen candidate is not a Live stream")
+        allowed[channel_id] = {
+            "id": channel_id,
+            "url": "{XTREAM_UPSTREAM}/live/{XTREAM_USER}/{XTREAM_PASS}/" + channel_id + ".ts",
+        }
+    missing = sorted(channel_id for channel_id, value in allowed.items() if value is None)
+    if missing:
+        raise ValueError("chosen candidate missing from Live catalog")
+    return allowed
+
+
 def read_config(manifest_path: Path, channels_path: Path | None = None, *,
                 live_cache_path: Path | None = None,
-                favorites_path: Path | None = None) -> tuple[dict, dict]:
+                favorites_path: Path | None = None,
+                export_config_path: Path | None = None) -> tuple[dict, dict]:
     if manifest_path.stat().st_size > 4 * 1024 * 1024:
         raise ValueError("manifest exceeds size limit")
     manifest = json.loads(manifest_path.read_text())
@@ -178,11 +292,17 @@ def read_config(manifest_path: Path, channels_path: Path | None = None, *,
     if not hmac.compare_digest(manifest_digest(manifest), manifest["manifest_id"]):
         raise ValueError("manifest digest mismatch")
     entries = manifest["entries"]
-    if not 1 <= len(entries) <= 2:
-        raise ValueError("physical MVP permits one or two Live files")
+    if not 1 <= len(entries) <= MAX_MANIFEST_ENTRIES:
+        raise ValueError("manifest entry count outside the supported limit")
     if len({e["file_id"] for e in entries}) != len(entries):
         raise ValueError("duplicate file_id")
-    if live_cache_path is not None:
+    if export_config_path is not None:
+        if channels_path is not None or favorites_path is not None:
+            raise ValueError("export mode excludes channels and favorites files")
+        if live_cache_path is None:
+            raise ValueError("export mode requires the Live catalog")
+        channels = export_allowlist_channels(export_config_path, live_cache_path)
+    elif live_cache_path is not None:
         if channels_path is not None or favorites_path is None:
             raise ValueError("Live cache mode requires favorites and no channels file")
         channels = live_favorite_channels(live_cache_path, favorites_path)
@@ -190,10 +310,14 @@ def read_config(manifest_path: Path, channels_path: Path | None = None, *,
         channels = json.loads(channels_path.read_text())
     else:
         raise ValueError("missing source catalog")
+    if export_config_path is not None:
+        manifest_matches_export(manifest, export_config_path)
     if not isinstance(channels, dict):
         raise ValueError("channels catalog must be keyed by channel ID")
     sources = {}
     for entry in entries:
+        if entry["kind"] == "vod":
+            continue
         channel_id = entry["channel_id"]
         channel = channels.get(channel_id)
         if not isinstance(channel, dict) or channel.get("id", channel_id) != channel_id:
@@ -219,20 +343,17 @@ def read_config(manifest_path: Path, channels_path: Path | None = None, *,
     return manifest, sources
 
 
-def ffmpeg_command(url: str, executable: str = "ffmpeg") -> list[str]:
-    # Keep all frames compatible with the Samsung 2013 decoder. The bootstrap
-    # uses the same 720p/30fps, baseline, single-slice, H.264 + AC3 profile.
-    cmd = FFmpegProvider(lambda _: None, executable).command(url)
+def ffmpeg_command(url: str, executable: str = "ffmpeg",
+                   profile_name: str = DEFAULT_OUTPUT_PROFILE) -> list[str]:
+    # Keep all frames compatible with the Samsung 2013 decoder. The approved
+    # profile is 1080p30 baseline, zero B-frames, one slice, AC3 384k/48k/2ch
+    # and -pcr_period 20; the bootstrap asset matches this geometry.
+    try:
+        profile = PROFILES[profile_name]
+    except KeyError as error:
+        raise ValueError("unknown output profile") from error
+    cmd = FFmpegProvider(lambda _: None, executable, profile).command(url)
     cmd.insert(1, "-nostdin")
-    at = cmd.index("-c:v")
-    cmd[at:at] = [
-        "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30",
-        "-pix_fmt", "yuv420p", "-g", "30", "-keyint_min", "30", "-sc_threshold", "0",
-        "-threads:v", "1", "-threads:a", "1", "-level:v", "3.1",
-        "-maxrate", "3000k", "-bufsize", "100k", "-muxrate", "6000000",
-    ]
-    params = cmd.index("-x264-params") + 1
-    cmd[params] += ":sliced-threads=0"
     return cmd
 
 
@@ -241,9 +362,13 @@ class LiveBridge(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
     def __init__(self, address, *, token: str, session: str, manifest: dict,
-                 sources: dict, ffmpeg: str = "ffmpeg"):
+                 sources: dict, ffmpeg: str = "ffmpeg",
+                 profile_name: str = DEFAULT_OUTPUT_PROFILE):
         if address[0] != "127.0.0.1":
             raise ValueError("bind must be IPv4 loopback; use a private tunnel")
+        if profile_name not in PROFILES:
+            raise ValueError("unknown output profile")
+        self.profile_name = profile_name
         self.token = token
         self.session = session
         self.manifest_id = manifest["manifest_id"]
@@ -298,7 +423,7 @@ class LiveBridge(socketserver.ThreadingTCPServer):
                 self.terminate(old[1])
             self._generation, self._epoch = generation, epoch
             process = subprocess.Popen(
-                ffmpeg_command(self.sources[identity], self.ffmpeg),
+                ffmpeg_command(self.sources[identity], self.ffmpeg, self.profile_name),
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
             )
             collect_stderr(process)
@@ -370,7 +495,7 @@ class LiveHandler(socketserver.BaseRequestHandler):
                 selector.register(client, selectors.EVENT_READ, "client")
                 selector.register(process.stdout, selectors.EVENT_READ, "media")
                 buffer = bytearray()
-                pcr_bounder = PcrBounder()
+                pcr_bounder = PcrBounder(PROFILES[self.server.profile_name].muxrate)
                 last_media = time.monotonic()
                 while process.poll() is None:
                     if time.monotonic() - last_media > 20:
@@ -452,9 +577,13 @@ def main():
     parser.add_argument("--session", required=True)
     parser.add_argument("--port", default=9123, type=int)
     parser.add_argument("--ffmpeg", default="ffmpeg")
+    parser.add_argument("--profile", default=DEFAULT_OUTPUT_PROFILE, choices=sorted(PROFILES))
+    parser.add_argument("--export-config", type=Path)
     args = parser.parse_args()
-    if args.live_cache and not args.favorites:
-        parser.error("--live-cache requires --favorites")
+    if args.live_cache and not (args.favorites or args.export_config):
+        parser.error("--live-cache requires --favorites or --export-config")
+    if args.export_config and not args.live_cache:
+        parser.error("--export-config requires --live-cache")
     if not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", args.session):
         parser.error("invalid mount session")
     if args.token_file.stat().st_size > 4096:
@@ -465,9 +594,11 @@ def main():
     try:
         manifest, sources = read_config(args.manifest, args.channels,
                                         live_cache_path=args.live_cache,
-                                        favorites_path=args.favorites)
+                                        favorites_path=args.favorites,
+                                        export_config_path=args.export_config)
         bridge = LiveBridge(("127.0.0.1", args.port), token=token, session=args.session,
-                            manifest=manifest, sources=sources, ffmpeg=args.ffmpeg)
+                            manifest=manifest, sources=sources, ffmpeg=args.ffmpeg,
+                            profile_name=args.profile)
     except (OSError, ValueError, KeyError):
         parser.error("invalid manifest/catalog/credentials; no source was started")
     stop = threading.Event()

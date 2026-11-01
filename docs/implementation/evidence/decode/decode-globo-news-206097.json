@@ -1,0 +1,26 @@
+{
+  "capture": {
+    "bytes": 52426996,
+    "requested_duration": 60.0,
+    "returncode": 0,
+    "stderr_categories": {
+      "decode_error": 1
+    },
+    "wall_seconds": 45.648
+  },
+  "catalog_name": "GLOBO NEWS FHD\u00b9",
+  "channel_id": "206097",
+  "decode": {
+    "categories": {
+      "decode_error": 1
+    },
+    "checked_seconds": 60.0,
+    "lines": 2,
+    "returncode": 0,
+    "wall_seconds": 7.531
+  },
+  "duration_s": 60.0,
+  "identity": "globo-news",
+  "status": "approved",
+  "verdict": "decode_errors"
+}

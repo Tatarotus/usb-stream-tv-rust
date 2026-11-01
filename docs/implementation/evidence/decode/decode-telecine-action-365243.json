@@ -1,0 +1,22 @@
+{
+  "capture": {
+    "bytes": 24297684,
+    "requested_duration": 60.0,
+    "returncode": 0,
+    "stderr_categories": {},
+    "wall_seconds": 39.833
+  },
+  "catalog_name": "TELECINE ACTION H265",
+  "channel_id": "365243",
+  "decode": {
+    "categories": {},
+    "checked_seconds": 60.0,
+    "lines": 0,
+    "returncode": 0,
+    "wall_seconds": 5.517
+  },
+  "duration_s": 60.0,
+  "identity": "telecine-action",
+  "status": "approved",
+  "verdict": "decode_ok"
+}

@@ -1,0 +1,644 @@
+{
+  "schema_version": 1,
+  "snapshot": {
+    "favorites_total": 120,
+    "live_favorites": 19,
+    "identities": 16,
+    "catalog": "catalog_cache/live_streams.json",
+    "source": "production snapshot 2026-10-27 (public IDs only)",
+    "candidates": 78
+  },
+  "identities": [
+    {
+      "identity": "band-news",
+      "category": "Noticias",
+      "filename": "Band News.trp",
+      "favorite_ids": [
+        "206080"
+      ],
+      "candidates": [
+        {
+          "channel_id": "206080",
+          "catalog_name": "BAND NEWS FHD¹",
+          "region": "national",
+          "quality_label": "FHD1"
+        },
+        {
+          "channel_id": "206081",
+          "catalog_name": "BAND NEWS FHD²",
+          "region": "national",
+          "quality_label": "FHD2"
+        },
+        {
+          "channel_id": "206082",
+          "catalog_name": "BAND NEWS HD¹",
+          "region": "national",
+          "quality_label": "HD1"
+        },
+        {
+          "channel_id": "206079",
+          "catalog_name": "BAND NEWS H265",
+          "region": "national",
+          "quality_label": "H265"
+        },
+        {
+          "channel_id": "206083",
+          "catalog_name": "BAND NEWS HD²",
+          "region": "national",
+          "quality_label": "HD2"
+        }
+      ]
+    },
+    {
+      "identity": "cnn-brasil",
+      "category": "Noticias",
+      "filename": "CNN Brasil.trp",
+      "favorite_ids": [
+        "206087"
+      ],
+      "candidates": [
+        {
+          "channel_id": "206087",
+          "catalog_name": "CNN BRASIL FHD¹",
+          "region": "national",
+          "quality_label": "FHD1"
+        },
+        {
+          "channel_id": "206088",
+          "catalog_name": "CNN BRASIL FHD²",
+          "region": "national",
+          "quality_label": "FHD2"
+        },
+        {
+          "channel_id": "206089",
+          "catalog_name": "CNN BRASIL HD¹",
+          "region": "national",
+          "quality_label": "HD1"
+        },
+        {
+          "channel_id": "206086",
+          "catalog_name": "CNN BRASIL H265",
+          "region": "national",
+          "quality_label": "H265"
+        },
+        {
+          "channel_id": "206090",
+          "catalog_name": "CNN BRASIL HD²",
+          "region": "national",
+          "quality_label": "HD2"
+        }
+      ]
+    },
+    {
+      "identity": "globo-news",
+      "category": "Noticias",
+      "filename": "Globo News.trp",
+      "favorite_ids": [
+        "206098"
+      ],
+      "candidates": [
+        {
+          "channel_id": "206098",
+          "catalog_name": "GLOBO NEWS FHD²",
+          "region": "national",
+          "quality_label": "FHD2"
+        },
+        {
+          "channel_id": "206097",
+          "catalog_name": "GLOBO NEWS FHD¹",
+          "region": "national",
+          "quality_label": "FHD1"
+        },
+        {
+          "channel_id": "206099",
+          "catalog_name": "GLOBO NEWS HD¹",
+          "region": "national",
+          "quality_label": "HD1"
+        }
+      ]
+    },
+    {
+      "identity": "record-news",
+      "category": "Noticias",
+      "filename": "Record News.trp",
+      "favorite_ids": [
+        "206111"
+      ],
+      "candidates": [
+        {
+          "channel_id": "206111",
+          "catalog_name": "RECORD NEWS FHD¹",
+          "region": "national",
+          "quality_label": "FHD1"
+        },
+        {
+          "channel_id": "206112",
+          "catalog_name": "RECORD NEWS FHD²",
+          "region": "national",
+          "quality_label": "FHD2"
+        },
+        {
+          "channel_id": "206113",
+          "catalog_name": "RECORD NEWS HD¹",
+          "region": "national",
+          "quality_label": "HD1"
+        },
+        {
+          "channel_id": "206110",
+          "catalog_name": "RECORD NEWS H265",
+          "region": "national",
+          "quality_label": "H265"
+        },
+        {
+          "channel_id": "206114",
+          "catalog_name": "RECORD NEWS HD²",
+          "region": "national",
+          "quality_label": "HD2"
+        }
+      ]
+    },
+    {
+      "identity": "band",
+      "category": "Abertos",
+      "filename": "Band.trp",
+      "favorite_ids": [
+        "207177",
+        "207171",
+        "207172"
+      ],
+      "candidates": [
+        {
+          "channel_id": "207177",
+          "catalog_name": "BAND RJ FHD²",
+          "region": "rj",
+          "quality_label": "FHD2"
+        },
+        {
+          "channel_id": "207178",
+          "catalog_name": "BAND RJ HD²",
+          "region": "rj",
+          "quality_label": "HD2"
+        },
+        {
+          "channel_id": "207171",
+          "catalog_name": "BAND SP FHD¹",
+          "region": "sp",
+          "quality_label": "FHD1"
+        },
+        {
+          "channel_id": "207172",
+          "catalog_name": "BAND SP FHD²",
+          "region": "sp",
+          "quality_label": "FHD2"
+        },
+        {
+          "channel_id": "207170",
+          "catalog_name": "BAND SP H265",
+          "region": "sp",
+          "quality_label": "H265"
+        },
+        {
+          "channel_id": "3917940",
+          "catalog_name": "BAND INTERIOR RJ HD²",
+          "region": "rj-interior",
+          "quality_label": "HD2"
+        },
+        {
+          "channel_id": "207173",
+          "catalog_name": "BAND SP HD¹",
+          "region": "national",
+          "quality_label": "HD1"
+        },
+        {
+          "channel_id": "207174",
+          "catalog_name": "BAND SP HD²",
+          "region": "national",
+          "quality_label": "HD2"
+        }
+      ]
+    },
+    {
+      "identity": "sbt",
+      "category": "Abertos",
+      "filename": "SBT.trp",
+      "favorite_ids": [
+        "207198"
+      ],
+      "candidates": [
+        {
+          "channel_id": "207198",
+          "catalog_name": "SBT RJ FHD¹",
+          "region": "rj",
+          "quality_label": "FHD1"
+        },
+        {
+          "channel_id": "207199",
+          "catalog_name": "SBT RJ HD¹",
+          "region": "rj",
+          "quality_label": "HD1"
+        },
+        {
+          "channel_id": "207192",
+          "catalog_name": "SBT SP FHD¹",
+          "region": "sp",
+          "quality_label": "FHD1"
+        },
+        {
+          "channel_id": "207193",
+          "catalog_name": "SBT SP FHD²",
+          "region": "sp",
+          "quality_label": "FHD2"
+        }
+      ]
+    },
+    {
+      "identity": "redetv",
+      "category": "Abertos",
+      "filename": "RedeTV.trp",
+      "favorite_ids": [
+        "208423"
+      ],
+      "candidates": [
+        {
+          "channel_id": "208423",
+          "catalog_name": "REDE TV FHD¹",
+          "region": "national",
+          "quality_label": "FHD1"
+        },
+        {
+          "channel_id": "208425",
+          "catalog_name": "REDE TV HD¹",
+          "region": "national",
+          "quality_label": "HD1"
+        },
+        {
+          "channel_id": "208422",
+          "catalog_name": "REDE TV H264²",
+          "region": "national",
+          "quality_label": "H264"
+        },
+        {
+          "channel_id": "208421",
+          "catalog_name": "REDE TV H265",
+          "region": "national",
+          "quality_label": "H265"
+        }
+      ]
+    },
+    {
+      "identity": "tv-cultura",
+      "category": "Abertos",
+      "filename": "TV Cultura.trp",
+      "favorite_ids": [
+        "208430"
+      ],
+      "candidates": [
+        {
+          "channel_id": "208430",
+          "catalog_name": "TV CULTURA FHD¹",
+          "region": "national",
+          "quality_label": "FHD1"
+        },
+        {
+          "channel_id": "208432",
+          "catalog_name": "TV CULTURA HD¹",
+          "region": "national",
+          "quality_label": "HD1"
+        },
+        {
+          "channel_id": "208434",
+          "catalog_name": "TV CULTURA SD¹",
+          "region": "national",
+          "quality_label": "SD1"
+        },
+        {
+          "channel_id": "208429",
+          "catalog_name": "TV CULTURA H265",
+          "region": "national",
+          "quality_label": "H265"
+        }
+      ]
+    },
+    {
+      "identity": "record",
+      "category": "Abertos",
+      "filename": "Record.trp",
+      "favorite_ids": [
+        "214640"
+      ],
+      "candidates": [
+        {
+          "channel_id": "214640",
+          "catalog_name": "RECORD TV RIO FHD²",
+          "region": "rj",
+          "quality_label": "FHD2"
+        },
+        {
+          "channel_id": "214639",
+          "catalog_name": "RECORD TV RIO FHD¹",
+          "region": "rj",
+          "quality_label": "FHD1"
+        },
+        {
+          "channel_id": "214641",
+          "catalog_name": "RECORD TV RIO HD¹",
+          "region": "rj",
+          "quality_label": "HD1"
+        },
+        {
+          "channel_id": "214642",
+          "catalog_name": "RECORD TV RIO HD²",
+          "region": "rj",
+          "quality_label": "HD2"
+        }
+      ]
+    },
+    {
+      "identity": "telecine-action",
+      "category": "Filmes",
+      "filename": "Telecine Action.trp",
+      "favorite_ids": [
+        "365244"
+      ],
+      "candidates": [
+        {
+          "channel_id": "365244",
+          "catalog_name": "TELECINE ACTION FHD¹",
+          "region": "national",
+          "quality_label": "FHD1"
+        },
+        {
+          "channel_id": "365245",
+          "catalog_name": "TELECINE ACTION FHD²",
+          "region": "national",
+          "quality_label": "FHD2"
+        },
+        {
+          "channel_id": "365246",
+          "catalog_name": "TELECINE ACTION HD¹",
+          "region": "national",
+          "quality_label": "HD1"
+        },
+        {
+          "channel_id": "365242",
+          "catalog_name": "TELECINE ACTION 4K",
+          "region": "national",
+          "quality_label": "4K"
+        },
+        {
+          "channel_id": "365243",
+          "catalog_name": "TELECINE ACTION H265",
+          "region": "national",
+          "quality_label": "H265"
+        },
+        {
+          "channel_id": "365247",
+          "catalog_name": "TELECINE ACTION HD²",
+          "region": "national",
+          "quality_label": "HD2"
+        }
+      ]
+    },
+    {
+      "identity": "history",
+      "category": "Documentarios",
+      "filename": "History.trp",
+      "favorite_ids": [
+        "387624"
+      ],
+      "candidates": [
+        {
+          "channel_id": "387624",
+          "catalog_name": "HISTORY FHD¹",
+          "region": "national",
+          "quality_label": "FHD1"
+        },
+        {
+          "channel_id": "387625",
+          "catalog_name": "HISTORY FHD²",
+          "region": "national",
+          "quality_label": "FHD2"
+        },
+        {
+          "channel_id": "387626",
+          "catalog_name": "HISTORY HD¹",
+          "region": "national",
+          "quality_label": "HD1"
+        },
+        {
+          "channel_id": "387622",
+          "catalog_name": "HISTORY 4K",
+          "region": "national",
+          "quality_label": "4K"
+        },
+        {
+          "channel_id": "387623",
+          "catalog_name": "HISTORY H265",
+          "region": "national",
+          "quality_label": "H265"
+        },
+        {
+          "channel_id": "387627",
+          "catalog_name": "HISTORY HD²",
+          "region": "national",
+          "quality_label": "HD2"
+        }
+      ]
+    },
+    {
+      "identity": "discovery-channel",
+      "category": "Documentarios",
+      "filename": "Discovery Channel.trp",
+      "favorite_ids": [
+        "387640"
+      ],
+      "candidates": [
+        {
+          "channel_id": "387640",
+          "catalog_name": "DISCOVERY CHANNEL FHD¹",
+          "region": "national",
+          "quality_label": "FHD1"
+        },
+        {
+          "channel_id": "387641",
+          "catalog_name": "DISCOVERY CHANNEL FHD²",
+          "region": "national",
+          "quality_label": "FHD2"
+        },
+        {
+          "channel_id": "387642",
+          "catalog_name": "DISCOVERY CHANNEL HD¹",
+          "region": "national",
+          "quality_label": "HD1"
+        },
+        {
+          "channel_id": "387638",
+          "catalog_name": "DISCOVERY CHANNEL 4K",
+          "region": "national",
+          "quality_label": "4K"
+        },
+        {
+          "channel_id": "387639",
+          "catalog_name": "DISCOVERY CHANNEL H265",
+          "region": "national",
+          "quality_label": "H265"
+        },
+        {
+          "channel_id": "387643",
+          "catalog_name": "DISCOVERY CHANNEL HD²",
+          "region": "national",
+          "quality_label": "HD2"
+        }
+      ]
+    },
+    {
+      "identity": "discovery-hh",
+      "category": "Variedades",
+      "filename": "Discovery HH.trp",
+      "favorite_ids": [
+        "387648"
+      ],
+      "candidates": [
+        {
+          "channel_id": "387648",
+          "catalog_name": "DISCOVERY H&H FHD¹",
+          "region": "national",
+          "quality_label": "FHD1"
+        },
+        {
+          "channel_id": "387649",
+          "catalog_name": "DISCOVERY H&H FHD²",
+          "region": "national",
+          "quality_label": "FHD2"
+        },
+        {
+          "channel_id": "387650",
+          "catalog_name": "DISCOVERY H&H HD¹",
+          "region": "national",
+          "quality_label": "HD1"
+        },
+        {
+          "channel_id": "387646",
+          "catalog_name": "DISCOVERY H&H 4K",
+          "region": "national",
+          "quality_label": "4K"
+        },
+        {
+          "channel_id": "387647",
+          "catalog_name": "DISCOVERY H&H H265",
+          "region": "national",
+          "quality_label": "H265"
+        },
+        {
+          "channel_id": "387651",
+          "catalog_name": "DISCOVERY H&H HD²",
+          "region": "national",
+          "quality_label": "HD2"
+        }
+      ]
+    },
+    {
+      "identity": "bbc-world",
+      "category": "Noticias",
+      "filename": "BBC World.trp",
+      "favorite_ids": [
+        "1765055"
+      ],
+      "candidates": [
+        {
+          "channel_id": "1765055",
+          "catalog_name": "BBC WORLD FHD¹",
+          "region": "national",
+          "quality_label": "FHD1"
+        },
+        {
+          "channel_id": "1765056",
+          "catalog_name": "BBC WORLD HD¹",
+          "region": "national",
+          "quality_label": "HD1"
+        }
+      ]
+    },
+    {
+      "identity": "sbt-news",
+      "category": "Noticias",
+      "filename": "SBT News.trp",
+      "favorite_ids": [
+        "3030726"
+      ],
+      "candidates": [
+        {
+          "channel_id": "3030726",
+          "catalog_name": "SBT NEWS FHD¹",
+          "region": "national",
+          "quality_label": "FHD1"
+        },
+        {
+          "channel_id": "3030727",
+          "catalog_name": "SBT NEWS FHD²",
+          "region": "national",
+          "quality_label": "FHD2"
+        },
+        {
+          "channel_id": "3030728",
+          "catalog_name": "SBT NEWS HD¹",
+          "region": "national",
+          "quality_label": "HD1"
+        },
+        {
+          "channel_id": "3030725",
+          "catalog_name": "SBT NEWS H265",
+          "region": "national",
+          "quality_label": "H265"
+        }
+      ]
+    },
+    {
+      "identity": "globo",
+      "category": "Abertos",
+      "filename": "Globo.trp",
+      "favorite_ids": [
+        "10006",
+        "10007"
+      ],
+      "candidates": [
+        {
+          "channel_id": "10006",
+          "catalog_name": "GLOBO RIO DE JANEIRO (RJ) FHD¹",
+          "region": "rj",
+          "quality_label": "FHD1"
+        },
+        {
+          "channel_id": "10007",
+          "catalog_name": "GLOBO RIO DE JANEIRO (RJ) FHD²",
+          "region": "rj",
+          "quality_label": "FHD2"
+        },
+        {
+          "channel_id": "10008",
+          "catalog_name": "GLOBO RIO DE JANEIRO (RJ) HD¹",
+          "region": "rj",
+          "quality_label": "HD1"
+        },
+        {
+          "channel_id": "10017",
+          "catalog_name": "GLOBO RJ ALTO LITORAL (RJ) FHD¹",
+          "region": "rj-interior",
+          "quality_label": "FHD1"
+        },
+        {
+          "channel_id": "10022",
+          "catalog_name": "GLOBO RJ PLANICE (RJ) FHD¹",
+          "region": "rj-interior",
+          "quality_label": "FHD1"
+        },
+        {
+          "channel_id": "10009",
+          "catalog_name": "GLOBO RIO DE JANEIRO (RJ) HD²",
+          "region": "national",
+          "quality_label": "HD2"
+        }
+      ]
+    }
+  ]
+}

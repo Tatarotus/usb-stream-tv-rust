@@ -36,6 +36,7 @@ use fuse_ntfs::contract::StreamBackend;
 use fuse_ntfs::favorites::runtime::{FavoritesRuntime, SourceTransport};
 use fuse_ntfs::favorites::startup::{FavoritesStartup, FavoritesStartupOptions};
 use fuse_ntfs::favorites::transport::TcpFrameTransport;
+use fuse_ntfs::mixed_vod_http::{parse_allowlist, MixedVodHttp};
 use fuse_ntfs::observability::{
     self, BootClock, Component, Event, EventKind, Observer, Reason, StderrSink, Worker,
 };
@@ -73,6 +74,25 @@ fn install_signals() {
 /// MPEG-TS null packets — so the kernel never sees a short read and the
 /// Samsung decoder keeps a stable 27 MHz clock while the engine recovers.
 struct NullBackend;
+
+/// VOD range transport wraps the existing Live backend without changing its
+/// feeder or channel-switch semantics. Only manifest-bound task ids are used.
+struct MixedBackend {
+    live: Arc<dyn StreamBackend>,
+    vod: MixedVodHttp,
+    sizes: std::collections::HashMap<String, u64>,
+}
+
+impl StreamBackend for MixedBackend {
+    fn serve_live(&self, file_id: u32, offset: u64, dst: &mut [u8], deadline_ms: u64) -> usize {
+        self.live.serve_live(file_id, offset, dst, deadline_ms)
+    }
+    fn serve_vod(&self, task_id: &str, offset: u64, dst: &mut [u8], _deadline_ms: u64) -> io::Result<usize> {
+        let size = self.sizes.get(task_id).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "unmapped VOD task"))?;
+        self.vod.read(task_id, offset, dst, *size)
+    }
+    fn on_open(&self) { self.live.on_open(); }
+}
 
 impl StreamBackend for NullBackend {
     fn serve_live(&self, _file_id: u32, _foff: u64, dst: &mut [u8], _deadline_ms: u64) -> usize {
@@ -376,7 +396,7 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let (mut template, favorites_runtime, favorites_media, favorites_token) =
+    let (mut template, favorites_runtime, favorites_media, favorites_token, vod_files) =
         match favorites_startup {
             Some(startup) => {
                 eprintln!(
@@ -391,6 +411,7 @@ fn main() {
                     Some(startup.runtime),
                     Some(startup.media_address),
                     Some(startup.token),
+                    startup.vod_files,
                 )
             }
             None => {
@@ -402,7 +423,7 @@ fn main() {
                         NtfsTemplate::synthesized()
                     }
                 };
-                (template, None, None, None)
+                (template, None, None, None, Vec::new())
             }
         };
     // Anti-cache tier 2: a fresh Volume Serial Number per mount forces the
@@ -438,7 +459,73 @@ fn main() {
     } else {
         None
     };
-    let backend = build_backend(target, engine_enabled, engine_handle.clone());
+    let mut backend = build_backend(target, engine_enabled, engine_handle.clone());
+    if !vod_files.is_empty() {
+        let addrs: Vec<&str> = args.iter().filter_map(|s| s.strip_prefix("--mixed-vod-address=")).collect();
+        let addr = match addrs.as_slice() {
+            [one] => one.parse::<std::net::SocketAddr>().ok().filter(|addr| addr.ip().is_loopback()),
+            _ => None,
+        };
+        let (addr, token) = match (addr, favorites_token.as_ref()) {
+            (Some(addr), Some(token)) => (addr, token.clone()),
+            _ => {
+                eprintln!("[x] VOD misto exige --mixed-vod-address=IP:PORT em loopback e token de favoritos");
+                std::process::exit(2);
+            }
+        };
+        let mut sizes = std::collections::HashMap::new();
+        for file in &vod_files {
+            if sizes.insert(file.task_id.clone(), file.logical_size).is_some() {
+                eprintln!("[x] VOD misto contém identificador duplicado");
+                std::process::exit(2);
+            }
+        }
+        let client = match MixedVodHttp::new(addr, token, Duration::from_millis(3500)) {
+            Ok(client) => client,
+            Err(error) => {
+                eprintln!("[x] Cliente VOD misto inválido: {error}");
+                std::process::exit(2);
+            }
+        };
+        // Optional `--mixed-vod-allowlist=PATH` pins every manifest-bound VOD
+        // task to the trusted content revision shipped in the package's
+        // `vod_allowlist.json`. Missing flag keeps the legacy size-only path;
+        // a present-but-malformed allowlist (or a size that disagrees with the
+        // manifest) aborts before the mount with one clear, non-sensitive
+        // message. The JSON is parsed by `parse_allowlist`, the same verifier
+        // covered by the crate's unit and package-level tests.
+        let allowlist_paths: Vec<&str> =
+            args.iter().filter_map(|s| s.strip_prefix("--mixed-vod-allowlist=")).collect();
+        let vod = match allowlist_paths.as_slice() {
+            [] => client,
+            [path] => {
+                let allowlist = match fs::read(path)
+                    .map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "arquivo ilegível")
+                    })
+                    .and_then(|bytes| parse_allowlist(&bytes, &sizes))
+                {
+                    Ok(allowlist) => allowlist,
+                    Err(error) => {
+                        eprintln!("[x] Allowlist VOD misto inválida: {error}");
+                        std::process::exit(2);
+                    }
+                };
+                match client.with_allowlist(allowlist) {
+                    Ok(client) => client,
+                    Err(error) => {
+                        eprintln!("[x] Allowlist VOD misto inválida: {error}");
+                        std::process::exit(2);
+                    }
+                }
+            }
+            _ => {
+                eprintln!("[x] VOD misto aceita apenas um --mixed-vod-allowlist=PATH");
+                std::process::exit(2);
+            }
+        };
+        backend = Arc::new(MixedBackend { live: backend, vod, sizes });
+    }
 
     // ---- spawn FIFO feeder when engine is enabled and target is not 'test' ----
     if engine_enabled && target != "test" {
@@ -457,6 +544,15 @@ fn main() {
             .with_observer(obs.clone());
     if let Some(runtime) = &favorites_runtime {
         server_builder = server_builder.with_favorites(runtime.clone());
+    }
+    if !vod_files.is_empty() {
+        server_builder = match server_builder.with_vod_files(vod_files) {
+            Ok(server) => server,
+            Err(error) => {
+                eprintln!("[x] Mapa VOD misto inválido: {error}");
+                std::process::exit(2);
+            }
+        };
     }
     let server = Arc::new(server_builder);
 

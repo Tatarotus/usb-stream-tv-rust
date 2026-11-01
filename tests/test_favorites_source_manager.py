@@ -1,13 +1,22 @@
 import pathlib
+import http.server
+import os
+import shutil
 import socket
 import struct
+import subprocess
 import sys
+import tempfile
+import threading
+import time
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import favorites_source_manager as fsm  # noqa: E402
+import live_favorites_pcr as live_pcr  # noqa: E402
+import probe_live_favorites_sources as probe  # noqa: E402
 
 
 class FrameTests(unittest.TestCase):
@@ -79,6 +88,99 @@ class ControlTests(unittest.TestCase):
 
 
 class MediaTests(unittest.TestCase):
+    def test_http_reconnect_options_do_not_apply_to_local_or_other_protocols(self):
+        provider = fsm.FFmpegProvider(lambda _: None, ffmpeg="ffmpeg")
+        expected = {"-reconnect": "1", "-reconnect_at_eof": "1",
+                    "-reconnect_streamed": "1", "-reconnect_on_network_error": "1",
+                    "-reconnect_delay_max": "5", "-rw_timeout": "10000000"}
+        for url in ("http://example.invalid/live", "https://example.invalid/live"):
+            command = provider.command(url)
+            for option, value in expected.items():
+                self.assertLess(command.index(option), command.index("-i"))
+                self.assertEqual(command[command.index(option) + 1], value)
+        for url in ("/tmp/recording.ts", "file:/tmp/recording.ts", "rtmp://host/live"):
+            command = provider.command(url)
+            for option in expected:
+                self.assertNotIn(option, command)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is required")
+    def test_http_stream_reconnects_after_clean_eof_without_restarting_encoder(self):
+        # An actual finite HTTP response emulates an IPTV source that closes at
+        # segment boundaries. No provider, external network or TV is involved.
+        fixture = subprocess.run([
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+            "-i", "testsrc2=size=160x90:rate=10", "-f", "lavfi", "-i",
+            "sine=frequency=1000:sample_rate=48000", "-t", "2", "-c:v", "libx264",
+            "-preset", "ultrafast", "-c:a", "aac", "-f", "mpegts", "pipe:1",
+        ], capture_output=True, timeout=15, check=True).stdout
+        requests = []
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                requests.append(self.path)
+                self.send_response(200)
+                self.send_header("Content-Type", "video/mp2t")
+                self.send_header("Content-Length", str(len(fixture)))
+                self.end_headers()
+                try:
+                    self.wfile.write(fixture)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+            def log_message(self, *_args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        provider = fsm.FFmpegProvider(lambda _: None, ffmpeg=shutil.which("ffmpeg"),
+                                      profile=fsm.PROFILES["1080p30"])
+        url = f"http://127.0.0.1:{server.server_port}/live.ts"
+        try:
+            with tempfile.TemporaryFile() as output:
+                process = subprocess.Popen(provider.command(url), stdout=output,
+                                           stderr=subprocess.DEVNULL)
+                try:
+                    deadline = time.monotonic() + 20
+                    while (len(requests) < 3 or os.fstat(output.fileno()).st_size < 3_000_000) \
+                            and process.poll() is None and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                    self.assertGreaterEqual(len(requests), 3, "HTTP source did not reconnect twice")
+                    self.assertIsNone(process.poll(), "encoder restarted or exited at HTTP EOF")
+                    self.assertGreaterEqual(os.fstat(output.fileno()).st_size, 3_000_000,
+                                            "encoder did not produce media")
+                finally:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
+                # The live bridge feeds complete TS packets through this exact
+                # filter. Ignore a possible incomplete terminal packet, as the
+                # bridge does on disconnection, and validate delivered output.
+                output.seek(0)
+                raw = output.read()
+                raw = raw[:len(raw) // 188 * 188]
+                bounder = live_pcr.PcrBounder(fsm.PROFILES["1080p30"].muxrate)
+                filtered = bounder.feed(raw)
+                with tempfile.NamedTemporaryFile(suffix=".ts") as delivered:
+                    delivered.write(filtered)
+                    delivered.flush()
+                    path = pathlib.Path(delivered.name)
+                    self.assertLessEqual(probe.pcr_metrics(path)["pcr_max_gap_ms"], 20.0)
+                    stream_data = probe.ffprobe_json([
+                        "-select_streams", "a:0", "-show_entries", "stream=codec_name",
+                        str(path),
+                    ], "ffprobe")
+                    self.assertEqual(stream_data["streams"][0]["codec_name"], "ac3")
+                    audio = probe.audio_metrics(path, 0)
+                    self.assertEqual(audio["audio_pts_gaps_over_500ms"], 0)
+                    self.assertLessEqual(audio["audio_overlap_max_ms"], 5.0)
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=5)
+
     def test_loopback_media_link_streams_one_authenticated_epoch(self):
         payload = bytes([0x47, 0x1F, 0xFF, 0x10]) + b"\xb2" * 184
         payload *= 8
@@ -154,8 +256,13 @@ class MediaTests(unittest.TestCase):
         self.assertIn("-b:a 384k", command)
         self.assertIn("-ar 48000", command)
         self.assertIn("-ac 2", command)
-        self.assertIn("-pcr_period 20", command)
+        self.assertIn("-pcr_period 19", command)
         self.assertIn("-f mpegts", command)
+        legacy = fsm.FFmpegProvider(lambda channel: "http://private/live.ts", ffmpeg="ffmpeg",
+                                    profile=fsm.PROFILES["720p30"]).command(
+                                        "http://private/live.ts")
+        self.assertIn("-pcr_period", legacy)
+        self.assertEqual(legacy[legacy.index("-pcr_period") + 1], "20")
 
 
 if __name__ == "__main__":

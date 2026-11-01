@@ -1,0 +1,22 @@
+{
+  "capture": {
+    "bytes": 25874816,
+    "requested_duration": 60.0,
+    "returncode": 0,
+    "stderr_categories": {},
+    "wall_seconds": 53.044
+  },
+  "catalog_name": "DISCOVERY H&H FHD\u00b9",
+  "channel_id": "387648",
+  "decode": {
+    "categories": {},
+    "checked_seconds": 60.0,
+    "lines": 0,
+    "returncode": 0,
+    "wall_seconds": 5.521
+  },
+  "duration_s": 60.0,
+  "identity": "discovery-hh",
+  "status": "approved",
+  "verdict": "decode_ok"
+}

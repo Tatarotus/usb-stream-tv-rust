@@ -313,9 +313,45 @@ def align_chunks(chunks: Iterable[bytes], max_payload: int = 64 * 1024) -> Itera
         yield bytes(buffer[:whole])
 
 
+@dataclass(frozen=True)
+class OutputProfile:
+    """Encoder/mux profile approved for the Samsung 2013 decoder."""
+
+    name: str
+    width: int
+    height: int
+    fps: int
+    level: str
+    video_kbps: int
+    maxrate_kbps: int
+    bufsize_kbps: int
+    muxrate: int
+    pcr_period_ms: int = 20
+    x264_profile: str = "baseline"
+
+    @property
+    def scale_filter(self) -> str:
+        return (
+            f"scale={self.width}:{self.height}:force_original_aspect_ratio=decrease,"
+            f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={self.fps}"
+        )
+
+
+PROFILES = {
+    # 19 ms keeps the effective PCR interval below the 20 ms ceiling after the
+    # muxer's rounding, so the fail-closed PcrBounder does not need to split a
+    # 1080p interval that has no NULL packet available (Astra review).
+    "1080p30": OutputProfile("1080p30", 1920, 1080, 30, "4.0", 3500, 4000, 500,
+                             6_000_000, pcr_period_ms=19),
+    # Historical physical baseline (two-channel MVP), kept for rollback tests.
+    "720p30": OutputProfile("720p30", 1280, 720, 30, "3.1", 2500, 3000, 100,
+                            6_000_000, pcr_period_ms=20),
+}
+DEFAULT_OUTPUT_PROFILE = "1080p30"
+
+
 class FakeProvider:
     """Deterministic provider for host tests; no ffmpeg or network."""
-
     def __init__(self, chunks: list[bytes], fail: bool = False):
         self.chunks = chunks
         self.fail = fail
@@ -339,17 +375,35 @@ class FFmpegProvider:
     most one process per active link and is not the global HUB process.
     """
 
-    def __init__(self, resolve_url: Callable[[str], Optional[str]], ffmpeg: Optional[str] = None):
+    def __init__(self, resolve_url: Callable[[str], Optional[str]], ffmpeg: Optional[str] = None,
+                 profile: "OutputProfile" = PROFILES[DEFAULT_OUTPUT_PROFILE]):
         self.resolve_url = resolve_url
         self.ffmpeg = ffmpeg or shutil.which("ffmpeg") or "ffmpeg"
+        self.profile = profile
         self.proc: Optional[subprocess.Popen] = None
 
     def command(self, url: str) -> list[str]:
+        profile = self.profile
+        # Live HTTP endpoints may close a chunk cleanly as well as disconnect
+        # mid-stream. Keep the encoder/transport epoch alive across either case.
+        # These are HTTP protocol options and must not be passed to file inputs
+        # used by offline probes (nor to other FFmpeg protocols).
+        http_reconnect = []
+        if re.match(r"^https?://", url, re.IGNORECASE):
+            http_reconnect = [
+                "-rw_timeout", "10000000",
+                "-reconnect", "1",
+                "-reconnect_at_eof", "1",
+                "-reconnect_streamed", "1",
+                "-reconnect_on_network_error", "1",
+                "-reconnect_delay_max", "5",
+            ]
         return [
             self.ffmpeg,
             "-hide_banner",
             "-loglevel",
             "error",
+            *http_reconnect,
             "-fflags",
             "+genpts+discardcorrupt",
             "-probesize",
@@ -362,18 +416,38 @@ class FFmpegProvider:
             "0:v:0",
             "-map",
             "0:a:0?",
+            "-vf",
+            profile.scale_filter,
+            "-pix_fmt",
+            "yuv420p",
+            "-g",
+            "30",
+            "-keyint_min",
+            "30",
+            "-sc_threshold",
+            "0",
             "-c:v",
             "libx264",
             "-profile:v",
-            "baseline",
+            profile.x264_profile,
+            "-level:v",
+            profile.level,
             "-preset",
             "ultrafast",
             "-tune",
             "zerolatency",
             "-x264-params",
-            "bframes=0:slices=1:keyint=30:min-keyint=30:scenecut=0:repeat-headers=1",
+            "bframes=0:slices=1:sliced-threads=0:keyint=30:min-keyint=30:scenecut=0:repeat-headers=1",
             "-b:v",
-            "2500k",
+            f"{profile.video_kbps}k",
+            "-maxrate",
+            f"{profile.maxrate_kbps}k",
+            "-bufsize",
+            f"{profile.bufsize_kbps}k",
+            "-threads:v",
+            "1",
+            "-threads:a",
+            "1",
             "-c:a",
             "ac3",
             "-b:a",
@@ -383,7 +457,9 @@ class FFmpegProvider:
             "-ac",
             "2",
             "-pcr_period",
-            "20",
+            str(profile.pcr_period_ms),
+            "-muxrate",
+            str(profile.muxrate),
             "-muxdelay",
             "0",
             "-muxpreload",

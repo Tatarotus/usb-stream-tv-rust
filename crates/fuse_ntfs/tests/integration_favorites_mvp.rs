@@ -42,17 +42,22 @@ fn exporter_manifest_is_accepted_by_rust_and_matches_catalog_identity() {
     fs::create_dir_all(&temp).unwrap();
     let layout = temp.join("layout.json");
     let output = temp.join("manifest.json");
+    let export = temp.join("export.json");
     let _ = fs::remove_file(&output);
-    fs::write(&layout, r#"{"files":[{"path":"/Favoritos/Abertos/SBT.trp","logical_size":4000000000},{"path":"/Favoritos/Abertos/Record.trp","logical_size":4000000000}]}"#).unwrap();
+    fs::write(&layout, r#"{"files":[{"path":"/Abertos/SBT.trp","logical_size":4000000000},{"path":"/Abertos/Record.trp","logical_size":4000000000}]}"#).unwrap();
+    fs::write(&export, r#"{"schema_version":1,"generation":1,"output_profile":"1080p30","identities":[{"identity":"sbt","category":"Abertos","filename":"SBT.trp","status":"approved","chosen":{"channel_id":"207198"},"candidates_tested":[{"channel_id":"207198"}]},{"identity":"record","category":"Abertos","filename":"Record.trp","status":"approved","chosen":{"channel_id":"214640"},"candidates_tested":[{"channel_id":"214640"}]}]}"#).unwrap();
     let status = Command::new("python3")
         .arg(root.join("scripts/build_live_favorites_manifest.py"))
-        .arg(&layout).arg(&output).args(["--sbt", SBT_ID, "--record", RECORD_ID])
+        .args(["--layout"]).arg(&layout)
+        .args(["--output"]).arg(&output)
+        .args(["--export"]).arg(&export)
         .status().unwrap();
     assert!(status.success());
     let manifest = Manifest::from_json(&fs::read(&output).unwrap()).unwrap();
     for entry in &manifest.entries {
         assert_eq!(entry.file_id, stable_file_id("live", &entry.channel_id));
-        assert_eq!(entry.path(), format!("Favoritos/Abertos/{}", entry.filename));
+        assert_eq!(entry.folder, vec!["Abertos".to_string()]);
+        assert_eq!(entry.path(), format!("Abertos/{}", entry.filename));
     }
     let _ = fs::remove_dir_all(temp);
 }
@@ -494,4 +499,209 @@ fn runtime_transport_and_fuse_path_commit_the_detected_file() {
         runtime.route(sbt.disk_start),
         MapRegion::File { file_id: 7, .. }
     ));
+}
+
+/// The deployment package is generated under `scratch/` (not committed). This
+/// test deliberately **fails** — never silently skips — when the chosen
+/// package or any of its artifacts is missing: a green run must mean the real
+/// package passed the same verifiers the tablet startup path uses.
+const CHOSEN_PACKAGE: &str = "../../scratch/mixed-staging/mixed-gen2-32abe7d7";
+const CHOSEN_PACKAGE_FALLBACK: &str = "scratch/mixed-staging/mixed-gen2-32abe7d7";
+
+const REQUIRED_ARTIFACTS: [&str; 6] = [
+    "favorites_manifest.json",
+    "favorites_layout.json",
+    "favorites_package.json",
+    "vod_allowlist.json",
+    "SHA256SUMS",
+    "favorites_template.sparse.gz",
+];
+
+/// `MIXED_STAGING_DIR` wins; otherwise the crate-relative path with the
+/// repository-root fallback used by the previous test.
+fn chosen_package_dir() -> std::path::PathBuf {
+    use std::path::{Path, PathBuf};
+
+    if let Ok(value) = std::env::var("MIXED_STAGING_DIR") {
+        let path = PathBuf::from(value);
+        assert!(
+            path.is_dir(),
+            "MIXED_STAGING_DIR={} não é um diretório",
+            path.display()
+        );
+        return path;
+    }
+    for candidate in [Path::new(CHOSEN_PACKAGE), Path::new(CHOSEN_PACKAGE_FALLBACK)] {
+        if candidate.is_dir() {
+            return candidate.to_path_buf();
+        }
+    }
+    panic!(
+        "pacote escolhido ausente: {CHOSEN_PACKAGE} (defina MIXED_STAGING_DIR para outro pacote)"
+    )
+}
+
+fn read_required(dir: &std::path::Path, name: &str) -> Vec<u8> {
+    let path = dir.join(name);
+    std::fs::read(&path).unwrap_or_else(|error| {
+        panic!(
+            "artefato obrigatório ausente ou ilegível: {} ({error})",
+            path.display()
+        )
+    })
+}
+
+/// Verifies every `SHA256SUMS` entry against the actual bytes using the
+/// crate's own SHA-256 (the crate has no external hashing dependency), and
+/// proves the index covers every required artifact.
+fn verify_sha256sums(dir: &std::path::Path) {
+    let text = String::from_utf8(read_required(dir, "SHA256SUMS"))
+        .expect("SHA256SUMS não é UTF-8");
+    let mut checked = 0usize;
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let (expected, name) = line
+            .split_once("  ")
+            .unwrap_or_else(|| panic!("linha SHA256SUMS inválida: {line:?}"));
+        assert_eq!(expected.len(), 64, "digest não canônico em {line:?}");
+        assert!(
+            expected
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "digest não canônico em {line:?}"
+        );
+        assert!(
+            !name.starts_with('/') && !name.split('/').any(|part| part == ".."),
+            "caminho inseguro no SHA256SUMS: {name}"
+        );
+        let bytes = std::fs::read(dir.join(name))
+            .unwrap_or_else(|error| panic!("SHA256SUMS cita {name}, ilegível: {error}"));
+        assert_eq!(sha256_hex(&bytes), expected, "hash divergente para {name}");
+        checked += 1;
+    }
+    assert!(
+        checked >= REQUIRED_ARTIFACTS.len(),
+        "SHA256SUMS tem apenas {checked} entradas"
+    );
+    for name in REQUIRED_ARTIFACTS
+        .iter()
+        .copied()
+        .filter(|name| *name != "SHA256SUMS")
+    {
+        assert!(
+            text.lines()
+                .any(|line| line.trim_end().ends_with(&format!("  {name}"))),
+            "SHA256SUMS não cobre {name}"
+        );
+    }
+}
+
+/// Structural proof of the chosen package with the Rust startup verifiers:
+/// `SHA256SUMS`, `Package::verify` (template archive + layout digests,
+/// `package_id`, path coverage), `Manifest::from_json`/`validate`,
+/// `Layout::parse`/`build_runtime_files` and `parse_allowlist`.
+///
+/// It does not mount anything: the physical NTFS enumeration by the Samsung
+/// decoder remains hardware validation.
+#[test]
+fn chosen_staging_package_validates_with_startup_verifiers() {
+    use fuse_ntfs::favorites::layout::{manifest_file_ids, Layout, Package};
+    use fuse_ntfs::favorites::manifest::{EntryKind, Manifest};
+    use fuse_ntfs::mixed_vod_http::{parse_allowlist, MixedVodHttp};
+
+    let dir = chosen_package_dir();
+    // Fail fast, naming the first missing artifact.
+    for name in REQUIRED_ARTIFACTS {
+        read_required(&dir, name);
+    }
+
+    // 1. Hashes and package digests, with the same `Package::verify` the
+    //    startup path runs before touching `/dev/fuse`.
+    verify_sha256sums(&dir);
+    let manifest_bytes = read_required(&dir, "favorites_manifest.json");
+    let layout_bytes = read_required(&dir, "favorites_layout.json");
+    let package_bytes = read_required(&dir, "favorites_package.json");
+    let archive_bytes = read_required(&dir, "favorites_template.sparse.gz");
+    let allowlist_bytes = read_required(&dir, "vod_allowlist.json");
+
+    let layout = Layout::parse(&layout_bytes).expect("layout inválido");
+    let package = Package::parse(&package_bytes).expect("favorites_package.json inválido");
+    package
+        .verify(&archive_bytes, &layout_bytes, &layout)
+        .expect("pacote não casa com o template e o layout");
+    // The archive fields declared by the package must describe this archive.
+    assert_eq!(package.template_sparse_bytes, archive_bytes.len() as u64);
+    assert_eq!(package.template_sparse_sha256, sha256_hex(&archive_bytes));
+    assert_eq!(package.layout_bytes, layout_bytes.len() as u64);
+    assert_eq!(package.layout_sha256, sha256_hex(&layout_bytes));
+    assert_eq!(package.volume_bytes, layout.volume_bytes);
+    assert_eq!(layout.volume_bytes, 128 * 1024 * 1024 * 1024);
+
+    // 2. Manifest identity and composition.
+    let manifest = Manifest::from_json(&manifest_bytes).expect("manifesto inválido");
+    manifest.validate().expect("manifesto não fecha");
+    assert_eq!(manifest.manifest_id, manifest.recompute_id());
+    assert_eq!(manifest.entries.len(), 122);
+    let live = manifest
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == EntryKind::Live)
+        .count();
+    let vod = manifest
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == EntryKind::Vod)
+        .count();
+    assert_eq!((live, vod), (2, 120));
+
+    // 3. Manifest <-> layout binding, through the startup call.
+    let map = manifest_file_ids(&manifest_bytes).expect("identidades do manifesto inválidas");
+    assert_eq!(map.manifest_id, manifest.manifest_id);
+    assert_eq!(map.vod_files.len(), 120);
+    assert_eq!(layout.files.len(), 122);
+    assert_eq!(package.files.len(), layout.files.len());
+    let (_extent_map, files) = layout
+        .build_runtime_files(&map.files)
+        .expect("layout não casa com o manifesto");
+    assert_eq!(files.len(), 122);
+    let vod_ids: std::collections::HashSet<u32> =
+        map.vod_files.iter().map(|file| file.file_id).collect();
+    assert_eq!(
+        files
+            .iter()
+            .filter(|file| !vod_ids.contains(&file.file_id))
+            .count(),
+        2
+    );
+
+    // 4. The real `vod_allowlist.json` passes the startup verifier with sizes
+    //    derived from the verified manifest, and the client pins that map.
+    let sizes: std::collections::HashMap<String, u64> = map
+        .vod_files
+        .iter()
+        .map(|file| (file.task_id.clone(), file.logical_size))
+        .collect();
+    assert_eq!(sizes.len(), 120);
+    let allowlist =
+        parse_allowlist(&allowlist_bytes, &sizes).expect("allowlist do pacote rejeitada");
+    assert_eq!(allowlist.len(), 120);
+    for file in &map.vod_files {
+        let (size, revision) = allowlist
+            .get(&file.task_id)
+            .unwrap_or_else(|| panic!("task VOD {} fora da allowlist", file.task_id));
+        assert_eq!(*size, file.logical_size);
+        assert!(
+            revision.starts_with("md5:")
+                || revision.starts_with("fs:")
+                || revision.starts_with("rev:")
+        );
+    }
+    let endpoint: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+    MixedVodHttp::new(
+        endpoint,
+        "0123456789abcdef0123456789abcdef".into(),
+        std::time::Duration::from_secs(1),
+    )
+    .unwrap()
+    .with_allowlist(allowlist)
+    .expect("cliente VOD rejeitou a allowlist validada");
 }

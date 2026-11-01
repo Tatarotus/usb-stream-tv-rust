@@ -9,7 +9,8 @@ and never depends on the network. Regenerate with:
 
 The resulting stream is 188-byte aligned, H.264 Constrained Baseline with
 bframes=0/slices=1/GOP 30 (1.0 s at 30 fps), AC3 384 kbit/s stereo 48 kHz and a
-PCR interval of at most 20 ms. A 6 Mbit/s constant transport mux emits PCRs
+PCR interval of at most 20 ms. The approved grade profile is 1080p30; the
+historical 720p30 profile remains selectable for baseline comparisons. A 6 Mbit/s constant transport mux emits PCRs
 between video frames; a bounded filter replaces existing NULL packets when
 FFmpeg's scheduler overshoots the requested 20 ms. Packet count and bitrate
 stay unchanged. The format and zero mux delay match the live source bridge.
@@ -17,6 +18,7 @@ stay unchanged. The format and zero mux delay match the live source bridge.
 
 from __future__ import annotations
 
+import argparse
 import pathlib
 import shutil
 import subprocess
@@ -31,6 +33,17 @@ PCR_MAX_STEP = PCR_HZ * 20 // 1000  # 20 ms
 ASSET = pathlib.Path(__file__).resolve().parents[1] / (
     "crates/fuse_ntfs/assets/live_favorites_bootstrap.ts"
 )
+PROFILES = {
+    # 19 ms keeps the effective PCR interval under the 20 ms ceiling after
+    # muxer rounding; the 720p physical baseline keeps the historical 20 ms.
+    "1080p30": {"width": 1920, "height": 1080, "level": "4.0",
+                 "video": "3500k", "maxrate": "4000k", "bufsize": "500k",
+                 "pcr_period": "19"},
+    "720p30": {"width": 1280, "height": 720, "level": "3.1",
+                "video": "2500k", "maxrate": "3000k", "bufsize": "100k",
+                "pcr_period": "20"},
+}
+DEFAULT_PROFILE = "1080p30"
 
 
 def ffmpeg() -> str:
@@ -40,7 +53,9 @@ def ffmpeg() -> str:
     return exe
 
 
-def generate_raw(path: pathlib.Path) -> None:
+def generate_raw(path: pathlib.Path, profile: str) -> None:
+    settings = PROFILES[profile]
+    size = f"{settings['width']}x{settings['height']}"
     cmd = [
         ffmpeg(),
         "-y",
@@ -50,7 +65,7 @@ def generate_raw(path: pathlib.Path) -> None:
         "-f",
         "lavfi",
         "-i",
-        "color=c=black:s=1280x720:r=30:d=2",
+        f"color=c=black:s={size}:r=30:d=2",
         "-f",
         "lavfi",
         "-i",
@@ -61,7 +76,7 @@ def generate_raw(path: pathlib.Path) -> None:
         "-profile:v",
         "baseline",
         "-level",
-        "3.1",
+        settings["level"],
         "-pix_fmt",
         "yuv420p",
         "-threads:v",
@@ -81,11 +96,11 @@ def generate_raw(path: pathlib.Path) -> None:
         "-sc_threshold",
         "0",
         "-b:v",
-        "2500k",
+        settings["video"],
         "-maxrate",
-        "3000k",
+        settings["maxrate"],
         "-bufsize",
-        "100k",
+        settings["bufsize"],
         "-c:a",
         "ac3",
         "-b:a",
@@ -95,7 +110,7 @@ def generate_raw(path: pathlib.Path) -> None:
         "-ac",
         "2",
         "-pcr_period",
-        "20",
+        settings["pcr_period"],
         "-muxrate",
         "6000000",
         "-muxdelay",
@@ -144,10 +159,13 @@ def validate(data: bytes) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--profile", choices=sorted(PROFILES), default=DEFAULT_PROFILE)
+    args = parser.parse_args()
     ASSET.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="tv-fav-bootstrap-") as tmp:
         raw = pathlib.Path(tmp) / "raw.ts"
-        generate_raw(raw)
+        generate_raw(raw, args.profile)
         bounder = PcrBounder()
         data = bounder.feed(raw.read_bytes()) + bounder.finish()
     validate(data)

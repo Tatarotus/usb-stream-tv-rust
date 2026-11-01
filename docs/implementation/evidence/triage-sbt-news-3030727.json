@@ -1,0 +1,21 @@
+{
+  "capture": {
+    "bytes": 0,
+    "returncode": 146,
+    "stderr_categories": {
+      "connection_timeout": 3,
+      "input_open_failed": 1
+    },
+    "wall_seconds": 10.623
+  },
+  "catalog_name": "SBT NEWS FHD\u00b2",
+  "category": "Noticias",
+  "channel_id": "3030727",
+  "duration_s": 20.0,
+  "filename": "SBT News.trp",
+  "identity": "sbt-news",
+  "phase": "triage",
+  "quality_label": "FHD2",
+  "region": "national",
+  "verdict": "no_media"
+}

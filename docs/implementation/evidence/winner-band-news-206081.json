@@ -1,0 +1,83 @@
+{
+  "capture": {
+    "bytes": 130057836,
+    "requested_duration": 300.0,
+    "returncode": 0,
+    "stderr_categories": {
+      "source_reconnect": 16
+    },
+    "wall_seconds": 104.248
+  },
+  "catalog_name": "BAND NEWS FHD\u00b2",
+  "category": "Noticias",
+  "channel_id": "206081",
+  "duration_s": 300.0,
+  "filename": "Band News.trp",
+  "identity": "band-news",
+  "media": {
+    "audio": {
+      "audio_duration_s": 299.98,
+      "audio_gap_max_ms": 1386.7,
+      "audio_overlaps": 0,
+      "audio_packets": 13904,
+      "audio_pts_delta_max_ms": 1408.0,
+      "audio_pts_gaps_over_1000ms": 1,
+      "audio_pts_gaps_over_2000ms": 0,
+      "audio_pts_gaps_over_500ms": 1,
+      "audio_pts_max_gap_ms": 1386.7
+    },
+    "audio_bit_rate": "130246",
+    "audio_channels": 2,
+    "audio_codec": "aac",
+    "audio_sample_rate": "48000",
+    "b_frames_seen": 0,
+    "capture_coverage": 0.9999,
+    "fps": "30000/1001",
+    "frame_window_s": 150,
+    "frames_decoded": 4459,
+    "has_b_frames": 0,
+    "height": 1080,
+    "heights_seen": [
+      1080
+    ],
+    "i_frames_seen": 56,
+    "idr_gap_max_s": 3.003,
+    "idr_gap_median_s": 3.003,
+    "keyframes_scanned": 109,
+    "level": 40,
+    "media_duration_s": 299.98,
+    "p_frames_seen": 4403,
+    "pcr": {
+      "pcr_count": 4502,
+      "pcr_gaps_over_100ms": 1,
+      "pcr_gaps_over_40ms": 4453,
+      "pcr_max_gap_ms": 1267.93,
+      "pcr_median_gap_ms": 66.73,
+      "pcr_pid": "0x100",
+      "pcr_pids": 1
+    },
+    "pix_fmt": "yuv420p",
+    "profile": "High",
+    "slices": {
+      "b_frames": 0,
+      "frames": 8958,
+      "i_frames": 109,
+      "multislice_frames": 0,
+      "p_frames": 8849,
+      "slices_max": 1,
+      "slices_median": 1.0
+    },
+    "ts_kbps_total": 3468,
+    "video_codec": "h264",
+    "video_internal_gaps_over_1s": 0,
+    "video_kbps": 6405,
+    "width": 1920,
+    "widths_seen": [
+      1920
+    ]
+  },
+  "phase": "winner",
+  "quality_label": "FHD2",
+  "region": "national",
+  "verdict": "candidate_ok"
+}

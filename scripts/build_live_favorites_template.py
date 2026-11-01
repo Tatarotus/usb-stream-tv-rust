@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Build a real, sparse-host NTFS MVP image without writing Live payload.
+"""Build a real, sparse-host NTFS grade image without writing Live payload.
 
 Only newly created scratch/live-favorites-template-* directories are accepted.
 The NTFS DATA runs are allocated (never NTFS sparse holes), while the outer
 image remains a sparse host file. This is offline metadata preparation only.
+
+The tree is supplied explicitly so the same generator serves the two-channel
+physical baseline and the full grade. Category directories live at the volume
+root; no intermediate `Favoritos` directory is created for the grade.
 """
 
 import argparse
@@ -24,6 +28,11 @@ SCRATCH = ROOT / "scratch"
 DEFAULT_VOLUME_BYTES = 128 * 1024**3
 DEFAULT_FILE_BYTES = 4_000_000_000
 MAX_PHYSICAL_BYTES = 256 * 1024**2
+MAX_FILES = 32
+MAX_PATH_COMPONENT = 200
+
+# Drop-in replacements keep the historical two-file baseline tree.
+MVP_PATHS = ("Favoritos/Abertos/SBT.trp", "Favoritos/Abertos/Record.trp")
 
 # The library allocates clusters and updates the bitmap/MFT/indexes. It does
 # not initialize payload, because the final raw-disk FUSE backend supplies it.
@@ -42,18 +51,54 @@ ALLOCATOR_C = r'''
 #include <ntfs-3g/dir.h>
 #include <ntfs-3g/endians.h>
 
+#define MAX_DEPTH 4
+
 static void die(const char *where) { perror(where); exit(1); }
-static ntfs_inode *make_child(ntfs_inode *parent, const char *name, mode_t type) {
+
+static void encode_name(const char *name, ntfschar *unicode, int *length) {
     size_t n = strlen(name);
+    if (n == 0 || n >= 64) { errno = EINVAL; die("name length"); }
+    for (size_t i = 0; i < n; i++) unicode[i] = cpu_to_le16((u16)(unsigned char)name[i]);
+    *length = (int)n;
+}
+
+typedef struct { char path[256]; ntfs_inode *inode; } DirCache;
+static DirCache cache[64];
+static int cache_len = 0;
+
+static ntfs_inode *dir_for(ntfs_volume *vol, ntfs_inode *root, const char *dirpath) {
+    for (int i = 0; i < cache_len; i++) {
+        if (strcmp(cache[i].path, dirpath) == 0) return cache[i].inode;
+    }
+    char parent[256];
+    snprintf(parent, sizeof(parent), "%s", dirpath);
+    char *slash = strrchr(parent, '/');
+    ntfs_inode *parent_inode = root;
+    if (slash) {
+        *slash = 0;
+        parent_inode = dir_for(vol, root, parent);
+    }
+    const char *name = slash ? slash + 1 : dirpath;
     ntfschar unicode[64];
-    if (n == 0 || n >= 64) { errno = EINVAL; die("name"); }
-    for (size_t i=0; i<n; i++) unicode[i] = cpu_to_le16((u16)(unsigned char)name[i]);
-    ntfs_inode *child = ntfs_create(parent, const_cpu_to_le32(0), unicode, (u8)n, type);
-    if (!child) die(name);
+    int length = 0;
+    encode_name(name, unicode, &length);
+    ntfs_inode *child = ntfs_create(parent_inode, const_cpu_to_le32(0),
+                                    unicode, (u8)length, S_IFDIR);
+    if (!child) die("ntfs_create directory");
+    if (cache_len >= 64) { errno = EINVAL; die("directory cache overflow"); }
+    snprintf(cache[cache_len].path, sizeof(cache[cache_len].path), "%s", dirpath);
+    cache[cache_len].inode = child;
+    cache_len++;
     return child;
 }
-static void make_file(ntfs_inode *dir, const char *name, s64 length, int comma) {
-    ntfs_inode *ni = make_child(dir, name, S_IFREG);
+
+static void make_file(ntfs_inode *dir, const char *name, s64 length,
+                      const char *path, int comma) {
+    ntfschar unicode[64];
+    int name_len = 0;
+    encode_name(name, unicode, &name_len);
+    ntfs_inode *ni = ntfs_create(dir, const_cpu_to_le32(0), unicode, (u8)name_len, S_IFREG);
+    if (!ni) die("ntfs_create file");
     ntfs_attr *na = ntfs_attr_open(ni, AT_DATA, AT_UNNAMED, 0);
     if (!na) die("ntfs_attr_open");
     if (ntfs_attr_truncate_solid(na, length)) die("ntfs_attr_truncate_solid");
@@ -68,7 +113,7 @@ static void make_file(ntfs_inode *dir, const char *name, s64 length, int comma) 
         }
         covered += run->length;
     }
-    if (covered * (s64)ni->vol->cluster_size < length) { errno=EINVAL; die("run coverage"); }
+    if (covered * (s64)ni->vol->cluster_size < length) { errno = EINVAL; die("run coverage"); }
     ntfs_attr_search_ctx *ctx = ntfs_attr_get_search_ctx(ni, NULL);
     if (!ctx || ntfs_attr_lookup(AT_DATA, AT_UNNAMED, 0, CASE_SENSITIVE, 0, NULL, 0, ctx))
         die("lookup DATA record");
@@ -82,7 +127,7 @@ static void make_file(ntfs_inode *dir, const char *name, s64 length, int comma) 
     ctx = ntfs_attr_get_search_ctx(ni, NULL);
     if (!ctx) die("FILE_NAME context");
     while (!ntfs_attr_lookup(AT_FILE_NAME, NULL, 0, CASE_SENSITIVE, 0, NULL, 0, ctx)) {
-        if (ctx->attr->non_resident) { errno=EINVAL; die("resident FILE_NAME"); }
+        if (ctx->attr->non_resident) { errno = EINVAL; die("resident FILE_NAME"); }
         FILE_NAME_ATTR *fn = (FILE_NAME_ATTR *)((u8 *)ctx->attr + le16_to_cpu(ctx->attr->value_offset));
         fn->data_size = cpu_to_sle64(length);
         fn->allocated_size = cpu_to_sle64(na->allocated_size);
@@ -90,36 +135,57 @@ static void make_file(ntfs_inode *dir, const char *name, s64 length, int comma) 
     }
     if (errno != ENOENT) die("walk FILE_NAME");
     ntfs_attr_put_search_ctx(ctx);
-    printf("%s{\"path\":\"/Favoritos/Abertos/%s\",\"mft_inode\":%" PRIu64
+    printf("%s{\"path\":\"/%s\",\"mft_inode\":%" PRIu64
            ",\"logical_size\":%" PRId64 ",\"initialized_size\":%" PRId64 ",\"runs\":[",
-           comma ? "," : "", name, (uint64_t)ni->mft_no, (int64_t)length, (int64_t)na->initialized_size);
+           comma ? "," : "", path, (uint64_t)ni->mft_no, (int64_t)length,
+           (int64_t)na->initialized_size);
     int first = 1;
-    for (runlist_element *run=na->rl; run->length; run++) {
+    for (runlist_element *run = na->rl; run->length; run++) {
         printf("%s{\"vcn\":%" PRId64 ",\"lcn\":%" PRId64 ",\"clusters\":%" PRId64 "}",
             first ? "" : ",", (int64_t)run->vcn, (int64_t)run->lcn, (int64_t)run->length);
-        first=0;
+        first = 0;
     }
     printf("]}");
     ntfs_attr_close(na);
     if (ntfs_inode_close_in_dir(ni, dir)) die("close file/index sync");
 }
+
 int main(int argc, char **argv) {
-    if (argc != 3) return 2;
-    char *end=NULL;
+    if (argc < 4) return 2;
+    char *end = NULL;
     s64 length = strtoll(argv[2], &end, 10);
     if (!end || *end || length < 4096) return 2;
     ntfs_volume *vol = ntfs_mount(argv[1], NTFS_MNT_EXCLUSIVE);
     if (!vol) die("ntfs_mount");
     ntfs_inode *root = ntfs_inode_open(vol, FILE_root);
     if (!root) die("root");
-    ntfs_inode *favorites = make_child(root, "Favoritos", S_IFDIR);
-    ntfs_inode *open = make_child(favorites, "Abertos", S_IFDIR);
     printf("{\"cluster_size\":%u,\"files\":[", vol->cluster_size);
-    make_file(open, "SBT.trp", length, 0);
-    make_file(open, "Record.trp", length, 1);
+    for (int arg = 3; arg < argc; arg++) {
+        char *copy = strdup(argv[arg]);
+        if (!copy) die("strdup");
+        char *last = strrchr(copy, '/');
+        if (!last) { errno = EINVAL; die("path needs directory and file"); }
+        *last = 0;
+        if (strchr(copy, '/') || *copy == 0) { errno = EINVAL; die("single category level"); }
+        ntfs_inode *dir = dir_for(vol, root, copy);
+        make_file(dir, last + 1, length, argv[arg], arg == 3 ? 0 : 1);
+        free(copy);
+    }
     printf("]}\n");
-    if (ntfs_inode_close_in_dir(open, favorites)) die("close Abertos");
-    if (ntfs_inode_close_in_dir(favorites, root)) die("close Favoritos");
+    while (cache_len > 0) {
+        cache_len--;
+        char parent[256];
+        snprintf(parent, sizeof(parent), "%s", cache[cache_len].path);
+        char *slash = strrchr(parent, '/');
+        ntfs_inode *parent_inode = root;
+        if (slash) {
+            *slash = 0;
+            for (int i = 0; i < cache_len; i++) {
+                if (strcmp(cache[i].path, parent) == 0) { parent_inode = cache[i].inode; break; }
+            }
+        }
+        if (ntfs_inode_close_in_dir(cache[cache_len].inode, parent_inode)) die("close directory");
+    }
     if (ntfs_inode_close(root)) die("close root");
     if (ntfs_umount(vol, FALSE)) die("ntfs_umount");
     return 0;
@@ -151,10 +217,39 @@ def validate_output_dir(path):
     return path
 
 
-def validate_map(data, volume_bytes, file_bytes):
+def validate_paths(paths):
+    if not isinstance(paths, (list, tuple)) or not 1 <= len(paths) <= MAX_FILES:
+        raise ValueError("File list outside the supported limit")
+    cleaned = []
+    for path in paths:
+        if not isinstance(path, str) or path.startswith("/") or "\\" in path:
+            raise ValueError("Invalid relative NTFS path")
+        components = path.split("/")
+        if not 2 <= len(components) <= 3:
+            raise ValueError("Grade files live in one category directory")
+        for component in components:
+            if not component or component in (".", "..") or component.startswith("."):
+                raise ValueError("Invalid path component")
+            if not component.isascii():
+                raise ValueError("NTFS names must be ASCII for the 2013 firmware")
+            if len(component.encode("utf-16-le")) > MAX_PATH_COMPONENT:
+                raise ValueError("NTFS name too long")
+            if set(component) & set('<>:"/\\|?*'):
+                raise ValueError("Reserved NTFS character")
+        if not components[-1].lower().endswith(".trp"):
+            raise ValueError("Grade files must use .trp")
+        cleaned.append("/".join(components))
+    if len(set(path.lower() for path in cleaned)) != len(cleaned):
+        raise ValueError("Duplicate case-insensitive NTFS path")
+    return cleaned
+
+
+def validate_map(data, volume_bytes, file_bytes, expected_paths):
     cluster_size = data["cluster_size"]
-    if cluster_size != 4096 or len(data["files"]) != 2:
+    if cluster_size != 4096 or len(data["files"]) != len(expected_paths):
         raise ValueError("Unexpected NTFS cluster geometry or file count")
+    if {item["path"] for item in data["files"]} != {"/" + path for path in expected_paths}:
+        raise ValueError("Layout paths do not match the requested tree")
     physical = []
     for item in data["files"]:
         if item["logical_size"] != file_bytes or item["initialized_size"] != file_bytes:
@@ -167,13 +262,16 @@ def validate_map(data, volume_bytes, file_bytes):
             end = start + run["clusters"] * cluster_size
             if start < cluster_size or end > volume_bytes:
                 raise ValueError("Run outside volume")
-            physical.append((start, end))
+            physical.append((start, end, item["path"]))
             covered += run["clusters"]
         if covered * cluster_size < file_bytes:
             raise ValueError("Incomplete runlist")
     physical.sort()
-    if any(left[1] > right[0] for left, right in zip(physical, physical[1:])):
-        raise ValueError("Overlapping DATA allocation")
+    for left, right in zip(physical, physical[1:]):
+        if left[1] > right[0]:
+            raise ValueError(f"Overlapping DATA allocation: {left[2]} / {right[2]}")
+    if len({item["mft_inode"] for item in data["files"]}) != len(data["files"]):
+        raise ValueError("Duplicate MFT record numbers")
 
 
 def validate_bitmap(bitmap, data):
@@ -196,71 +294,86 @@ def validate_bitmap(bitmap, data):
                     raise ValueError("Unallocated DATA cluster")
 
 
+def _data_segments(fd, size):
+    """Host data extents, read through a raw fd (never a buffered object).
+
+    Mixing ``os.lseek`` on a file descriptor with a buffered Python object makes
+    ``read()`` serve stale read-ahead bytes from the wrong offset, which
+    silently corrupts the packed metadata. All extent walking therefore uses
+    the raw descriptor only.
+    """
+    segments = []
+    position = 0
+    while position < size:
+        try:
+            start = os.lseek(fd, position, os.SEEK_DATA)
+        except OSError as error:
+            if error.errno == errno.ENXIO:
+                break
+            raise
+        end = min(os.lseek(fd, start, os.SEEK_HOLE), size)
+        if end <= start:
+            break
+        segments.append((start, end))
+        position = end
+    return segments
+
+
 def pack_sparse(image, output):
     """SPARSE01 format already understood by the project's sparse_unpack."""
     total_size = image.stat().st_size
-    with image.open("rb") as source, output.open("xb") as target:
-        with gzip.GzipFile(filename="", mode="wb", fileobj=target, compresslevel=9, mtime=0) as compressed:
-            compressed.write(b"SPARSE01" + struct.pack("<Q", total_size))
-            position = 0
-            while position < total_size:
-                try:
-                    start = os.lseek(source.fileno(), position, os.SEEK_DATA)
-                except OSError as error:
-                    if error.errno == errno.ENXIO:
-                        break
-                    raise
-                end = min(os.lseek(source.fileno(), start, os.SEEK_HOLE), total_size)
-                source.seek(start)
-                position = start
-                while position < end:
-                    block = source.read(min(1024**2, end - position))
-                    if not block:
-                        raise RuntimeError("Unexpected EOF while packing metadata")
-                    compressed.write(struct.pack("<QI", position, len(block)))
-                    compressed.write(block)
-                    position += len(block)
-            compressed.write(struct.pack("<Q", 0xffffffffffffffff))
+    fd = os.open(image, os.O_RDONLY)
+    try:
+        segments = _data_segments(fd, total_size)
+        with output.open("xb") as target:
+            with gzip.GzipFile(filename="", mode="wb", fileobj=target, compresslevel=9, mtime=0) as compressed:
+                compressed.write(b"SPARSE01" + struct.pack("<Q", total_size))
+                for start, end in segments:
+                    position = start
+                    while position < end:
+                        count = min(1024**2, end - position)
+                        block = os.pread(fd, count, position)
+                        if len(block) != count:
+                            raise RuntimeError("Unexpected EOF while packing metadata")
+                        compressed.write(struct.pack("<QI", position, count))
+                        compressed.write(block)
+                        position += count
+                compressed.write(struct.pack("<Q", 0xffffffffffffffff))
+    finally:
+        os.close(fd)
     return hashlib.sha256(output.read_bytes()).hexdigest()
 
 
 def verify_data_zero(image, data):
     """Read only allocated host intersections; host holes are guaranteed zero."""
     size = image.stat().st_size
-    segments = []
-    with image.open("rb") as source:
-        position = 0
-        while position < size:
-            try:
-                start = os.lseek(source.fileno(), position, os.SEEK_DATA)
-            except OSError as error:
-                if error.errno == errno.ENXIO:
-                    break
-                raise
-            end = min(os.lseek(source.fileno(), start, os.SEEK_HOLE), size)
-            segments.append((start, end))
-            position = end
+    fd = os.open(image, os.O_RDONLY)
+    try:
+        segments = _data_segments(fd, size)
         for item in data["files"]:
             for run in item["runs"]:
                 lo = run["lcn"] * data["cluster_size"]
                 hi = lo + run["clusters"] * data["cluster_size"]
                 for start, end in segments:
                     left, right = max(lo, start), min(hi, end)
-                    if left >= right:
-                        continue
-                    source.seek(left)
                     while left < right:
-                        block = source.read(min(1024**2, right - left))
-                        if not block or any(block):
+                        count = min(1024**2, right - left)
+                        block = os.pread(fd, count, left)
+                        if len(block) != count or any(block):
                             raise ValueError("Allocated DATA contains nonzero host bytes")
-                        left += len(block)
+                        left += count
+    finally:
+        os.close(fd)
 
 
-def build(output_dir=None, volume_bytes=DEFAULT_VOLUME_BYTES, file_bytes=DEFAULT_FILE_BYTES):
+def build(paths, output_dir=None, volume_bytes=DEFAULT_VOLUME_BYTES,
+          file_bytes=DEFAULT_FILE_BYTES):
+    paths = validate_paths(paths)
     if volume_bytes < 128 * 1024**2 or volume_bytes > DEFAULT_VOLUME_BYTES or volume_bytes % 4096:
         raise ValueError("Volume must be cluster-aligned and between 128 MiB and 128 GiB")
-    if file_bytes < 4096 or file_bytes * 2 > volume_bytes * 3 // 4:
-        raise ValueError("MVP files exceed safe volume capacity")
+    reserve = min(1024**3, volume_bytes // 8)
+    if file_bytes < 4096 or file_bytes * len(paths) > volume_bytes - reserve:
+        raise ValueError("Grade files exceed safe volume capacity")
     for program in ("cc", "mkntfs", "ntfsinfo", "ntfsls", "ntfscat"):
         if not shutil.which(program):
             raise RuntimeError(f"Missing required program: {program}")
@@ -278,10 +391,11 @@ def build(output_dir=None, volume_bytes=DEFAULT_VOLUME_BYTES, file_bytes=DEFAULT
     (directory / "mkntfs.log").write_text(mkntfs.stdout + mkntfs.stderr)
     assert_physical_budget(image)
     allocator = directory / "allocate_live_files"
-    run(["cc", "-Wall", "-Wextra", "-Werror", "-O2", "-x", "c", "-", "-lntfs-3g", "-o", str(allocator)], input=ALLOCATOR_C)
-    result = json.loads(run([str(allocator), str(image), str(file_bytes)]))
+    run(["cc", "-Wall", "-Wextra", "-Werror", "-O2", "-x", "c", "-", "-lntfs-3g", "-o", str(allocator)],
+        input=ALLOCATOR_C)
+    result = json.loads(run([str(allocator), str(image), str(file_bytes)] + paths))
     assert_physical_budget(image)
-    validate_map(result, volume_bytes, file_bytes)
+    validate_map(result, volume_bytes, file_bytes, paths)
     bitmap = subprocess.run(["ntfscat", str(image), "/$Bitmap"], check=True, capture_output=True).stdout
     validate_bitmap(bitmap, result)
     verify_data_zero(image, result)
@@ -289,14 +403,21 @@ def build(output_dir=None, volume_bytes=DEFAULT_VOLUME_BYTES, file_bytes=DEFAULT
         info = run(["ntfsinfo", "-v", "-F", item["path"], str(image)])
         if "<HOLE>" in info or "SPARSE_FILE" in info:
             raise RuntimeError("Independent NTFS reader detected sparse DATA")
-        (directory / (Path(item["path"]).name + ".ntfsinfo.txt")).write_text(info)
-    listing = run(["ntfsls", "-p", "/Favoritos/Abertos", str(image)])
-    if "SBT.trp" not in listing or "Record.trp" not in listing:
-        raise RuntimeError("Independent reader did not enumerate both files")
-    (directory / "ntfsls.txt").write_text(listing)
-    # Inspect the I30 directory index as well as the per-file DATA attribute.
-    directory_info = run(["ntfsinfo", "-v", "-F", "/Favoritos/Abertos", str(image)])
-    (directory / "Abertos.ntfsinfo.txt").write_text(directory_info)
+        safe = item["path"].strip("/").replace("/", "__")
+        (directory / (safe + ".ntfsinfo.txt")).write_text(info)
+    directories = sorted({"/" + path.rsplit("/", 1)[0] for path in paths})
+    listing_all = []
+    for directory_path in directories:
+        listing = run(["ntfsls", "-p", directory_path, str(image)])
+        listing_all.append(f"== {directory_path}\n{listing}")
+        for path in paths:
+            if "/" + path.rsplit("/", 1)[0] == directory_path:
+                if path.rsplit("/", 1)[1] not in listing:
+                    raise RuntimeError(f"Independent reader did not enumerate {path}")
+        directory_info = run(["ntfsinfo", "-v", "-F", directory_path, str(image)])
+        safe_dir = directory_path.strip("/").replace("/", "__")
+        (directory / (safe_dir + ".ntfsinfo.txt")).write_text(directory_info)
+    (directory / "ntfsls.txt").write_text("\n".join(listing_all))
     result.update(schema_version=1, volume_bytes=volume_bytes,
                   host_physical_bytes=assert_physical_budget(image),
                   note="Offline virtual metadata only; no source IDs, media transport or bootstrap included")
@@ -320,9 +441,18 @@ def main():
     parser.add_argument("--output-dir")
     parser.add_argument("--volume-bytes", type=int, default=DEFAULT_VOLUME_BYTES)
     parser.add_argument("--file-bytes", type=int, default=DEFAULT_FILE_BYTES)
+    parser.add_argument("--path", action="append",
+                        help="relative NTFS path such as Abertos/SBT.trp; repeatable")
+    parser.add_argument("--mvp", action="store_true",
+                        help="build the historical two-channel Favoritos/Abertos tree")
     args = parser.parse_args()
+    paths = list(args.path or ())
+    if args.mvp:
+        paths = list(MVP_PATHS)
+    if not paths:
+        parser.error("provide --path or --mvp")
     try:
-        directory, result = build(args.output_dir, args.volume_bytes, args.file_bytes)
+        directory, result = build(paths, args.output_dir, args.volume_bytes, args.file_bytes)
     except subprocess.CalledProcessError as error:
         parser.exit(1, (error.stderr or str(error)) + "\n")
     except (ValueError, RuntimeError) as error:

@@ -16,6 +16,7 @@
 //! cast, reply payload areas are always zero-initialized before fields are
 //! written, and all mutex poisoning is recovered.
 
+use std::collections::HashMap;
 use std::io;
 use std::os::unix::io::RawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -55,6 +56,15 @@ pub const OUT_HDR_SZ: usize = std::mem::size_of::<fuse_out_header>();
 /// Size of the fixed request header.
 const IN_HDR_SZ: usize = std::mem::size_of::<fuse_in_header>();
 
+/// Immutable VOD identity and exact length associated with an NTFS extent.
+/// The identifier is an opaque server task id, never a URL or credential.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VodFile {
+    pub file_id: u32,
+    pub task_id: String,
+    pub logical_size: u64,
+}
+
 /// The VFS service bound to a backend. Shared by the session loop.
 pub struct NtfsServer {
     pub template: NtfsTemplate,
@@ -65,6 +75,7 @@ pub struct NtfsServer {
     pub obs: Observer,
     /// Opt-in favorites route. `None` preserves the Single Live/VOD path.
     pub favorites: Option<Arc<FavoritesRuntime>>,
+    vod_files: HashMap<u32, VodFile>,
 }
 
 impl NtfsServer {
@@ -82,6 +93,7 @@ impl NtfsServer {
             deadline_ms: DEFAULT_DEADLINE_MS,
             obs: Observer::disabled(),
             favorites: None,
+            vod_files: HashMap::new(),
         }
     }
 
@@ -100,22 +112,57 @@ impl NtfsServer {
         self
     }
 
+    /// Bind immutable VOD identities to their existing, validated disk runs.
+    /// This must be called after `with_favorites`; no VOD identity may overlap
+    /// a Live identity, and every byte must be backed by a matching extent.
+    pub fn with_vod_files(mut self, files: Vec<VodFile>) -> io::Result<Self> {
+        let runtime = self.favorites.as_ref().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "VOD files require a validated extent map")
+        })?;
+        let mut mapped = HashMap::new();
+        for file in files {
+            if file.logical_size == 0 || file.task_id.len() != 8 ||
+                !file.task_id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid VOD identity or size"));
+            }
+            if runtime.bootstrap(file.file_id).is_some() {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "VOD identity collides with Live"));
+            }
+            let extents = runtime.map().file_extents(file.file_id);
+            if extents.is_empty() || extents.iter().map(|e| e.file_end()).max() != Some(file.logical_size) {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "VOD extent size mismatch"));
+            }
+            if mapped.insert(file.file_id, file).is_some() {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "duplicate VOD file id"));
+            }
+        }
+        self.vod_files = mapped;
+        Ok(self)
+    }
+
     /// Serves one FUSE_READ payload for `nodeid`, always fully populating
     /// `dst` (null-padded when the backend cannot deliver). Returns the
     /// number of bytes written.
     pub fn serve_read(&self, nodeid: u64, offset: u64, dst: &mut [u8]) -> usize {
+        self.serve_read_checked(nodeid, offset, dst).unwrap_or(0)
+    }
+
+    /// Unlike Live, VOD bytes must never be replaced with synthetic TS nulls.
+    /// Propagate I/O failures to FUSE so corrupt MP4 data is not reported as valid.
+    pub fn serve_read_checked(&self, nodeid: u64, offset: u64, dst: &mut [u8]) -> io::Result<usize> {
         if dst.is_empty() {
-            return 0;
+            return Ok(0);
         }
         let node = match self.catalog.node(nodeid) {
             Some(n) => n,
             None => {
                 fill_null_at(dst, offset);
-                return dst.len();
+                return Ok(dst.len());
             }
         };
-        match node.kind {
-            NodeKind::DiskImage => self.serve_disk(offset, dst),
+        Ok(match node.kind {
+            NodeKind::DiskImage => return self.serve_disk(offset, dst),
             NodeKind::Live { file_id } => {
                 // Feed the detector first: a >= 1 MiB contiguous read run on
                 // a non-active channel switches the active file_id.
@@ -138,7 +185,7 @@ impl NtfsServer {
                 dst.fill(0);
                 dst.len()
             }
-        }
+        })
     }
 
     /// Guarantees the backend reply never truncates an MPEG-TS packet: a
@@ -172,7 +219,7 @@ impl NtfsServer {
     /// each iteration classifies the current offset, and stream chunks are
     /// clamped to the extent end so one backend call never bridges a hole
     /// between two extents — mirroring `avail_in_ext` in the C daemon.
-    fn serve_disk(&self, disk_off: u64, dst: &mut [u8]) -> usize {
+    fn serve_disk(&self, disk_off: u64, dst: &mut [u8]) -> io::Result<usize> {
         let mut done = 0usize;
         let mut cur = disk_off;
         // `vbr.total_sectors` is the NTFS BPB count, which EXCLUDES the backup
@@ -199,11 +246,16 @@ impl NtfsServer {
                             dst[done..].fill(0);
                             break;
                         }
-                        let n = favorites.serve_file(
-                            file_id,
-                            file_offset,
-                            &mut dst[done..done + chunk],
-                        );
+                        let n = if let Some(vod) = self.vod_files.get(&file_id) {
+                            let target = &mut dst[done..done + chunk];
+                            match self.backend.serve_vod(&vod.task_id, file_offset, target, self.deadline_ms) {
+                                Ok(n) if n == target.len() => n,
+                                Ok(_) => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "short VOD range")),
+                                Err(e) => return Err(e),
+                            }
+                        } else {
+                            favorites.serve_file(file_id, file_offset, &mut dst[done..done + chunk])
+                        };
                         if n == 0 {
                             dst[done..].fill(0);
                             break;
@@ -242,7 +294,7 @@ impl NtfsServer {
                 }
             }
         }
-        dst.len()
+        Ok(dst.len())
     }
 
     fn serve_template_chunk(&self, cur: u64, dst: &mut [u8], done: &mut usize) {
@@ -524,7 +576,7 @@ impl FuseSession {
                 self.reply_attr(inh, out, &attr);
             }
             FILE_INO => {
-                Self::fill_file_attr(&mut attr, FILE_INO, ntfs_mft::VOLUME_BYTES);
+                Self::fill_file_attr(&mut attr, FILE_INO, self.server.template.volume_bytes());
                 self.reply_attr(inh, out, &attr);
             }
             ino => match self.server.catalog.node(ino) {
@@ -567,7 +619,15 @@ impl FuseSession {
                     eo.attr.nlink = 2;
                     eo.attr.size = 4096;
                 } else {
-                    Self::fill_file_attr(&mut eo.attr, node.ino, node.size);
+                    // The disk image reports the volume size from the BPB, not
+                    // the 128 GiB baseline: the kernel derives the USB LUN
+                    // capacity from this value, so it must track the package.
+                    let size = if node.kind == crate::vfs::catalog::NodeKind::DiskImage {
+                        self.server.template.volume_bytes()
+                    } else {
+                        node.size
+                    };
+                    Self::fill_file_attr(&mut eo.attr, node.ino, size);
                 }
                 eo.attr.blksize = ntfs_mft::CLUSTER_SIZE as u32;
                 self.reply(inh, out, reply_len);
@@ -648,7 +708,13 @@ impl FuseSession {
         // serve_read fully populates the payload (metadata / ring / NULL
         // fill), so no pre-zeroing of out_buf is required for FUSE_READ.
         let rdata = &mut out.0[OUT_HDR_SZ..OUT_HDR_SZ + size];
-        let written = self.server.serve_read(inh.nodeid, rin.offset, rdata);
+        let written = match self.server.serve_read_checked(inh.nodeid, rin.offset, rdata) {
+            Ok(written) => written,
+            Err(_) => {
+                self.reply_error(inh, out, -libc::EIO);
+                return;
+            }
+        };
 
         // The result records the request's size, offset and handle as well as
         // the bytes actually returned; a short reply stays observable.
@@ -1176,5 +1242,127 @@ mod tests {
         let mut hole = vec![0xFFu8; 512];
         server.serve_read(FILE_INO, 2 * 1024 * 1024, &mut hole);
         assert!(backend.live_calls.lock().unwrap().is_empty());
+    }
+
+    struct MixedVodBackend {
+        fail: bool,
+        short: bool,
+        calls: std::sync::Mutex<Vec<(String, u64, usize)>>,
+    }
+
+    impl StreamBackend for MixedVodBackend {
+        fn serve_live(&self, _id: u32, _off: u64, dst: &mut [u8], _d: u64) -> usize {
+            dst.fill(0x44);
+            dst.len()
+        }
+        fn serve_vod(&self, task: &str, off: u64, dst: &mut [u8], _d: u64) -> io::Result<usize> {
+            self.calls.lock().unwrap().push((task.into(), off, dst.len()));
+            if self.fail { return Err(io::Error::new(io::ErrorKind::TimedOut, "range unavailable")); }
+            let n = if self.short { dst.len().saturating_sub(1) } else { dst.len() };
+            for (i, byte) in dst[..n].iter_mut().enumerate() {
+                let bias = if task == "2a2b3c4d" { 17 } else { 0 };
+                *byte = ((off + i as u64 + bias) % 251) as u8;
+            }
+            Ok(n)
+        }
+    }
+
+    fn mixed_server(fail: bool, short: bool) -> (NtfsServer, Arc<MixedVodBackend>, u64, u64) {
+        use crate::favorites::extents::ExtentMap;
+        use crate::favorites::runtime::{FavoriteFile, FavoritesRuntime, RuntimeConfig};
+        use crate::vfs::ntfs_mft::parse_runlist;
+        fn runs(lcn: i32) -> Vec<crate::vfs::ntfs_mft::RunPiece> {
+            let mut encoded = vec![0x44];
+            encoded.extend_from_slice(&256u32.to_le_bytes());
+            encoded.extend_from_slice(&lcn.to_le_bytes());
+            encoded.push(0);
+            parse_runlist(&encoded)
+        }
+        let mut map = ExtentMap::new(8 * 1024 * 1024).unwrap();
+        map.add_metadata(0, 1024 * 1024).unwrap();
+        map.add_file_runs(7, &runs(256), 1024 * 1024).unwrap();
+        map.add_file_runs(8, &runs(768), 1024 * 1024).unwrap();
+        map.add_file_runs(9, &runs(1024), 1024 * 1024).unwrap();
+        let runtime = Arc::new(FavoritesRuntime::new(map, vec![FavoriteFile {
+            file_id: 7, channel_id: "sbt".into(), path: "Abertos/SBT.trp".into(),
+            logical_size: 1024 * 1024,
+        }], RuntimeConfig::new("session", "manifest")).unwrap());
+        let backend = Arc::new(MixedVodBackend { fail, short, calls: std::sync::Mutex::new(vec![]) });
+        let server = NtfsServer::new(NtfsTemplate::synthesized(), Catalog::new(1024), backend.clone())
+            .with_favorites(runtime)
+            .with_vod_files(vec![
+                VodFile { file_id: 8, task_id: "1a2b3c4d".into(), logical_size: 1024 * 1024 },
+                VodFile { file_id: 9, task_id: "2a2b3c4d".into(), logical_size: 1024 * 1024 },
+            ])
+            .unwrap();
+        (server, backend, 1024 * 1024, 3 * 1024 * 1024)
+    }
+
+    #[test]
+    fn mixed_vod_reads_exact_bytes_by_identity_without_touching_live() {
+        let (server, backend, live, vod) = mixed_server(false, false);
+        let mut dst = [0u8; 137];
+        assert_eq!(server.serve_read_checked(FILE_INO, vod + 417, &mut dst).unwrap(), dst.len());
+        assert!(dst.iter().enumerate().all(|(i, b)| *b == ((417 + i) % 251) as u8));
+        assert_eq!(&*backend.calls.lock().unwrap(), &[("1a2b3c4d".into(), 417, 137)]);
+        server.serve_read_checked(FILE_INO, vod + 1024 * 1024 + 417, &mut dst).unwrap();
+        assert!(dst.iter().enumerate().all(|(i, b)| *b == ((417 + i + 17) % 251) as u8));
+        assert_eq!(backend.calls.lock().unwrap()[1], ("2a2b3c4d".into(), 417, 137));
+        let mut live_data = [0u8; 188];
+        server.serve_read_checked(FILE_INO, live, &mut live_data).unwrap();
+        assert_eq!(backend.calls.lock().unwrap().len(), 2);
+        assert_eq!(live_data[0], 0x47);
+    }
+
+    #[test]
+    fn mixed_vod_errors_and_short_reads_are_never_filled_with_fake_media() {
+        for (fail, short) in [(true, false), (false, true)] {
+            let (server, _, _, vod) = mixed_server(fail, short);
+            assert!(server.serve_read_checked(FILE_INO, vod + 73, &mut [0u8; 64]).is_err());
+        }
+    }
+
+    #[test]
+    fn mixed_reads_crossing_vod_boundaries_keep_each_identity() {
+        let (server, backend, _, vod) = mixed_server(false, false);
+        let mut dst = [0u8; 8];
+        server.serve_read_checked(FILE_INO, vod + 1024 * 1024 - 4, &mut dst).unwrap();
+        assert_eq!(backend.calls.lock().unwrap().as_slice(), &[
+            ("1a2b3c4d".into(), 1024 * 1024 - 4, 4),
+            ("2a2b3c4d".into(), 0, 4),
+        ]);
+        assert_eq!(dst[4], 17);
+    }
+
+    #[test]
+    fn failed_vod_read_returns_fuse_eio() {
+        let (server, _, _, vod) = mixed_server(true, false);
+        let session = FuseSession::new(-1, Arc::new(server));
+        let mut req = AlignedFuseBuf::new_boxed();
+        let req_len = IN_HDR_SZ + std::mem::size_of::<fuse_read_in>();
+        req.0[..req_len].fill(0);
+        let header = unsafe { &mut *(req.0.as_mut_ptr() as *mut fuse_in_header) };
+        header.len = req_len as u32;
+        header.opcode = FUSE_READ;
+        header.nodeid = FILE_INO;
+        header.unique = 51;
+        let read = unsafe { &mut *(req.0[IN_HDR_SZ..].as_mut_ptr() as *mut fuse_read_in) };
+        read.offset = vod + 100;
+        read.size = 128;
+        let mut out = AlignedFuseBuf::new_boxed();
+        session.dispatch(&req.0[..req_len], &mut out);
+        assert_eq!(out_err(&out), -libc::EIO);
+        assert_eq!(out_len(&out), OUT_HDR_SZ);
+    }
+
+    #[test]
+    fn mixed_vod_rejects_colliding_unknown_or_wrong_sized_extents() {
+        let (server, _, _, _) = mixed_server(false, false);
+        let file = |id, size| VodFile { file_id: id, task_id: "1a2b3c4d".into(), logical_size: size };
+        assert!(server.with_vod_files(vec![file(7, 1024 * 1024)]).is_err());
+        let (server, _, _, _) = mixed_server(false, false);
+        assert!(server.with_vod_files(vec![file(99, 1024 * 1024)]).is_err());
+        let (server, _, _, _) = mixed_server(false, false);
+        assert!(server.with_vod_files(vec![file(8, 512)]).is_err());
     }
 }

@@ -158,6 +158,90 @@ lock_active() {
     [ -d "$BASE/mode_switch.lock" ]
 }
 
+# A mixed-media publisher holds a short lease ($BASE/mixed_handoff.lease) while
+# it proves the TV idle and switches the USB LUN. Commands that arrive inside
+# that window must wait, and the favorites rollback must never run. A malformed
+# or expired lease is treated as absent.
+handoff_lease_active() { # 0 when a valid, unexpired lease exists
+    _hl_file="$BASE/mixed_handoff.lease"
+    [ -f "$_hl_file" ] || return 1
+    _hl_line=$($BB head -n 1 "$_hl_file" 2>/dev/null || true)
+    set -- $_hl_line
+    [ "$#" -eq 3 ] || return 1
+    case "$1" in ''|*[!0-9a-f]*) return 1 ;; esac
+    [ ${#1} -eq 32 ] || return 1
+    case "$2" in ''|*[!0-9]*) return 1 ;; esac
+    case "$3" in ''|*[!0-9]*) return 1 ;; esac
+    _hl_now=$($BB date +%s 2>/dev/null || true)
+    case "$_hl_now" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$3" -gt "$_hl_now" ] || return 1
+    return 0
+}
+
+# This watchdog owns the active lease only when its own state carries the same
+# token; any other (or absent) token means the lease is foreign.
+handoff_lease_owned_by_watchdog() {
+    _hl_mine=$(cat "$STATE/handoff.token" 2>/dev/null || true)
+    [ -n "$_hl_mine" ] || return 1
+    _hl_file="$BASE/mixed_handoff.lease"
+    [ -f "$_hl_file" ] || return 1
+    _hl_line=$($BB head -n 1 "$_hl_file" 2>/dev/null || true)
+    set -- $_hl_line
+    [ "$#" -eq 3 ] || return 1
+    [ "$1" = "$_hl_mine" ] || return 1
+    return 0
+}
+
+# Only the supervisor that owns the current mode lock and USB LUN may allow
+# a queued switch to reach the worker. Any incomplete/stale state stays busy.
+favorites_supervisor_package() {
+    [ -f "$BASE/favorites_mode.flag" ] || return 1
+    _fav_pkg=$(cat "$BASE/favorites_supervisor.path" 2>/dev/null) || return 1
+    case "$_fav_pkg" in
+        "$BASE"/live-favorites/*) ;;
+        *) return 1 ;;
+    esac
+    case "$_fav_pkg" in *[!a-zA-Z0-9_./-]*|*/../*|*/..|*/./*) return 1 ;; esac
+    [ -d "$_fav_pkg" ] && [ ! -L "$_fav_pkg" ] || return 1
+    [ -f "$_fav_pkg/activate_live_favorites_tablet.sh" ] || return 1
+    _fav_owner=$(cat "$BASE/mode_switch.lock/pid" 2>/dev/null) || return 1
+    case "$_fav_owner" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$_fav_owner" = "$(cat "$_fav_pkg/activation/supervisor.pid" 2>/dev/null)" ] || return 1
+    kill -0 "$_fav_owner" 2>/dev/null || return 1
+    "$BB" tr '\000' '\n' < "/proc/$_fav_owner/cmdline" | \
+        "$BB" grep -F -x -q -- "$_fav_pkg/activate_live_favorites_tablet.sh" || return 1
+    [ "$(cat "$USBD/f_mass_storage/lun0/file" 2>/dev/null)" = "$_fav_pkg/mnt/tv_stream.img" ] || return 1
+    printf '%s\n' "$_fav_pkg"
+}
+
+favorites_handoff_for_command() {
+    # Server currently emits exactly these command forms for the two modes.
+    # Never interpret an arbitrary command as authority to detach the LUN.
+    case "$1" in
+        'sh /data/local/tmp/switch_vod.sh '*)
+            _handoff_id=${1#'sh /data/local/tmp/switch_vod.sh '}
+            case "$_handoff_id" in
+                ''|*[!a-zA-Z0-9_-]*) echo 'Invalid VOD ID in switch command'; return 1 ;;
+            esac ;;
+        'sh /data/local/tmp/switch_live.sh') ;;
+        *) echo 'Favorites active: command deferred; switch mode first.'; return 1 ;;
+    esac
+    _handoff_pkg=$(favorites_supervisor_package) || {
+        echo 'Favorites supervisor could not be verified; mode unchanged.'
+        return 1
+    }
+    "$BB" sh "$_handoff_pkg/activate_live_favorites_tablet.sh" rollback "$_handoff_pkg" || {
+        echo 'Favorites rollback failed; mode command not executed.'
+        return 1
+    }
+    # Rollback must release ownership before another mode switch is allowed.
+    if lock_active || [ -f "$BASE/favorites_mode.flag" ]; then
+        echo 'Favorites rollback did not release mode ownership.'
+        return 1
+    fi
+    return 0
+}
+
 # CRÍTICO 4: Busy check com remocao automatica de PID morto ou stale (>90s)
 busy() {
     [ -f "$STATE/cur.pid" ] || return 1
@@ -208,8 +292,26 @@ run_cmd() { # $1=id $2=comando
     cmd="$2"
     log "CMD $cid: $cmd"
     set +e
-    sh -c "$cmd" > "$STATE/out.$cid" 2>&1
-    crc=$?
+    if handoff_lease_active && ! handoff_lease_owned_by_watchdog; then
+        # Mixed-media handoff in progress: never execute a queued command and
+        # never run the favorites rollback (that could interrupt a viewer or
+        # fight the publisher for the LUN).
+        echo 'Handoff in progress; command not executed.' > "$STATE/out.$cid"
+        crc=75
+    elif lock_active && [ -f "$BASE/favorites_mode.flag" ]; then
+        if favorites_handoff_for_command "$cmd" > "$STATE/out.$cid" 2>&1; then
+            sh -c "$cmd" >> "$STATE/out.$cid" 2>&1
+            crc=$?
+        else
+            crc=75
+        fi
+    elif lock_active; then
+        echo 'Mode switch in progress; command not executed.' > "$STATE/out.$cid"
+        crc=75
+    else
+        sh -c "$cmd" > "$STATE/out.$cid" 2>&1
+        crc=$?
+    fi
     set -e
     echo "$crc" > "$STATE/rc.$cid"
     rm -f "$STATE/run.$cid" "$STATE/cur.pid"
@@ -245,8 +347,8 @@ handle_resp() {
 }
 
 poll_and_dispatch() {
-    USB_ST=$(cat $USBD/state 2>/dev/null)
-    USB_PWR=$(cat /sys/class/power_supply/usb/online 2>/dev/null)
+    USB_ST=$(cat "$USBD/state" 2>/dev/null || true)
+    USB_PWR=$(cat /sys/class/power_supply/usb/online 2>/dev/null || true)
     VOD=$($BB head -n 1 "$BASE/vod_mode.flag" 2>/dev/null | $BB tr -d '\r')
     if [ -f "$BASE/favorites_mode.flag" ]; then
         MODE=favorites
@@ -256,7 +358,11 @@ poll_and_dispatch() {
         MODE=live
     fi
     X=""
-    if busy || lock_active; then X="&nocmd=1"; fi
+    if busy; then
+        X="&nocmd=1"
+    elif lock_active && ! favorites_supervisor_package >/dev/null; then
+        X="&nocmd=1"
+    fi
     RESP=$($BB wget -q -T 5 -O - \
         "$SERVER/api/tablet_cmd?v=2&k=$TOKEN&usb=${USB_ST:-DISCONNECTED}&pwr=${USB_PWR:-0}&vod=$(urlenc "${VOD:-none}")&mode=$MODE$X" 2>/dev/null)
     handle_resp "$RESP"

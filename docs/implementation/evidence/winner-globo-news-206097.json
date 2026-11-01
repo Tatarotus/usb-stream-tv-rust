@@ -1,0 +1,75 @@
+{
+  "capture": {
+    "bytes": 264276112,
+    "returncode": 0,
+    "stderr_categories": {
+      "decode_error": 1,
+      "source_reconnect": 15
+    },
+    "wall_seconds": 79.879
+  },
+  "catalog_name": "GLOBO NEWS FHD\u00b9",
+  "category": "Noticias",
+  "channel_id": "206097",
+  "duration_s": 300.0,
+  "filename": "Globo News.trp",
+  "identity": "globo-news",
+  "media": {
+    "audio": {
+      "audio_duration_s": 299.97,
+      "audio_packets": 9329,
+      "audio_pts_gaps_over_1000ms": 0,
+      "audio_pts_gaps_over_500ms": 0,
+      "audio_pts_max_gap_ms": 212.0
+    },
+    "audio_bit_rate": "128436",
+    "audio_channels": 2,
+    "audio_codec": "aac",
+    "audio_sample_rate": "32000",
+    "b_frames_seen": 4337,
+    "fps": "30/1",
+    "frames_decoded": 9001,
+    "has_b_frames": 1,
+    "height": 1080,
+    "heights_seen": [
+      1080
+    ],
+    "i_frames_seen": 179,
+    "idr_gap_max_s": 2.0,
+    "idr_gap_median_s": 2.0,
+    "level": 40,
+    "media_duration_s": 299.97,
+    "p_frames_seen": 4485,
+    "pcr": {
+      "pcr_count": 3145,
+      "pcr_gaps_over_100ms": 0,
+      "pcr_gaps_over_40ms": 3000,
+      "pcr_max_gap_ms": 100.0,
+      "pcr_median_gap_ms": 100.0,
+      "pcr_pid": "0x100",
+      "pcr_pids": 1
+    },
+    "pix_fmt": "yuv420p",
+    "profile": "High",
+    "slices": {
+      "b_frames": 4337,
+      "frames": 9006,
+      "i_frames": 179,
+      "multislice_frames": 14,
+      "p_frames": 4490,
+      "slices_max": 2,
+      "slices_median": 1.0
+    },
+    "ts_kbps_total": 7048,
+    "video_codec": "h264",
+    "video_kbps": 6705,
+    "width": 1920,
+    "widths_seen": [
+      1920
+    ]
+  },
+  "phase": "winner",
+  "quality_label": "FHD1",
+  "region": "national",
+  "verdict": "candidate_ok"
+}

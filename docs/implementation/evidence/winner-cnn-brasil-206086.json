@@ -1,0 +1,22 @@
+{
+  "capture": {
+    "bytes": 0,
+    "requested_duration": 300.0,
+    "returncode": 8,
+    "stderr_categories": {
+      "http_4xx": 2,
+      "input_open_failed": 1
+    },
+    "wall_seconds": 0.354
+  },
+  "catalog_name": "CNN BRASIL H265",
+  "category": "Noticias",
+  "channel_id": "206086",
+  "duration_s": 300.0,
+  "filename": "CNN Brasil.trp",
+  "identity": "cnn-brasil",
+  "phase": "winner",
+  "quality_label": "H265",
+  "region": "national",
+  "verdict": "no_media"
+}

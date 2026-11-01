@@ -1,0 +1,8 @@
+identity,channel_id,status,captured_bytes,decode_returncode,decode_lines,checked_seconds,categories,verdict
+globo-news,206097,approved,52426996,0,2,60.0,"{""decode_error"": 1}",decode_errors
+sbt,207198,approved,15446268,0,0,60.0,{},decode_ok
+record,214640,approved,20483916,0,0,60.0,{},decode_ok
+telecine-action,365243,approved,24297684,0,0,60.0,{},decode_ok
+history,387622,approved,24661276,0,0,60.0,{},decode_ok
+discovery-channel,387640,approved,24667856,0,0,60.0,{},decode_ok
+discovery-hh,387648,approved,25874816,0,0,60.0,{},decode_ok

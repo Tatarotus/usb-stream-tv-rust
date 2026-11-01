@@ -1,0 +1,75 @@
+{
+  "capture": {
+    "bytes": 108985856,
+    "returncode": 0,
+    "stderr_categories": {
+      "connection_timeout": 3,
+      "source_reconnect": 18
+    },
+    "wall_seconds": 112.153
+  },
+  "catalog_name": "TELECINE ACTION FHD\u00b9",
+  "category": "Filmes",
+  "channel_id": "365244",
+  "duration_s": 300.0,
+  "filename": "Telecine Action.trp",
+  "identity": "telecine-action",
+  "media": {
+    "audio": {
+      "audio_duration_s": 282.43,
+      "audio_packets": 13021,
+      "audio_pts_gaps_over_1000ms": 1,
+      "audio_pts_gaps_over_500ms": 1,
+      "audio_pts_max_gap_ms": 3776.0
+    },
+    "audio_bit_rate": "131626",
+    "audio_channels": 2,
+    "audio_codec": "aac",
+    "audio_sample_rate": "48000",
+    "b_frames_seen": 0,
+    "fps": "30000/1001",
+    "frames_decoded": 8360,
+    "has_b_frames": 0,
+    "height": 1080,
+    "heights_seen": [
+      1080
+    ],
+    "i_frames_seen": 99,
+    "idr_gap_max_s": 6.006,
+    "idr_gap_median_s": 3.003,
+    "level": 40,
+    "media_duration_s": 282.43,
+    "p_frames_seen": 8261,
+    "pcr": {
+      "pcr_count": 4214,
+      "pcr_gaps_over_100ms": 1,
+      "pcr_gaps_over_40ms": 4145,
+      "pcr_max_gap_ms": 3737.07,
+      "pcr_median_gap_ms": 66.73,
+      "pcr_pid": "0x100",
+      "pcr_pids": 1
+    },
+    "pix_fmt": "yuv420p",
+    "profile": "High",
+    "slices": {
+      "b_frames": 0,
+      "frames": 8360,
+      "i_frames": 99,
+      "multislice_frames": 3,
+      "p_frames": 8261,
+      "slices_max": 2,
+      "slices_median": 1.0
+    },
+    "ts_kbps_total": 3087,
+    "video_codec": "h264",
+    "video_kbps": 2824,
+    "width": 1920,
+    "widths_seen": [
+      1920
+    ]
+  },
+  "phase": "winner",
+  "quality_label": "FHD1",
+  "region": "national",
+  "verdict": "candidate_ok"
+}

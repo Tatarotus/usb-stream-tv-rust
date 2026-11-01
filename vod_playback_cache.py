@@ -1,10 +1,11 @@
-"""Bounded, disposable disk cache for the single VOD selected for playback.
+"""Bounded, disposable disk cache for playback and nearby episodes.
 
 The cloud remains the library. Only complete, verified reads are exposed from
-the sparse local file; holes are never returned as video data. Construction is
+the sparse local files; holes are never returned as video data. Construction is
 inert so importing the server does not create files, threads, or connections.
 """
 
+import collections
 import hashlib
 import fcntl
 import os
@@ -13,6 +14,9 @@ import shutil
 import stat
 import tempfile
 import threading
+import time
+
+import vod_revision
 
 
 class CurrentVideoCache:
@@ -32,6 +36,16 @@ class CurrentVideoCache:
         self._state = None
         self._closed = False
         self._directory_lock_fd = None
+        self._secondary_cache = collections.OrderedDict()
+        self._secondary_max = 16
+        self._secondary_inflight = {}
+        self._episode_states = collections.OrderedDict()
+        self._episode_next_key = None
+        self._episode_mode = False
+        self._episode_retention_seconds = 6 * 3600
+        self._episode_max_entries = 4
+        self._episode_last_activity = 0.0
+        self._background_interval = 0.5
 
     @staticmethod
     def _identity(task):
@@ -46,7 +60,16 @@ class CurrentVideoCache:
         md5 = task.get("remote_md5") or ""
         if md5 and (not isinstance(md5, str) or not re.fullmatch(r"[0-9a-fA-F]{32}", md5)):
             raise ValueError("Invalid VOD content identity")
-        return task_id, md5.lower(), size
+        # Trusted content revision is part of the identity: a mutated object with
+        # the same task id and size must never be served from an old generation,
+        # neither from the sparse disk file (keyed below) nor from the in-memory
+        # secondary cache (keyed by (key, block)). When no revision can be
+        # established the identity stays usable but is not content-trusting and
+        # degrades to the historical (task_id, md5, size) semantics.
+        revision = vod_revision.content_revision(task)
+        if revision is not None and not vod_revision.is_valid_revision(revision):
+            revision = None
+        return task_id, md5.lower(), size, revision
 
     def _has_space(self, count):
         try:
@@ -55,9 +78,21 @@ class CurrentVideoCache:
             return False
 
     def _discard_locked(self):
+        for event in self._secondary_inflight.values():
+            event.set()
+        self._secondary_inflight.clear()
+        self._secondary_cache.clear()
+        states = list(self._episode_states.values())
+        self._episode_states.clear()
+        self._episode_next_key = None
+        self._episode_mode = False
         state, self._state = self._state, None
-        if state is None:
-            return
+        if state is not None and not any(s is state for s in states):
+            states.append(state)
+        for state in states:
+            self._dispose_state_locked(state)
+
+    def _dispose_state_locked(self, state):
         for event in state["inflight"].values():
             event.set()
         os.close(state["fd"])
@@ -118,7 +153,7 @@ class CurrentVideoCache:
         return data
 
     def _store_locked(self, state, block, data):
-        if self._state is not state or not self._has_space(len(data)):
+        if (self._state is not state and self._episode_states.get(state["key"]) is not state) or not self._has_space(len(data)):
             state["paused"] = True
             return
         try:
@@ -138,13 +173,21 @@ class CurrentVideoCache:
     def _block(self, task, key, block):
         start = block * self.block_size
         count = min(self.block_size, key[2] - start)
+        sec_key = (key, block)
         while True:
             with self._lock:
-                state = self._state
+                state = self._episode_states.get(key) if self._episode_mode else self._state
                 if state is None or state["key"] != key:
+                    cached_sec = self._secondary_cache.get(sec_key)
+                    if cached_sec is not None:
+                        self._secondary_cache.move_to_end(sec_key)
+                        return cached_sec
+                    event = self._secondary_inflight.get(sec_key)
+                    owner = event is None
+                    if owner:
+                        event = threading.Event()
+                        self._secondary_inflight[sec_key] = event
                     state = None
-                    event = None
-                    owner = True
                 elif block in state["blocks"]:
                     try:
                         data = os.pread(state["fd"], count, start)
@@ -166,14 +209,22 @@ class CurrentVideoCache:
                 continue
             try:
                 data = self._fetch(task, start, count)
-                if state is not None:
-                    with self._lock:
+                with self._lock:
+                    if state is not None:
                         self._store_locked(state, block, data)
+                    else:
+                        while len(self._secondary_cache) >= self._secondary_max:
+                            self._secondary_cache.popitem(last=False)
+                        self._secondary_cache[sec_key] = data
                 return data
             finally:
                 if state is not None:
                     with self._lock:
                         state["inflight"].pop(block, None)
+                        event.set()
+                else:
+                    with self._lock:
+                        self._secondary_inflight.pop(sec_key, None)
                         event.set()
 
     def read(self, task, start, length):
@@ -191,7 +242,7 @@ class CurrentVideoCache:
             take = min(self.block_size - relative, end - start)
             cached = None
             with self._lock:
-                state = self._state
+                state = self._episode_states.get(key) if self._episode_mode else self._state
                 if state is not None and state["key"] == key and block in state["blocks"]:
                     try:
                         piece = os.pread(state["fd"], take, start)
@@ -292,6 +343,8 @@ class CurrentVideoCache:
             with self._lock:
                 if self._closed:
                     raise RuntimeError("Playback cache is closed")
+                if self._episode_mode:
+                    self._discard_locked()
                 state = self._state
                 if state is None or state["key"] != key:
                     self._discard_locked()
@@ -318,27 +371,108 @@ class CurrentVideoCache:
                         self._wake.set()
             return state is not None
 
+    def select_episode(self, task, next_task=None):
+        """Select an observed episode without blocking its read on cloud access.
+
+        Keep a bounded number of recent episodes; the worker fills the current
+        episode before the optional next one. Probe reads must not call this.
+        """
+        task = dict(task)
+        key = self._identity(task)
+        following = dict(next_task) if next_task is not None else None
+        next_key = self._identity(following) if following is not None else None
+        with self._lock:
+            if self._closed:
+                return False
+            if not self._episode_mode:
+                self._discard_locked()
+                self._episode_mode = True
+            self._episode_next_key = None
+            now = time.monotonic()
+            self._episode_last_activity = now
+            for old_key, old in list(self._episode_states.items()):
+                if old_key != key and now - old.get("last_used", now) > self._episode_retention_seconds:
+                    self._episode_states.pop(old_key)
+                    self._dispose_state_locked(old)
+
+            def add(item, item_key, protected):
+                existing = self._episode_states.get(item_key)
+                if existing is not None:
+                    existing["last_used"] = now
+                    existing["paused"] = False
+                    self._episode_states.move_to_end(item_key)
+                    return existing
+                if item_key[2] > self.max_bytes or not self.max_bytes:
+                    return None
+                while (len(self._episode_states) >= self._episode_max_entries or
+                       sum(k[2] for k in self._episode_states) + item_key[2] > self.max_bytes):
+                    victim = next((k for k in self._episode_states if k not in protected), None)
+                    if victim is None:
+                        return None
+                    self._dispose_state_locked(self._episode_states.pop(victim))
+                state = self._new_state(item, item_key)
+                if state is not None:
+                    state.update(ready=True, last_used=now)
+                    self._episode_states[item_key] = state
+                return state
+
+            state = add(task, key, set())
+            self._state = state
+            if following is not None and next_key != key and state is not None:
+                if add(following, next_key, {key}) is not None:
+                    self._episode_next_key = next_key
+            if state is not None:
+                if self._worker is None:
+                    self._worker = threading.Thread(target=self._fill, name="vod-current-cache", daemon=True)
+                    self._worker.start()
+                self._wake.set()
+            return state is not None
+
     def _fill(self):
         while True:
-            self._wake.wait()
+            self._wake.wait(timeout=60)
             self._wake.clear()
             while True:
                 with self._lock:
                     if self._closed:
                         return
-                    state = self._state
-                    if state is None or not state["ready"] or state["paused"]:
-                        break
-                    count = (state["key"][2] + self.block_size - 1) // self.block_size
-                    missing = next((b for b in range(count) if b not in state["blocks"]), None)
-                    if missing is None:
+                    if self._episode_mode:
+                        now = time.monotonic()
+                        if now - self._episode_last_activity > self._episode_retention_seconds:
+                            self._discard_locked()
+                            break
+                        protected = {self._episode_next_key}
+                        if self._state is not None:
+                            protected.add(self._state["key"])
+                        for old_key, old in list(self._episode_states.items()):
+                            if old_key not in protected and now - old.get("last_used", now) > self._episode_retention_seconds:
+                                self._episode_states.pop(old_key)
+                                self._dispose_state_locked(old)
+                    candidates = [self._state]
+                    if self._episode_mode and self._episode_next_key is not None and self._state is not None and not self._state["paused"]:
+                        candidates.append(self._episode_states.get(self._episode_next_key))
+                    state = None
+                    missing = None
+                    for candidate in candidates:
+                        if candidate is None or not candidate["ready"] or candidate["paused"]:
+                            continue
+                        count = (candidate["key"][2] + self.block_size - 1) // self.block_size
+                        block = next((b for b in range(count) if b not in candidate["blocks"]), None)
+                        if block is not None:
+                            state, missing = candidate, block
+                            break
+                    if state is None:
                         break
                     task, key = state["task"], state["key"]
                 try:
                     self._block(task, key, missing)
+                    # Yield between background requests; a new selection wakes
+                    # this delay immediately. Foreground reads never wait here.
+                    if self._episode_mode and self._wake.wait(timeout=self._background_interval):
+                        break
                 except Exception:
                     with self._lock:
-                        if self._state is state:
+                        if self._state is state or self._episode_states.get(key) is state:
                             state["paused"] = True
 
     def stop(self):

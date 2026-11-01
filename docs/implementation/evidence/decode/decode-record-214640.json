@@ -1,0 +1,22 @@
+{
+  "capture": {
+    "bytes": 20483916,
+    "requested_duration": 60.0,
+    "returncode": 0,
+    "stderr_categories": {},
+    "wall_seconds": 46.369
+  },
+  "catalog_name": "RECORD TV RIO FHD\u00b2",
+  "channel_id": "214640",
+  "decode": {
+    "categories": {},
+    "checked_seconds": 60.0,
+    "lines": 0,
+    "returncode": 0,
+    "wall_seconds": 4.18
+  },
+  "duration_s": 60.0,
+  "identity": "record",
+  "status": "approved",
+  "verdict": "decode_ok"
+}

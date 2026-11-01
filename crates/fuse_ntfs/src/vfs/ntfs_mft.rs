@@ -292,6 +292,16 @@ impl NtfsTemplate {
         Ok(Self { file: Some(file), vbr, layout, serial: random_serial() })
     }
     pub fn default_vbr() -> VbrInfo { VbrInfo { bytes_per_sector: BPS as u32, sectors_per_cluster: SPC as u8, cluster_size: CLUSTER_SIZE as u32, total_sectors: TOTAL_SECTORS - 1, mft_lcn: MFT_LCN, mft_mirror_lcn: MFT_MIRROR_LCN, mft_record_size: MFT_RECORD_SIZE as u32, index_record_size: CLUSTER_SIZE as u32, serial: 0 } }
+    /// Servable volume size in bytes, taken from the on-disk BPB.
+    ///
+    /// The BPB `total_sectors` count EXCLUDES the backup boot sector, which is
+    /// still served, so the volume ends one sector past it. This is the size the
+    /// kernel must be told: a hardcoded 128 GiB would cap every package larger
+    /// than the baseline even though the template image and BPB already carry
+    /// the real geometry (AGENTS.md anti-cache tiers rely on both agreeing).
+    pub fn volume_bytes(&self) -> u64 {
+        self.vbr.total_sectors.saturating_add(1).saturating_mul(BPS as u64)
+    }
     pub fn synthesized() -> Self { Self { file: None, vbr: Self::default_vbr(), layout: fallback_layout(), serial: random_serial() } }
     pub fn randomize_serial(&mut self) { self.serial = random_serial(); }
     /// Builds a template-free (synthesized-metadata) view over an explicit

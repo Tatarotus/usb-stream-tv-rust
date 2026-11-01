@@ -1,0 +1,74 @@
+{
+  "capture": {
+    "bytes": 146013584,
+    "returncode": 0,
+    "stderr_categories": {
+      "source_reconnect": 17
+    },
+    "wall_seconds": 143.507
+  },
+  "catalog_name": "BBC WORLD FHD\u00b9",
+  "category": "Noticias",
+  "channel_id": "1765055",
+  "duration_s": 300.0,
+  "filename": "BBC World.trp",
+  "identity": "bbc-world",
+  "media": {
+    "audio": {
+      "audio_duration_s": 299.98,
+      "audio_packets": 13958,
+      "audio_pts_gaps_over_1000ms": 0,
+      "audio_pts_gaps_over_500ms": 0,
+      "audio_pts_max_gap_ms": 227.3
+    },
+    "audio_bit_rate": "128065",
+    "audio_channels": 2,
+    "audio_codec": "aac",
+    "audio_sample_rate": "48000",
+    "b_frames_seen": 15268,
+    "fps": "60000/1001",
+    "frames_decoded": 17984,
+    "has_b_frames": 3,
+    "height": 720,
+    "heights_seen": [
+      720
+    ],
+    "i_frames_seen": 248,
+    "idr_gap_max_s": 1.603,
+    "idr_gap_median_s": 1.601,
+    "level": 32,
+    "media_duration_s": 299.98,
+    "p_frames_seen": 2468,
+    "pcr": {
+      "pcr_count": 3793,
+      "pcr_gaps_over_100ms": 0,
+      "pcr_gaps_over_40ms": 3588,
+      "pcr_max_gap_ms": 100.0,
+      "pcr_median_gap_ms": 83.0,
+      "pcr_pid": "0x100",
+      "pcr_pids": 1
+    },
+    "pix_fmt": "yuv420p",
+    "profile": "High",
+    "slices": {
+      "b_frames": 15271,
+      "frames": 18032,
+      "i_frames": 254,
+      "multislice_frames": 65,
+      "p_frames": 2497,
+      "slices_max": 2,
+      "slices_median": 1.0
+    },
+    "ts_kbps_total": 3894,
+    "video_codec": "h264",
+    "video_kbps": 3594,
+    "width": 1280,
+    "widths_seen": [
+      1280
+    ]
+  },
+  "phase": "winner",
+  "quality_label": "FHD1",
+  "region": "national",
+  "verdict": "not_1080p"
+}

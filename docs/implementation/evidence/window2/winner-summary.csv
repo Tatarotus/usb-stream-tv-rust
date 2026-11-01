@@ -1,0 +1,2 @@
+identity,category,filename,channel_id,catalog_name,region,quality_label,phase,duration_s,media_duration_s,width,height,fps,profile,codec,b_frames,slices_max,idr_gap_s,video_kbps,ts_kbps,audio_codec,audio_gaps_500ms,pcr_max_gap_ms,errors,verdict
+history,Documentarios,History.trp,387622,HISTORY 4K,national,4K,winner,300.0,300.0,1920,1080,30/1,Main,h264,1500,2,0.2,3018,3283,aac,0,100.0,{},candidate_ok

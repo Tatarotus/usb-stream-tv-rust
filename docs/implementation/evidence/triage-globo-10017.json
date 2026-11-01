@@ -1,0 +1,21 @@
+{
+  "capture": {
+    "bytes": 0,
+    "returncode": 146,
+    "stderr_categories": {
+      "connection_timeout": 3,
+      "input_open_failed": 1
+    },
+    "wall_seconds": 10.678
+  },
+  "catalog_name": "GLOBO RJ ALTO LITORAL (RJ) FHD\u00b9",
+  "category": "Abertos",
+  "channel_id": "10017",
+  "duration_s": 20.0,
+  "filename": "Globo.trp",
+  "identity": "globo",
+  "phase": "triage",
+  "quality_label": "FHD1",
+  "region": "rj-interior",
+  "verdict": "no_media"
+}

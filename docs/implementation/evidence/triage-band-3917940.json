@@ -1,0 +1,21 @@
+{
+  "capture": {
+    "bytes": 0,
+    "returncode": 146,
+    "stderr_categories": {
+      "connection_timeout": 3,
+      "input_open_failed": 1
+    },
+    "wall_seconds": 10.594
+  },
+  "catalog_name": "BAND INTERIOR RJ HD\u00b2",
+  "category": "Abertos",
+  "channel_id": "3917940",
+  "duration_s": 20.0,
+  "filename": "Band.trp",
+  "identity": "band",
+  "phase": "triage",
+  "quality_label": "HD2",
+  "region": "rj-interior",
+  "verdict": "no_media"
+}

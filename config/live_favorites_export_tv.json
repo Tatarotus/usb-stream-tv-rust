@@ -1,0 +1,5091 @@
+{
+  "schema_version": 1,
+  "generation": 5,
+  "live_root": "TV",
+  "output_profile": "1080p30",
+  "source_export": "export-revisao-sol.json + evidence/decode + evidence/output",
+  "curated_at_utc": "2026-10-29T22:13:50Z",
+  "identities": [
+    {
+      "identity": "band-rj-207177",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_720_exception",
+      "resolution_exception": true,
+      "category": "Abertos",
+      "filename": "BAND RJ 720.trp",
+      "chosen": {
+        "channel_id": "207177",
+        "catalog_name": "BAND RJ FHD²",
+        "region": "RJ",
+        "quality_label": "HD",
+        "native_width": 1280,
+        "native_height": 720,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 1758,
+        "measured_from": "host-local (triagem 480s; decode 60s; saida 25s)",
+        "windows": 1,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; artefato SEI-antes-de-SPS provado (1 msg, AUD->SEI->SPS->PPS->IDR, 1801/1801 quadros)",
+        "output_verdict": "output_ok",
+        "output_checks": "protocolo ok (0 B-frames, 1 fatia, ac3 384k, PCR 19.55ms, IDR 1.0s)",
+        "evidence_origin": "scratch/live-batch/triagem10{,-decode,-output}",
+        "resolution_exception_authorized_by": "operador (31/10): qualquer resolucao serve para provar se pega"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "207177",
+          "catalog_name": "BAND RJ FHD²",
+          "region": "RJ",
+          "quality_label": "HD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1280,
+          "height": 720
+        }
+      ]
+    },
+    {
+      "identity": "band",
+      "category": "Abertos",
+      "filename": "Band.trp",
+      "favorite_ids": [
+        "207177",
+        "207171",
+        "207172"
+      ],
+      "status": "pending",
+      "quality_status": "pending_no_native_1080",
+      "approved": false,
+      "chosen": {
+        "channel_id": "207171",
+        "catalog_name": "BAND SP FHD¹",
+        "region": "sp",
+        "quality_label": "FHD1",
+        "native_width": 1280,
+        "native_height": 720,
+        "video_codec": "h264",
+        "profile": "High",
+        "video_kbps": 2764,
+        "ts_kbps": 2931,
+        "audio_codec": "aac",
+        "pcr_max_gap_ms": 66.73,
+        "evidence_phase": "winner",
+        "evidence_duration_s": 300.0,
+        "source_audio_max_gap_ms": 0.0,
+        "output_verdict": null,
+        "output_evidence": {},
+        "output_failed": [],
+        "decode_verdict": null,
+        "decode_lines": null,
+        "decode_evidence": {},
+        "source_evidence": {
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "not_1080p",
+          "media": {
+            "width": 1280,
+            "height": 720,
+            "capture_coverage": 1.0,
+            "media_duration_s": 299.99,
+            "audio": {
+              "audio_duration_s": 299.99,
+              "audio_gap_max_ms": 0.0,
+              "audio_overlaps": 0,
+              "audio_packets": 14062,
+              "audio_pts_delta_max_ms": 21.3,
+              "audio_pts_gaps_over_1000ms": 0,
+              "audio_pts_gaps_over_2000ms": 0,
+              "audio_pts_gaps_over_500ms": 0,
+              "audio_pts_max_gap_ms": 0.0
+            }
+          },
+          "windows": 1,
+          "window2": null
+        },
+        "output_pcr_max_gap_ms": null,
+        "output_audio_gaps_500ms": null
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "207177",
+          "catalog_name": "BAND RJ FHD²",
+          "region": "rj",
+          "quality_label": "FHD2",
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "207178",
+          "catalog_name": "BAND RJ HD²",
+          "region": "rj",
+          "quality_label": "HD2",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 848,
+          "height": 480
+        },
+        {
+          "channel_id": "207171",
+          "catalog_name": "BAND SP FHD¹",
+          "region": "sp",
+          "quality_label": "FHD1",
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "207172",
+          "catalog_name": "BAND SP FHD²",
+          "region": "sp",
+          "quality_label": "FHD2",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "207170",
+          "catalog_name": "BAND SP H265",
+          "region": "sp",
+          "quality_label": "H265",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "3917940",
+          "catalog_name": "BAND INTERIOR RJ HD²",
+          "region": "rj-interior",
+          "quality_label": "HD2",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "no_media",
+          "width": null,
+          "height": null
+        },
+        {
+          "channel_id": "207173",
+          "catalog_name": "BAND SP HD¹",
+          "region": "national",
+          "quality_label": "HD1",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 848,
+          "height": 480
+        },
+        {
+          "channel_id": "207174",
+          "catalog_name": "BAND SP HD²",
+          "region": "national",
+          "quality_label": "HD2",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        }
+      ],
+      "rejected": [
+        {
+          "channel_id": "207177",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "207178",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "207171",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "207172",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "207170",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "3917940",
+          "reason": "no_media"
+        },
+        {
+          "channel_id": "207173",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "207174",
+          "reason": "not_1080p"
+        }
+      ]
+    },
+    {
+      "identity": "globo-rio-de-janeiro-10006",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_720_exception",
+      "resolution_exception": true,
+      "category": "Abertos",
+      "filename": "GLOBO RJ 720.trp",
+      "chosen": {
+        "channel_id": "10006",
+        "catalog_name": "GLOBO RIO DE JANEIRO (RJ) FHD1",
+        "region": "RJ",
+        "quality_label": "HD",
+        "native_width": 1280,
+        "native_height": 720,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 2371,
+        "measured_from": "host-local (triagem 480s)",
+        "windows": 1,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero erros",
+        "output_verdict": "output_ok",
+        "output_checks": "protocolo ok (0 B-frames, 1 fatia, ac3 384k, PCR 19.55ms)",
+        "evidence_origin": "scratch/live-batch/triagem-globo-rj{,-decode,-output}",
+        "resolution_exception_authorized_by": "operador (01/11): Globo RJ independente da resolucao"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "10006",
+          "catalog_name": "GLOBO RIO DE JANEIRO (RJ) FHD1",
+          "region": "RJ",
+          "quality_label": "HD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1280,
+          "height": 720
+        }
+      ]
+    },
+    {
+      "identity": "globo",
+      "category": "Abertos",
+      "filename": "GLOBO SP 1080.trp",
+      "favorite_ids": [
+        "10006",
+        "10007"
+      ],
+      "status": "approved",
+      "quality_status": "native_1080",
+      "approved": true,
+      "chosen": {
+        "channel_id": "10001",
+        "catalog_name": "GLOBO SAO PAULO (SP) FHD2",
+        "region": "sp",
+        "quality_label": "FHD2",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 5554,
+        "measured_from": "host-local (uma conexao por vez); teste fisico na TV pendente",
+        "windows": 2,
+        "window1": {
+          "duration_s": 300.0,
+          "media_duration_s": 300.01,
+          "capture_coverage": 1.0,
+          "audio_gaps_over_500ms": 0,
+          "verdict": "candidate_ok",
+          "artifact": "scratch/live-batch/evidence/winner-globo-10001.json",
+          "sha256": "89b5e7740bb9795025925e3253b222a860ae1708b2d79272b604ab24fdbcf3f5"
+        },
+        "window2": {
+          "duration_s": 300.0,
+          "media_duration_s": 300.01,
+          "capture_coverage": 1.0,
+          "audio_gaps_over_500ms": 0,
+          "verdict": "candidate_ok",
+          "artifact": "scratch/live-batch/evidence-w2/winner-globo-10001.json",
+          "sha256": "49a00351775f3adf01003882c86e30524482694d20cd69f1b942e72fb07fe91f"
+        },
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero linhas de erro",
+        "output_verdict": "output_ok",
+        "output_checks": "12/12 (0 B-frames, 1 fatia, ac3)"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "10006",
+          "catalog_name": "GLOBO RIO DE JANEIRO (RJ) FHD¹",
+          "region": "rj",
+          "quality_label": "FHD1",
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "10007",
+          "catalog_name": "GLOBO RIO DE JANEIRO (RJ) FHD²",
+          "region": "rj",
+          "quality_label": "FHD2",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "10008",
+          "catalog_name": "GLOBO RIO DE JANEIRO (RJ) HD¹",
+          "region": "rj",
+          "quality_label": "HD1",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "10009",
+          "catalog_name": "GLOBO RIO DE JANEIRO (RJ) HD²",
+          "region": "national",
+          "quality_label": "HD2",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        }
+      ],
+      "rejected": [
+        {
+          "channel_id": "10017",
+          "reason": "wrong_family"
+        },
+        {
+          "channel_id": "10022",
+          "reason": "wrong_family"
+        },
+        {
+          "channel_id": "10006",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "10007",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "10008",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "10009",
+          "reason": "not_1080p"
+        }
+      ]
+    },
+    {
+      "identity": "rede-tv-208423",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_720_exception",
+      "resolution_exception": true,
+      "category": "Abertos",
+      "filename": "REDE TV 720.trp",
+      "chosen": {
+        "channel_id": "208423",
+        "catalog_name": "REDE TV FHD¹",
+        "region": "national",
+        "quality_label": "HD",
+        "native_width": 1280,
+        "native_height": 720,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 3661,
+        "measured_from": "host-local (triagem 480s; decode 60s; saida 25s)",
+        "windows": 1,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; artefato SEI-antes-de-SPS provado (1 msg, AUD->SEI->SPS->PPS->IDR, 1801/1801 quadros)",
+        "output_verdict": "output_ok",
+        "output_checks": "protocolo ok (0 B-frames, 1 fatia, ac3 384k, PCR 19.55ms, IDR 1.0s)",
+        "evidence_origin": "scratch/live-batch/triagem10{,-decode,-output}",
+        "resolution_exception_authorized_by": "operador (31/10): qualquer resolucao serve para provar se pega"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "208423",
+          "catalog_name": "REDE TV FHD¹",
+          "region": "national",
+          "quality_label": "HD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1280,
+          "height": 720
+        }
+      ]
+    },
+    {
+      "identity": "record",
+      "category": "Abertos",
+      "filename": "Record 1080 RJ.trp",
+      "favorite_ids": [
+        "214640"
+      ],
+      "status": "approved",
+      "quality_status": "native_1080",
+      "approved": true,
+      "chosen": {
+        "channel_id": "214640",
+        "catalog_name": "RECORD TV RIO FHD²",
+        "region": "rj",
+        "quality_label": "FHD2",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "profile": "Main",
+        "video_kbps": 2461,
+        "ts_kbps": 2712,
+        "audio_codec": "aac",
+        "pcr_max_gap_ms": 67.1,
+        "evidence_phase": "winner",
+        "evidence_duration_s": 300.0,
+        "source_audio_max_gap_ms": 175.2,
+        "output_verdict": "output_ok",
+        "output_evidence": {
+          "catalog_name": "RECORD TV RIO FHD²",
+          "channel_id": "214640",
+          "checks": {
+            "audio_ac3_384k": true,
+            "audio_continuous": true,
+            "geometry": true,
+            "idr_one_second": true,
+            "no_b_frames": true,
+            "no_decode_errors": true,
+            "pcr_filter_ok": true,
+            "pcr_interval": true,
+            "process_ok": true,
+            "resolution_stable": true,
+            "single_slice": true,
+            "stderr_clean": true
+          },
+          "failed": [],
+          "identity": "record",
+          "measured_at": "2026-10-27T20:36:36Z",
+          "output": {
+            "audio": {
+              "audio_duration_s": 25.02,
+              "audio_gap_max_ms": 55.1,
+              "audio_overlap_max_ms": 0.0,
+              "audio_overlaps": 0,
+              "audio_packets": 780,
+              "audio_pts_delta_max_ms": 87.1,
+              "audio_pts_gaps_over_1000ms": 0,
+              "audio_pts_gaps_over_2000ms": 0,
+              "audio_pts_gaps_over_500ms": 0,
+              "audio_pts_max_gap_ms": 55.1
+            },
+            "audio_bit_rate": "384000",
+            "audio_channels": 2,
+            "audio_codec": "ac3",
+            "audio_sample_rate": "48000",
+            "b_frames_seen": 0,
+            "capture_coverage": null,
+            "fps": "30/1",
+            "frame_window_s": 150,
+            "frames_decoded": 751,
+            "has_b_frames": 0,
+            "height": 1080,
+            "heights_seen": [
+              1080
+            ],
+            "i_frames_seen": 26,
+            "idr_gap_max_s": 1.0,
+            "idr_gap_median_s": 1.0,
+            "keyframes_scanned": 26,
+            "level": 40,
+            "media_duration_s": 25.02,
+            "p_frames_seen": 725,
+            "pcr": {
+              "pcr_count": 1345,
+              "pcr_gaps_over_100ms": 0,
+              "pcr_gaps_over_40ms": 0,
+              "pcr_max_gap_by_pid": {
+                "0x100": 19.55
+              },
+              "pcr_max_gap_ms": 19.55,
+              "pcr_median_gap_ms": 19.05,
+              "pcr_pid": "0x100",
+              "pcr_pids": 1
+            },
+            "pix_fmt": "yuv420p",
+            "profile": "Constrained Baseline",
+            "slices": {
+              "b_frames": 0,
+              "frames": 751,
+              "i_frames": 26,
+              "multislice_frames": 0,
+              "p_frames": 725,
+              "slices_max": 1,
+              "slices_median": 1
+            },
+            "ts_kbps_total": 6016,
+            "video_codec": "h264",
+            "video_internal_gaps_over_1s": 0,
+            "video_kbps": 3386,
+            "video_span_s": 25.0,
+            "width": 1920,
+            "widths_seen": [
+              1920
+            ]
+          },
+          "output_capture": {
+            "artifact_sha256": "1016809578331d310cd66dc0d732408eeaa6d0ffce913cc6c2177a47afce3c60",
+            "bounder": {
+              "error": null,
+              "replaced_null_packets": 0
+            },
+            "bytes": 18816168,
+            "ffmpeg_version": "ffmpeg version n9.0.1 Copyright (c) 2000-2026 the FFmpeg developers",
+            "profile": "1080p30",
+            "raw_bytes": 18816168,
+            "returncode": 0,
+            "stderr_categories": {},
+            "wall_seconds": 14.463
+          },
+          "output_profile": "1080p30",
+          "quality_status": "native_1080",
+          "region": "rj",
+          "source": {
+            "audio": {
+              "audio_duration_s": 25.02,
+              "audio_gap_max_ms": 55.1,
+              "audio_overlap_max_ms": 0.0,
+              "audio_overlaps": 0,
+              "audio_packets": 1170,
+              "audio_pts_delta_max_ms": 76.4,
+              "audio_pts_gaps_over_1000ms": 0,
+              "audio_pts_gaps_over_2000ms": 0,
+              "audio_pts_gaps_over_500ms": 0,
+              "audio_pts_max_gap_ms": 55.1
+            },
+            "audio_bit_rate": "131176",
+            "audio_channels": 2,
+            "audio_codec": "aac",
+            "audio_sample_rate": "48000",
+            "b_frames_seen": 0,
+            "capture_coverage": null,
+            "fps": "30000/1001",
+            "frame_window_s": 150,
+            "frames_decoded": 750,
+            "has_b_frames": 0,
+            "height": 1080,
+            "heights_seen": [
+              1080
+            ],
+            "i_frames_seen": 26,
+            "idr_gap_max_s": 1.001,
+            "idr_gap_median_s": 1.001,
+            "keyframes_scanned": 26,
+            "level": 41,
+            "media_duration_s": 25.02,
+            "p_frames_seen": 724,
+            "pcr": {
+              "pcr_count": 386,
+              "pcr_gaps_over_100ms": 0,
+              "pcr_gaps_over_40ms": 363,
+              "pcr_max_gap_by_pid": {
+                "0x100": 67.1
+              },
+              "pcr_max_gap_ms": 67.1,
+              "pcr_median_gap_ms": 66.73,
+              "pcr_pid": "0x100",
+              "pcr_pids": 1
+            },
+            "pix_fmt": "yuv420p",
+            "profile": "Main",
+            "slices": {
+              "b_frames": 0,
+              "frames": 751,
+              "i_frames": 26,
+              "multislice_frames": 2,
+              "p_frames": 725,
+              "slices_max": 2,
+              "slices_median": 1
+            },
+            "ts_kbps_total": 2797,
+            "video_codec": "h264",
+            "video_internal_gaps_over_1s": 0,
+            "video_kbps": 2565,
+            "video_span_s": 24.792,
+            "width": 1920,
+            "widths_seen": [
+              1920
+            ]
+          },
+          "source_capture": {
+            "bytes": 8748204,
+            "capture_seconds": 12.035,
+            "returncode": 0,
+            "stderr_categories": {
+              "source_reconnect": 2
+            },
+            "wall_seconds": 12.034
+          },
+          "status": "approved",
+          "verdict": "output_ok"
+        },
+        "output_failed": [],
+        "decode_verdict": "decode_ok",
+        "decode_lines": 0,
+        "decode_evidence": {
+          "capture": {
+            "bytes": 20621156,
+            "requested_duration": 60.0,
+            "returncode": 0,
+            "stderr_categories": {},
+            "wall_seconds": 42.442
+          },
+          "catalog_name": "RECORD TV RIO FHD²",
+          "channel_id": "214640",
+          "decode": {
+            "categories": {},
+            "checked_seconds": 60.0,
+            "lines": 0,
+            "returncode": 0,
+            "wall_seconds": 4.655
+          },
+          "duration_s": 60.0,
+          "identity": "record",
+          "measured_at": "2026-10-27T20:33:59Z",
+          "media": {
+            "audio_codec": "aac",
+            "audio_duration_s": 59.99,
+            "audio_packets": 2812,
+            "height": 1080,
+            "video_decoded_frames": 1799,
+            "video_duration_s": 59.99,
+            "video_span_s": 59.994,
+            "width": 1920
+          },
+          "status": "approved",
+          "validation": {
+            "checks": {
+              "audio_coverage": true,
+              "capture_has_media": true,
+              "capture_ok": true,
+              "decode_clean": true,
+              "decode_process_ok": true,
+              "valid_duration": true,
+              "video_coverage": true,
+              "video_frames": true
+            },
+            "failed": []
+          },
+          "verdict": "decode_ok"
+        },
+        "source_evidence": {
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "candidate_ok",
+          "media": {
+            "width": 1920,
+            "height": 1080,
+            "capture_coverage": null,
+            "media_duration_s": 299.97,
+            "audio": {
+              "audio_duration_s": 299.97,
+              "audio_packets": 14005,
+              "audio_pts_gaps_over_1000ms": 0,
+              "audio_pts_gaps_over_500ms": 0,
+              "audio_pts_max_gap_ms": 175.2
+            }
+          },
+          "windows": 2,
+          "window2": {
+            "duration_s": 300.0,
+            "media_duration_s": 299.99,
+            "coverage": 1.0,
+            "audio_gaps_over_2s": 0,
+            "audio_gaps_over_500ms": 0,
+            "width": 1920,
+            "height": 1080,
+            "verdict": "candidate_ok",
+            "reconnects": null
+          }
+        },
+        "output_pcr_max_gap_ms": 19.55,
+        "output_audio_gaps_500ms": 0
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "214640",
+          "catalog_name": "RECORD TV RIO FHD²",
+          "region": "rj",
+          "quality_label": "FHD2",
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "channel_id": "214639",
+          "catalog_name": "RECORD TV RIO FHD¹",
+          "region": "rj",
+          "quality_label": "FHD1",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "214641",
+          "catalog_name": "RECORD TV RIO HD¹",
+          "region": "rj",
+          "quality_label": "HD1",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "214642",
+          "catalog_name": "RECORD TV RIO HD²",
+          "region": "rj",
+          "quality_label": "HD2",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ],
+      "rejected": [
+        {
+          "channel_id": "214639",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "214641",
+          "reason": "not_1080p"
+        }
+      ]
+    },
+    {
+      "identity": "redetv",
+      "category": "Abertos",
+      "filename": "RedeTV.trp",
+      "favorite_ids": [
+        "208423"
+      ],
+      "status": "pending",
+      "quality_status": "pending_no_native_1080",
+      "approved": false,
+      "chosen": {
+        "channel_id": "208423",
+        "catalog_name": "REDE TV FHD¹",
+        "region": "national",
+        "quality_label": "FHD1",
+        "native_width": 1280,
+        "native_height": 720,
+        "video_codec": "h264",
+        "profile": "High",
+        "video_kbps": 3698,
+        "ts_kbps": 4002,
+        "audio_codec": "aac",
+        "pcr_max_gap_ms": 100.1,
+        "evidence_phase": "winner",
+        "evidence_duration_s": 300.0,
+        "source_audio_max_gap_ms": 181.3,
+        "output_verdict": null,
+        "output_evidence": {},
+        "output_failed": [],
+        "decode_verdict": null,
+        "decode_lines": null,
+        "decode_evidence": {},
+        "source_evidence": {
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "not_1080p",
+          "media": {
+            "width": 1280,
+            "height": 720,
+            "capture_coverage": null,
+            "media_duration_s": 299.98,
+            "audio": {
+              "audio_duration_s": 299.98,
+              "audio_packets": 14031,
+              "audio_pts_gaps_over_1000ms": 0,
+              "audio_pts_gaps_over_500ms": 0,
+              "audio_pts_max_gap_ms": 181.3
+            }
+          },
+          "windows": 1,
+          "window2": null
+        },
+        "output_pcr_max_gap_ms": null,
+        "output_audio_gaps_500ms": null
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "208423",
+          "catalog_name": "REDE TV FHD¹",
+          "region": "national",
+          "quality_label": "FHD1",
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "208425",
+          "catalog_name": "REDE TV HD¹",
+          "region": "national",
+          "quality_label": "HD1",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "208422",
+          "catalog_name": "REDE TV H264²",
+          "region": "national",
+          "quality_label": "H264",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "208421",
+          "catalog_name": "REDE TV H265",
+          "region": "national",
+          "quality_label": "H265",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        }
+      ],
+      "rejected": [
+        {
+          "channel_id": "208423",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "208425",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "208422",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "208421",
+          "reason": "not_1080p"
+        }
+      ]
+    },
+    {
+      "identity": "sbt",
+      "category": "Abertos",
+      "filename": "SBT 1080 RJ.trp",
+      "favorite_ids": [
+        "207198"
+      ],
+      "status": "approved",
+      "quality_status": "native_1080",
+      "approved": true,
+      "chosen": {
+        "channel_id": "207198",
+        "catalog_name": "SBT RJ FHD¹",
+        "region": "rj",
+        "quality_label": "FHD1",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "profile": "High",
+        "video_kbps": 1985,
+        "ts_kbps": 2224,
+        "audio_codec": "aac",
+        "pcr_max_gap_ms": 133.33,
+        "evidence_phase": "winner",
+        "evidence_duration_s": 300.0,
+        "source_audio_max_gap_ms": 223.9,
+        "output_verdict": "output_ok",
+        "output_evidence": {
+          "catalog_name": "SBT RJ FHD¹",
+          "channel_id": "207198",
+          "checks": {
+            "audio_ac3_384k": true,
+            "audio_continuous": true,
+            "geometry": true,
+            "idr_one_second": true,
+            "no_b_frames": true,
+            "no_decode_errors": true,
+            "pcr_filter_ok": true,
+            "pcr_interval": true,
+            "process_ok": true,
+            "resolution_stable": true,
+            "single_slice": true,
+            "stderr_clean": true
+          },
+          "failed": [],
+          "identity": "sbt",
+          "measured_at": "2026-10-27T20:35:57Z",
+          "output": {
+            "audio": {
+              "audio_duration_s": 25.02,
+              "audio_gap_max_ms": 0.0,
+              "audio_overlap_max_ms": 0.0,
+              "audio_overlaps": 0,
+              "audio_packets": 782,
+              "audio_pts_delta_max_ms": 32.0,
+              "audio_pts_gaps_over_1000ms": 0,
+              "audio_pts_gaps_over_2000ms": 0,
+              "audio_pts_gaps_over_500ms": 0,
+              "audio_pts_max_gap_ms": 0.0
+            },
+            "audio_bit_rate": "384000",
+            "audio_channels": 2,
+            "audio_codec": "ac3",
+            "audio_sample_rate": "48000",
+            "b_frames_seen": 0,
+            "capture_coverage": null,
+            "fps": "30/1",
+            "frame_window_s": 150,
+            "frames_decoded": 751,
+            "has_b_frames": 0,
+            "height": 1080,
+            "heights_seen": [
+              1080
+            ],
+            "i_frames_seen": 26,
+            "idr_gap_max_s": 1.0,
+            "idr_gap_median_s": 1.0,
+            "keyframes_scanned": 26,
+            "level": 40,
+            "media_duration_s": 25.02,
+            "p_frames_seen": 725,
+            "pcr": {
+              "pcr_count": 1345,
+              "pcr_gaps_over_100ms": 0,
+              "pcr_gaps_over_40ms": 0,
+              "pcr_max_gap_by_pid": {
+                "0x100": 19.55
+              },
+              "pcr_max_gap_ms": 19.55,
+              "pcr_median_gap_ms": 19.05,
+              "pcr_pid": "0x100",
+              "pcr_pids": 1
+            },
+            "pix_fmt": "yuv420p",
+            "profile": "Constrained Baseline",
+            "slices": {
+              "b_frames": 0,
+              "frames": 751,
+              "i_frames": 26,
+              "multislice_frames": 0,
+              "p_frames": 725,
+              "slices_max": 1,
+              "slices_median": 1
+            },
+            "ts_kbps_total": 6015,
+            "video_codec": "h264",
+            "video_internal_gaps_over_1s": 0,
+            "video_kbps": 3532,
+            "video_span_s": 25.0,
+            "width": 1920,
+            "widths_seen": [
+              1920
+            ]
+          },
+          "output_capture": {
+            "artifact_sha256": "4ec1915a41483a170562f205048c29e27c25d9bad2bbbc453e038c70de3fe54f",
+            "bounder": {
+              "error": null,
+              "replaced_null_packets": 0
+            },
+            "bytes": 18812784,
+            "ffmpeg_version": "ffmpeg version n9.0.1 Copyright (c) 2000-2026 the FFmpeg developers",
+            "profile": "1080p30",
+            "raw_bytes": 18812784,
+            "returncode": 0,
+            "stderr_categories": {},
+            "wall_seconds": 15.283
+          },
+          "output_profile": "1080p30",
+          "quality_status": "native_1080",
+          "region": "rj",
+          "source": {
+            "audio": {
+              "audio_duration_s": 25.0,
+              "audio_gap_max_ms": 0.0,
+              "audio_overlap_max_ms": 0.0,
+              "audio_overlaps": 0,
+              "audio_packets": 1172,
+              "audio_pts_delta_max_ms": 21.3,
+              "audio_pts_gaps_over_1000ms": 0,
+              "audio_pts_gaps_over_2000ms": 0,
+              "audio_pts_gaps_over_500ms": 0,
+              "audio_pts_max_gap_ms": 0.0
+            },
+            "audio_bit_rate": "130505",
+            "audio_channels": 2,
+            "audio_codec": "aac",
+            "audio_sample_rate": "48000",
+            "b_frames_seen": 0,
+            "capture_coverage": null,
+            "fps": "30/1",
+            "frame_window_s": 150,
+            "frames_decoded": 751,
+            "has_b_frames": 0,
+            "height": 1080,
+            "heights_seen": [
+              1080
+            ],
+            "i_frames_seen": 13,
+            "idr_gap_max_s": 2.0,
+            "idr_gap_median_s": 2.0,
+            "keyframes_scanned": 13,
+            "level": 42,
+            "media_duration_s": 25.0,
+            "p_frames_seen": 738,
+            "pcr": {
+              "pcr_count": 261,
+              "pcr_gaps_over_100ms": 58,
+              "pcr_gaps_over_40ms": 249,
+              "pcr_max_gap_by_pid": {
+                "0x100": 132.96
+              },
+              "pcr_max_gap_ms": 132.96,
+              "pcr_median_gap_ms": 100.0,
+              "pcr_pid": "0x100",
+              "pcr_pids": 1
+            },
+            "pix_fmt": "yuv420p",
+            "profile": "High",
+            "slices": {
+              "b_frames": 0,
+              "frames": 751,
+              "i_frames": 13,
+              "multislice_frames": 0,
+              "p_frames": 738,
+              "slices_max": 1,
+              "slices_median": 1
+            },
+            "ts_kbps_total": 2085,
+            "video_codec": "h264",
+            "video_internal_gaps_over_1s": 0,
+            "video_kbps": 1926,
+            "video_span_s": 23.999,
+            "width": 1920,
+            "widths_seen": [
+              1920
+            ]
+          },
+          "source_capture": {
+            "bytes": 6516832,
+            "capture_seconds": 8.38,
+            "returncode": 0,
+            "stderr_categories": {},
+            "wall_seconds": 8.38
+          },
+          "status": "approved",
+          "verdict": "output_ok"
+        },
+        "output_failed": [],
+        "decode_verdict": "decode_ok",
+        "decode_lines": 0,
+        "decode_evidence": {
+          "capture": {
+            "bytes": 15383476,
+            "requested_duration": 60.0,
+            "returncode": 0,
+            "stderr_categories": {},
+            "wall_seconds": 42.427
+          },
+          "catalog_name": "SBT RJ FHD¹",
+          "channel_id": "207198",
+          "decode": {
+            "categories": {},
+            "checked_seconds": 60.0,
+            "lines": 0,
+            "returncode": 0,
+            "wall_seconds": 4.734
+          },
+          "duration_s": 60.0,
+          "identity": "sbt",
+          "measured_at": "2026-10-27T20:32:57Z",
+          "media": {
+            "audio_codec": "aac",
+            "audio_duration_s": 59.99,
+            "audio_packets": 2812,
+            "height": 1080,
+            "video_decoded_frames": 1801,
+            "video_duration_s": 59.99,
+            "video_span_s": 60.0,
+            "width": 1920
+          },
+          "status": "approved",
+          "validation": {
+            "checks": {
+              "audio_coverage": true,
+              "capture_has_media": true,
+              "capture_ok": true,
+              "decode_clean": true,
+              "decode_process_ok": true,
+              "valid_duration": true,
+              "video_coverage": true,
+              "video_frames": true
+            },
+            "failed": []
+          },
+          "verdict": "decode_ok"
+        },
+        "source_evidence": {
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "candidate_ok",
+          "media": {
+            "width": 1920,
+            "height": 1080,
+            "capture_coverage": null,
+            "media_duration_s": 299.98,
+            "audio": {
+              "audio_duration_s": 299.98,
+              "audio_packets": 13993,
+              "audio_pts_gaps_over_1000ms": 0,
+              "audio_pts_gaps_over_500ms": 0,
+              "audio_pts_max_gap_ms": 223.9
+            }
+          },
+          "windows": 2,
+          "window2": {
+            "duration_s": 300.0,
+            "media_duration_s": 299.99,
+            "coverage": 1.0,
+            "audio_gaps_over_2s": 0,
+            "audio_gaps_over_500ms": 0,
+            "width": 1920,
+            "height": 1080,
+            "verdict": "candidate_ok",
+            "reconnects": null
+          }
+        },
+        "output_pcr_max_gap_ms": 19.55,
+        "output_audio_gaps_500ms": 0
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "207198",
+          "catalog_name": "SBT RJ FHD¹",
+          "region": "rj",
+          "quality_label": "FHD1",
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "channel_id": "207199",
+          "catalog_name": "SBT RJ HD¹",
+          "region": "rj",
+          "quality_label": "HD1",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "207192",
+          "catalog_name": "SBT SP FHD¹",
+          "region": "sp",
+          "quality_label": "FHD1",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "channel_id": "207193",
+          "catalog_name": "SBT SP FHD²",
+          "region": "sp",
+          "quality_label": "FHD2",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ],
+      "rejected": [
+        {
+          "channel_id": "207199",
+          "reason": "not_1080p"
+        }
+      ]
+    },
+    {
+      "identity": "tv-cultura-208430",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_720_exception",
+      "resolution_exception": true,
+      "category": "Abertos",
+      "filename": "TV CULTURA 720.trp",
+      "chosen": {
+        "channel_id": "208430",
+        "catalog_name": "TV CULTURA FHD¹",
+        "region": "national",
+        "quality_label": "HD",
+        "native_width": 1280,
+        "native_height": 720,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 3487,
+        "measured_from": "host-local (triagem 480s; decode 60s; saida 25s)",
+        "windows": 1,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; artefato SEI-antes-de-SPS provado (1 msg, AUD->SEI->SPS->PPS->IDR, 1801/1801 quadros)",
+        "output_verdict": "output_ok",
+        "output_checks": "protocolo ok (0 B-frames, 1 fatia, ac3 384k, PCR 19.55ms, IDR 1.0s)",
+        "evidence_origin": "scratch/live-batch/triagem10{,-decode,-output}",
+        "resolution_exception_authorized_by": "operador (31/10): qualquer resolucao serve para provar se pega"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "208430",
+          "catalog_name": "TV CULTURA FHD¹",
+          "region": "national",
+          "quality_label": "HD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1280,
+          "height": 720
+        }
+      ]
+    },
+    {
+      "identity": "tv-cultura",
+      "category": "Abertos",
+      "filename": "TV Cultura.trp",
+      "favorite_ids": [
+        "208430"
+      ],
+      "status": "pending",
+      "quality_status": "pending_no_native_1080",
+      "approved": false,
+      "chosen": {
+        "channel_id": "208430",
+        "catalog_name": "TV CULTURA FHD¹",
+        "region": "national",
+        "quality_label": "FHD1",
+        "native_width": 1280,
+        "native_height": 720,
+        "video_codec": "h264",
+        "profile": "Main",
+        "video_kbps": 3723,
+        "ts_kbps": 4000,
+        "audio_codec": "aac",
+        "pcr_max_gap_ms": 100.0,
+        "evidence_phase": "winner",
+        "evidence_duration_s": 300.0,
+        "source_audio_max_gap_ms": 169.3,
+        "output_verdict": null,
+        "output_evidence": {},
+        "output_failed": [],
+        "decode_verdict": null,
+        "decode_lines": null,
+        "decode_evidence": {},
+        "source_evidence": {
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "not_1080p",
+          "media": {
+            "width": 1280,
+            "height": 720,
+            "capture_coverage": null,
+            "media_duration_s": 299.99,
+            "audio": {
+              "audio_duration_s": 299.99,
+              "audio_packets": 14031,
+              "audio_pts_gaps_over_1000ms": 0,
+              "audio_pts_gaps_over_500ms": 0,
+              "audio_pts_max_gap_ms": 169.3
+            }
+          },
+          "windows": 1,
+          "window2": null
+        },
+        "output_pcr_max_gap_ms": null,
+        "output_audio_gaps_500ms": null
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "208430",
+          "catalog_name": "TV CULTURA FHD¹",
+          "region": "national",
+          "quality_label": "FHD1",
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "208432",
+          "catalog_name": "TV CULTURA HD¹",
+          "region": "national",
+          "quality_label": "HD1",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "208434",
+          "catalog_name": "TV CULTURA SD¹",
+          "region": "national",
+          "quality_label": "SD1",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 768,
+          "height": 432
+        },
+        {
+          "channel_id": "208429",
+          "catalog_name": "TV CULTURA H265",
+          "region": "national",
+          "quality_label": "H265",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        }
+      ],
+      "rejected": [
+        {
+          "channel_id": "208430",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "208432",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "208434",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "208429",
+          "reason": "not_1080p"
+        }
+      ]
+    },
+    {
+      "identity": "tv-gazeta-sp-fhd-208451",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "category": "Abertos",
+      "filename": "TV GAZETA SP FHD 1080.trp",
+      "chosen": {
+        "channel_id": "208451",
+        "catalog_name": "TV GAZETA SP FHD²",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 6010,
+        "measured_from": "host-local (harness VPS); teste fisico na TV pendente",
+        "windows": 2,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero erros (ou artefato provado)",
+        "output_verdict": "output_ok",
+        "output_checks": "12/12 (0 B-frames, 1 fatia, ac3)",
+        "evidence_origin": "~/canais-sweep/evidence{,-w2,-decode,-output}"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "208451",
+          "catalog_name": "TV GAZETA SP FHD²",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    },
+    {
+      "identity": "animal-planet-4k-387582",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "category": "Documentarios",
+      "filename": "ANIMAL PLANET 1080.trp",
+      "chosen": {
+        "channel_id": "387582",
+        "catalog_name": "ANIMAL PLANET 4K",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 3036,
+        "measured_from": "host-local (harness VPS); teste fisico na TV pendente",
+        "windows": 2,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero erros (ou artefato provado)",
+        "output_verdict": "output_ok",
+        "output_checks": "12/12 (0 B-frames, 1 fatia, ac3)",
+        "evidence_origin": "~/canais-sweep/evidence{,-w2,-decode,-output}"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "387582",
+          "catalog_name": "ANIMAL PLANET 4K",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    },
+    {
+      "identity": "curta-fhd-387601",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "category": "Documentarios",
+      "filename": "CURTA! FHD 1080.trp",
+      "chosen": {
+        "channel_id": "387601",
+        "catalog_name": "CURTA! FHD²",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 2879,
+        "measured_from": "host-local (harness VPS); teste fisico na TV pendente",
+        "windows": 2,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero erros (ou artefato provado)",
+        "output_verdict": "output_ok",
+        "output_checks": "12/12 (0 B-frames, 1 fatia, ac3)",
+        "evidence_origin": "~/canais-sweep/evidence{,-w2,-decode,-output}"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "387601",
+          "catalog_name": "CURTA! FHD²",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    },
+    {
+      "identity": "discovery-channel",
+      "category": "Documentarios",
+      "filename": "Discovery Channel 1080.trp",
+      "favorite_ids": [
+        "387640"
+      ],
+      "status": "approved",
+      "quality_status": "pending_decode_validation",
+      "approved": true,
+      "chosen": {
+        "channel_id": "387640",
+        "catalog_name": "DISCOVERY CHANNEL FHD¹",
+        "region": "national",
+        "quality_label": "FHD1",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "profile": "Main",
+        "video_kbps": 3021,
+        "ts_kbps": 3286,
+        "audio_codec": "aac",
+        "pcr_max_gap_ms": 100.0,
+        "evidence_phase": "winner",
+        "evidence_duration_s": 300.0,
+        "source_audio_max_gap_ms": 223.0,
+        "output_verdict": null,
+        "output_evidence": {},
+        "output_failed": [],
+        "decode_verdict": null,
+        "decode_lines": null,
+        "decode_evidence": {},
+        "source_evidence": {
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "candidate_ok",
+          "media": {
+            "width": 1920,
+            "height": 1080,
+            "capture_coverage": null,
+            "media_duration_s": 300.0,
+            "audio": {
+              "audio_duration_s": 300.0,
+              "audio_packets": 12854,
+              "audio_pts_gaps_over_1000ms": 0,
+              "audio_pts_gaps_over_500ms": 0,
+              "audio_pts_max_gap_ms": 223.0
+            }
+          },
+          "windows": 2,
+          "window2": {
+            "duration_s": 300.0,
+            "media_duration_s": 300.02,
+            "coverage": 1.0001,
+            "audio_gaps_over_2s": 0,
+            "audio_gaps_over_500ms": 0,
+            "width": 1920,
+            "height": 1080,
+            "verdict": "candidate_ok",
+            "reconnects": 1
+          }
+        },
+        "output_pcr_max_gap_ms": null,
+        "output_audio_gaps_500ms": null
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "387640",
+          "catalog_name": "DISCOVERY CHANNEL FHD¹",
+          "region": "national",
+          "quality_label": "FHD1",
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "channel_id": "387641",
+          "catalog_name": "DISCOVERY CHANNEL FHD²",
+          "region": "national",
+          "quality_label": "FHD2",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "387642",
+          "catalog_name": "DISCOVERY CHANNEL HD¹",
+          "region": "national",
+          "quality_label": "HD1",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "387638",
+          "catalog_name": "DISCOVERY CHANNEL 4K",
+          "region": "national",
+          "quality_label": "4K",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "387639",
+          "catalog_name": "DISCOVERY CHANNEL H265",
+          "region": "national",
+          "quality_label": "H265",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "387643",
+          "catalog_name": "DISCOVERY CHANNEL HD²",
+          "region": "national",
+          "quality_label": "HD2",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        }
+      ],
+      "rejected": [
+        {
+          "channel_id": "387641",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "387642",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "387638",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "387639",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "387643",
+          "reason": "not_1080p"
+        }
+      ]
+    },
+    {
+      "identity": "discovery",
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "category": "Documentarios",
+      "filename": "Discovery Turbo 1080.trp",
+      "favorite_ids": [],
+      "chosen": {
+        "channel_id": "387688",
+        "catalog_name": "DISCOVERY TURBO FHD1",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 3018,
+        "measured_from": "host-local (uma conexao por vez); teste fisico na TV pendente",
+        "windows": 2,
+        "window1": {
+          "duration_s": 300,
+          "media_duration_s": 300.02,
+          "capture_coverage": 1.0001,
+          "audio_gaps_over_500ms": 0,
+          "verdict": "candidate_ok",
+          "artifact": "scratch/live-batch/evidence/winner-discovery-387688.json",
+          "sha256": "a7e7aa80055c3e37b0785abd6c0910c4decca141d7abf38e45e26374b4869fc9"
+        },
+        "window2": {
+          "duration_s": 300,
+          "media_duration_s": 300.02,
+          "capture_coverage": 1.0001,
+          "audio_gaps_over_500ms": 0,
+          "verdict": "candidate_ok",
+          "artifact": "scratch/live-batch/evidence-w2/winner-discovery-387688.json",
+          "sha256": "d71ffddc961affc6542502ff116d4d6caeba618882f16f1d89eb246943b9641f"
+        },
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero linhas de erro",
+        "output_verdict": "output_ok",
+        "output_checks": "12/12 (0 B-frames, 1 fatia, ac3)"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "387688",
+          "catalog_name": "DISCOVERY TURBO FHD1",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "duration_s": 300,
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ],
+      "rejected": []
+    },
+    {
+      "identity": "h2-fhd-387608",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "category": "Documentarios",
+      "filename": "H2 FHD 1080.trp",
+      "chosen": {
+        "channel_id": "387608",
+        "catalog_name": "H2 FHD¹",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 2677,
+        "measured_from": "host-local (harness VPS); teste fisico na TV pendente",
+        "windows": 2,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero erros (ou artefato provado)",
+        "output_verdict": "output_ok",
+        "output_checks": "12/12 (0 B-frames, 1 fatia, ac3)",
+        "evidence_origin": "~/canais-sweep/evidence{,-w2,-decode,-output}"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "387608",
+          "catalog_name": "H2 FHD¹",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    },
+    {
+      "identity": "history",
+      "category": "Documentarios",
+      "filename": "History 1080.trp",
+      "favorite_ids": [
+        "387624"
+      ],
+      "status": "approved",
+      "quality_status": "native_1080",
+      "approved": true,
+      "chosen": {
+        "channel_id": "387622",
+        "catalog_name": "HISTORY 4K",
+        "region": "national",
+        "quality_label": "4K",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "profile": "Main",
+        "video_kbps": 3018,
+        "ts_kbps": 3284,
+        "audio_codec": "aac",
+        "pcr_max_gap_ms": 131.87,
+        "evidence_phase": "winner",
+        "evidence_duration_s": 300.0,
+        "source_audio_max_gap_ms": 0.0,
+        "output_verdict": null,
+        "output_evidence": {},
+        "output_failed": [],
+        "decode_verdict": null,
+        "decode_lines": null,
+        "decode_evidence": {},
+        "source_evidence": {
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "candidate_ok",
+          "media": {
+            "width": 1920,
+            "height": 1080,
+            "capture_coverage": 1.0,
+            "media_duration_s": 300.0,
+            "audio": {
+              "audio_duration_s": 300.0,
+              "audio_gap_max_ms": 0.0,
+              "audio_overlaps": 60,
+              "audio_packets": 12920,
+              "audio_pts_delta_max_ms": 23.3,
+              "audio_pts_gaps_over_1000ms": 0,
+              "audio_pts_gaps_over_2000ms": 0,
+              "audio_pts_gaps_over_500ms": 0,
+              "audio_pts_max_gap_ms": 0.0
+            }
+          },
+          "windows": 2,
+          "window2": {
+            "duration_s": 300.0,
+            "media_duration_s": 300.0,
+            "coverage": 1.0,
+            "audio_gaps_over_2s": 0,
+            "audio_gaps_over_500ms": 0,
+            "width": 1920,
+            "height": 1080,
+            "verdict": "candidate_ok",
+            "reconnects": null
+          }
+        },
+        "output_pcr_max_gap_ms": null,
+        "output_audio_gaps_500ms": null
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "387624",
+          "catalog_name": "HISTORY FHD¹",
+          "region": "national",
+          "quality_label": "FHD1",
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "channel_id": "387625",
+          "catalog_name": "HISTORY FHD²",
+          "region": "national",
+          "quality_label": "FHD2",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "387626",
+          "catalog_name": "HISTORY HD¹",
+          "region": "national",
+          "quality_label": "HD1",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "387622",
+          "catalog_name": "HISTORY 4K",
+          "region": "national",
+          "quality_label": "4K",
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "channel_id": "387623",
+          "catalog_name": "HISTORY H265",
+          "region": "national",
+          "quality_label": "H265",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "387627",
+          "catalog_name": "HISTORY HD²",
+          "region": "national",
+          "quality_label": "HD2",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        }
+      ],
+      "rejected": [
+        {
+          "channel_id": "387625",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "387626",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "387623",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "387627",
+          "reason": "not_1080p"
+        }
+      ]
+    },
+    {
+      "identity": "amc-fhd-360771",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "category": "Filmes",
+      "filename": "AMC FHD 1080.trp",
+      "chosen": {
+        "channel_id": "360771",
+        "catalog_name": "AMC FHD¹",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 2709,
+        "measured_from": "host-local (harness VPS); teste fisico na TV pendente",
+        "windows": 2,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero erros (ou artefato provado)",
+        "output_verdict": "output_ok",
+        "output_checks": "12/12 (0 B-frames, 1 fatia, ac3)",
+        "evidence_origin": "~/canais-sweep/evidence{,-w2,-decode,-output}"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "360771",
+          "catalog_name": "AMC FHD¹",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    },
+    {
+      "identity": "axn-4k-360777",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "category": "Filmes",
+      "filename": "AXN 1080.trp",
+      "chosen": {
+        "channel_id": "360777",
+        "catalog_name": "AXN 4K",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 3005,
+        "measured_from": "host-local (harness VPS); teste fisico na TV pendente",
+        "windows": 2,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero erros (ou artefato provado)",
+        "output_verdict": "output_ok",
+        "output_checks": "12/12 (0 B-frames, 1 fatia, ac3)",
+        "evidence_origin": "~/canais-sweep/evidence{,-w2,-decode,-output}"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "360777",
+          "catalog_name": "AXN 4K",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    },
+    {
+      "identity": "hbo-365180",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "resolution_exception": false,
+      "category": "Filmes",
+      "filename": "HBO 1080.trp",
+      "chosen": {
+        "channel_id": "365180",
+        "catalog_name": "HBO FHD¹",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 2910,
+        "measured_from": "host-local (triagem 480s; decode 60s; saida 25s)",
+        "windows": 1,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; artefato SEI-antes-de-SPS provado (1 msg, AUD->SEI->SPS->PPS->IDR, 1801/1801 quadros)",
+        "output_verdict": "output_ok",
+        "output_checks": "protocolo ok (0 B-frames, 1 fatia, ac3 384k, PCR 19.55ms, IDR 1.0s)",
+        "evidence_origin": "scratch/live-batch/triagem10{,-decode,-output}",
+        "resolution_exception_authorized_by": "operador (31/10): qualquer resolucao serve para provar se pega"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "365180",
+          "catalog_name": "HBO FHD¹",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    },
+    {
+      "identity": "tnt-fhd-360886",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "category": "Filmes",
+      "filename": "TNT FHD 1080.trp",
+      "chosen": {
+        "channel_id": "360886",
+        "catalog_name": "TNT FHD²",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 3017,
+        "measured_from": "host-local (harness VPS); teste fisico na TV pendente",
+        "windows": 2,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero erros (ou artefato provado)",
+        "output_verdict": "output_ok",
+        "output_checks": "12/12 (0 B-frames, 1 fatia, ac3)",
+        "evidence_origin": "~/canais-sweep/evidence{,-w2,-decode,-output}"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "360886",
+          "catalog_name": "TNT FHD²",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    },
+    {
+      "identity": "telecine-action",
+      "category": "Filmes",
+      "filename": "Telecine Action 1080.trp",
+      "favorite_ids": [
+        "365244"
+      ],
+      "status": "pending",
+      "quality_status": "pending_decode_conflict",
+      "approved": false,
+      "chosen": {
+        "channel_id": "365243",
+        "catalog_name": "TELECINE ACTION H265",
+        "region": "national",
+        "quality_label": "H265",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "profile": "High",
+        "video_kbps": 5467,
+        "ts_kbps": 2994,
+        "audio_codec": "aac",
+        "pcr_max_gap_ms": 66.73,
+        "evidence_phase": "winner",
+        "evidence_duration_s": 300.0,
+        "source_audio_max_gap_ms": 0.0,
+        "output_verdict": null,
+        "output_evidence": {},
+        "output_failed": [],
+        "decode_verdict": "decode_errors",
+        "decode_lines": 0,
+        "decode_evidence": {
+          "capture": {
+            "bytes": 24316672,
+            "requested_duration": 60.0,
+            "returncode": 0,
+            "stderr_categories": {},
+            "wall_seconds": 49.439
+          },
+          "catalog_name": "TELECINE ACTION H265",
+          "channel_id": "365243",
+          "decode": {
+            "categories": {},
+            "checked_seconds": 60.0,
+            "lines": 0,
+            "returncode": 0,
+            "wall_seconds": 7.021
+          },
+          "duration_s": 60.0,
+          "identity": "telecine-action",
+          "measured_at": "2026-10-27T20:34:59Z",
+          "media": {
+            "audio_codec": "aac",
+            "audio_duration_s": 60.01,
+            "audio_packets": 2813,
+            "height": 1080,
+            "video_decoded_frames": 1799,
+            "video_duration_s": 60.01,
+            "video_span_s": 57.057,
+            "width": 1920
+          },
+          "status": "approved",
+          "validation": {
+            "checks": {
+              "audio_coverage": true,
+              "capture_has_media": true,
+              "capture_ok": true,
+              "decode_clean": true,
+              "decode_process_ok": true,
+              "valid_duration": true,
+              "video_coverage": false,
+              "video_frames": true
+            },
+            "failed": [
+              "video_coverage"
+            ]
+          },
+          "verdict": "decode_errors"
+        },
+        "source_evidence": {
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "candidate_ok",
+          "media": {
+            "width": 1920,
+            "height": 1080,
+            "capture_coverage": 1.0,
+            "media_duration_s": 300.01,
+            "audio": {
+              "audio_duration_s": 300.01,
+              "audio_gap_max_ms": 0.0,
+              "audio_overlaps": 0,
+              "audio_packets": 14063,
+              "audio_pts_delta_max_ms": 21.3,
+              "audio_pts_gaps_over_1000ms": 0,
+              "audio_pts_gaps_over_2000ms": 0,
+              "audio_pts_gaps_over_500ms": 0,
+              "audio_pts_max_gap_ms": 0.0
+            }
+          },
+          "windows": 2,
+          "window2": {
+            "duration_s": 300.0,
+            "media_duration_s": 300.01,
+            "coverage": 1.0,
+            "audio_gaps_over_2s": 0,
+            "audio_gaps_over_500ms": 0,
+            "width": 1920,
+            "height": 1080,
+            "verdict": "candidate_ok",
+            "reconnects": null
+          }
+        },
+        "output_pcr_max_gap_ms": null,
+        "output_audio_gaps_500ms": null
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "365244",
+          "catalog_name": "TELECINE ACTION FHD¹",
+          "region": "national",
+          "quality_label": "FHD1",
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "channel_id": "365245",
+          "catalog_name": "TELECINE ACTION FHD²",
+          "region": "national",
+          "quality_label": "FHD2",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "channel_id": "365246",
+          "catalog_name": "TELECINE ACTION HD¹",
+          "region": "national",
+          "quality_label": "HD1",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "365242",
+          "catalog_name": "TELECINE ACTION 4K",
+          "region": "national",
+          "quality_label": "4K",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "channel_id": "365243",
+          "catalog_name": "TELECINE ACTION H265",
+          "region": "national",
+          "quality_label": "H265",
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "channel_id": "365247",
+          "catalog_name": "TELECINE ACTION HD²",
+          "region": "national",
+          "quality_label": "HD2",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        }
+      ],
+      "rejected": [
+        {
+          "channel_id": "365246",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "365247",
+          "reason": "not_1080p"
+        }
+      ],
+      "demotion": {
+        "reason": "pending_decode_conflict",
+        "detail": "duas rodadas no MESMO id com vereditos opostos: a embutida no export diz decode_errors com video_coverage 0.951 (< 0.97) e a de disco diz decode_ok; sem nova captura nao ha como reconciliar",
+        "missing_evidence": "captura de decode no id 365243 com cobertura de video registrada e >= 0.97",
+        "next_test": "nova captura de 60 s nesse id medindo video_span_s; exige janela livre e nada foi sondado para produzi-la",
+        "contradiction": {
+          "identity": "telecine-action",
+          "channel_id": "365243",
+          "kind": "decode_verdict_conflict",
+          "round_embedded_in_export": {
+            "verdict": "decode_errors",
+            "failed_checks": [
+              "video_coverage"
+            ],
+            "video_span_s": 57.057,
+            "checked_seconds": 60.0,
+            "video_coverage": 0.951,
+            "capture_bytes": 24316672,
+            "measured_at": "2026-10-27T20:34:59Z"
+          },
+          "round_on_disk": {
+            "artifact": "docs/implementation/evidence/decode/decode-telecine-action-365243.json",
+            "sha256": "828becf882f48671afea6fe9c32653eab589b52e4a5fa71e546ab410d7151a65",
+            "verdict": "decode_ok",
+            "capture_bytes": 24297684,
+            "metrics_registered": false
+          },
+          "resolution": "nao reconciliada sem nova captura; identidade mantida pendente"
+        }
+      }
+    },
+    {
+      "identity": "telecine",
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "category": "Filmes",
+      "filename": "Telecine Fun 1080.trp",
+      "favorite_ids": [],
+      "chosen": {
+        "channel_id": "365261",
+        "catalog_name": "TELECINE FUN FHD2",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 3384,
+        "measured_from": "host-local (uma conexao por vez); teste fisico na TV pendente",
+        "windows": 2,
+        "window1": {
+          "duration_s": 300,
+          "media_duration_s": 300.0,
+          "capture_coverage": 1.0,
+          "audio_gaps_over_500ms": 0,
+          "verdict": "candidate_ok",
+          "artifact": "scratch/live-batch/evidence/winner-telecine-365261.json",
+          "sha256": "a41419633fcce01140ca94f4a0d727ebcd0e1eb519a954f18d0945cf794015d1"
+        },
+        "window2": {
+          "duration_s": 300,
+          "media_duration_s": 300.0,
+          "capture_coverage": 1.0,
+          "audio_gaps_over_500ms": 1,
+          "verdict": "candidate_ok",
+          "artifact": "scratch/live-batch/evidence-w2/winner-telecine-365261.json",
+          "sha256": "19491f17606b45245fb7e30c9c05fc9da97c2e4a0a310b9febb3660137a4d004"
+        },
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero linhas de erro",
+        "output_verdict": "output_ok",
+        "output_checks": "12/12 (0 B-frames, 1 fatia, ac3)"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "365261",
+          "catalog_name": "TELECINE FUN FHD2",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "duration_s": 300,
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ],
+      "rejected": []
+    },
+    {
+      "identity": "band-news-206080",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_720_exception",
+      "resolution_exception": true,
+      "category": "Noticias",
+      "filename": "BAND NEWS 720.trp",
+      "chosen": {
+        "channel_id": "206080",
+        "catalog_name": "BAND NEWS FHD¹",
+        "region": "national",
+        "quality_label": "HD",
+        "native_width": 1280,
+        "native_height": 720,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 1259,
+        "measured_from": "host-local (triagem 480s; decode 60s; saida 25s)",
+        "windows": 1,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; artefato SEI-antes-de-SPS provado (1 msg, AUD->SEI->SPS->PPS->IDR, 1801/1801 quadros)",
+        "output_verdict": "output_ok",
+        "output_checks": "protocolo ok (0 B-frames, 1 fatia, ac3 384k, PCR 19.55ms, IDR 1.0s)",
+        "evidence_origin": "scratch/live-batch/triagem10{,-decode,-output}",
+        "resolution_exception_authorized_by": "operador (31/10): qualquer resolucao serve para provar se pega"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "206080",
+          "catalog_name": "BAND NEWS FHD¹",
+          "region": "national",
+          "quality_label": "HD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1280,
+          "height": 720
+        }
+      ]
+    },
+    {
+      "identity": "bbc-world-1765055",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_720_exception",
+      "resolution_exception": true,
+      "category": "Noticias",
+      "filename": "BBC WORLD 720.trp",
+      "chosen": {
+        "channel_id": "1765055",
+        "catalog_name": "BBC WORLD FHD¹",
+        "region": "national",
+        "quality_label": "HD",
+        "native_width": 1280,
+        "native_height": 720,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 3750,
+        "measured_from": "host-local (triagem 480s; decode 60s; saida 25s)",
+        "windows": 1,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; artefato SEI-antes-de-SPS provado (1 msg, AUD->SEI->SPS->PPS->IDR, 1801/1801 quadros)",
+        "output_verdict": "output_ok",
+        "output_checks": "protocolo ok (0 B-frames, 1 fatia, ac3 384k, PCR 19.55ms, IDR 1.0s)",
+        "evidence_origin": "scratch/live-batch/triagem10{,-decode,-output}",
+        "resolution_exception_authorized_by": "operador (31/10): qualquer resolucao serve para provar se pega"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "1765055",
+          "catalog_name": "BBC WORLD FHD¹",
+          "region": "national",
+          "quality_label": "HD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1280,
+          "height": 720
+        }
+      ]
+    },
+    {
+      "identity": "bbc-world",
+      "category": "Noticias",
+      "filename": "BBC World.trp",
+      "favorite_ids": [
+        "1765055"
+      ],
+      "status": "pending",
+      "quality_status": "pending_no_native_1080",
+      "approved": false,
+      "chosen": {
+        "channel_id": "1765055",
+        "catalog_name": "BBC WORLD FHD¹",
+        "region": "national",
+        "quality_label": "FHD1",
+        "native_width": 1280,
+        "native_height": 720,
+        "video_codec": "h264",
+        "profile": "High",
+        "video_kbps": 3594,
+        "ts_kbps": 3894,
+        "audio_codec": "aac",
+        "pcr_max_gap_ms": 100.0,
+        "evidence_phase": "winner",
+        "evidence_duration_s": 300.0,
+        "source_audio_max_gap_ms": 227.3,
+        "output_verdict": null,
+        "output_evidence": {},
+        "output_failed": [],
+        "decode_verdict": null,
+        "decode_lines": null,
+        "decode_evidence": {},
+        "source_evidence": {
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "not_1080p",
+          "media": {
+            "width": 1280,
+            "height": 720,
+            "capture_coverage": null,
+            "media_duration_s": 299.98,
+            "audio": {
+              "audio_duration_s": 299.98,
+              "audio_packets": 13958,
+              "audio_pts_gaps_over_1000ms": 0,
+              "audio_pts_gaps_over_500ms": 0,
+              "audio_pts_max_gap_ms": 227.3
+            }
+          },
+          "windows": 1,
+          "window2": null
+        },
+        "output_pcr_max_gap_ms": null,
+        "output_audio_gaps_500ms": null
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "1765055",
+          "catalog_name": "BBC WORLD FHD¹",
+          "region": "national",
+          "quality_label": "FHD1",
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "1765056",
+          "catalog_name": "BBC WORLD HD¹",
+          "region": "national",
+          "quality_label": "HD1",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        }
+      ],
+      "rejected": [
+        {
+          "channel_id": "1765055",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "1765056",
+          "reason": "not_1080p"
+        }
+      ]
+    },
+    {
+      "identity": "band-news",
+      "category": "Noticias",
+      "filename": "Band News.trp",
+      "favorite_ids": [
+        "206080"
+      ],
+      "status": "pending",
+      "quality_status": "pending_source_stability",
+      "approved": false,
+      "chosen": {
+        "channel_id": "206081",
+        "catalog_name": "BAND NEWS FHD²",
+        "region": "national",
+        "quality_label": "FHD2",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "profile": "High",
+        "video_kbps": 6405,
+        "ts_kbps": 3468,
+        "audio_codec": "aac",
+        "pcr_max_gap_ms": 1267.93,
+        "evidence_phase": "winner",
+        "evidence_duration_s": 300.0,
+        "source_audio_max_gap_ms": 1386.7,
+        "output_verdict": null,
+        "output_evidence": {},
+        "output_failed": [],
+        "decode_verdict": null,
+        "decode_lines": null,
+        "decode_evidence": {},
+        "source_evidence": {
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "candidate_ok",
+          "media": {
+            "width": 1920,
+            "height": 1080,
+            "capture_coverage": 0.9999,
+            "media_duration_s": 299.98,
+            "audio": {
+              "audio_duration_s": 299.98,
+              "audio_gap_max_ms": 1386.7,
+              "audio_overlaps": 0,
+              "audio_packets": 13904,
+              "audio_pts_delta_max_ms": 1408.0,
+              "audio_pts_gaps_over_1000ms": 1,
+              "audio_pts_gaps_over_2000ms": 0,
+              "audio_pts_gaps_over_500ms": 1,
+              "audio_pts_max_gap_ms": 1386.7
+            }
+          },
+          "windows": 2,
+          "window2": {
+            "duration_s": 300.0,
+            "media_duration_s": 225.14,
+            "coverage": 0.7505,
+            "audio_gaps_over_2s": 0,
+            "audio_gaps_over_500ms": 0,
+            "width": 1920,
+            "height": 1080,
+            "verdict": "candidate_ok",
+            "reconnects": 5
+          }
+        },
+        "output_pcr_max_gap_ms": null,
+        "output_audio_gaps_500ms": null
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "206080",
+          "catalog_name": "BAND NEWS FHD¹",
+          "region": "national",
+          "quality_label": "FHD1",
+          "phase": "triage",
+          "duration_s": 15.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "206081",
+          "catalog_name": "BAND NEWS FHD²",
+          "region": "national",
+          "quality_label": "FHD2",
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "channel_id": "206082",
+          "catalog_name": "BAND NEWS HD¹",
+          "region": "national",
+          "quality_label": "HD1",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "206079",
+          "catalog_name": "BAND NEWS H265",
+          "region": "national",
+          "quality_label": "H265",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "206083",
+          "catalog_name": "BAND NEWS HD²",
+          "region": "national",
+          "quality_label": "HD2",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        }
+      ],
+      "rejected": [
+        {
+          "channel_id": "206080",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "206082",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "206079",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "206083",
+          "reason": "not_1080p"
+        }
+      ]
+    },
+    {
+      "identity": "cnbc-times-brasil-fhd-1765064",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "category": "Noticias",
+      "filename": "CNBC TIMES BRASIL FHD 1080.trp",
+      "chosen": {
+        "channel_id": "1765064",
+        "catalog_name": "CNBC TIMES BRASIL FHD¹",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 2905,
+        "measured_from": "host-local (harness VPS); teste fisico na TV pendente",
+        "windows": 2,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero erros (ou artefato provado)",
+        "output_verdict": "output_ok",
+        "output_checks": "12/12 (0 B-frames, 1 fatia, ac3)",
+        "evidence_origin": "~/canais-sweep/evidence{,-w2,-decode,-output}"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "1765064",
+          "catalog_name": "CNBC TIMES BRASIL FHD¹",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    },
+    {
+      "identity": "cnn-brasil-206087",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_720_exception",
+      "resolution_exception": true,
+      "category": "Noticias",
+      "filename": "CNN BRASIL 720.trp",
+      "chosen": {
+        "channel_id": "206087",
+        "catalog_name": "CNN BRASIL FHD¹",
+        "region": "national",
+        "quality_label": "HD",
+        "native_width": 1280,
+        "native_height": 720,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 2000,
+        "measured_from": "host-local (triagem 480s; decode 60s; saida 25s)",
+        "windows": 1,
+        "decode_verdict": "artefato_provado",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; artefato SEI-antes-de-SPS provado (1 msg, AUD->SEI->SPS->PPS->IDR, 1801/1801 quadros)",
+        "output_verdict": "output_ok",
+        "output_checks": "protocolo ok (0 B-frames, 1 fatia, ac3 384k, PCR 19.55ms, IDR 1.0s)",
+        "evidence_origin": "scratch/live-batch/triagem10{,-decode,-output}",
+        "resolution_exception_authorized_by": "operador (31/10): qualquer resolucao serve para provar se pega"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "206087",
+          "catalog_name": "CNN BRASIL FHD¹",
+          "region": "national",
+          "quality_label": "HD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1280,
+          "height": 720
+        }
+      ]
+    },
+    {
+      "identity": "cnn-brasil",
+      "category": "Noticias",
+      "filename": "CNN Brasil.trp",
+      "favorite_ids": [
+        "206087"
+      ],
+      "status": "pending",
+      "quality_status": "pending_no_native_1080",
+      "approved": false,
+      "chosen": {
+        "channel_id": "206088",
+        "catalog_name": "CNN BRASIL FHD²",
+        "region": "national",
+        "quality_label": "FHD2",
+        "native_width": 1280,
+        "native_height": 720,
+        "video_codec": "h264",
+        "profile": "Main",
+        "video_kbps": 1411,
+        "ts_kbps": 1578,
+        "audio_codec": "aac",
+        "pcr_max_gap_ms": 66.73,
+        "evidence_phase": "winner",
+        "evidence_duration_s": 300.0,
+        "source_audio_max_gap_ms": 176.7,
+        "output_verdict": null,
+        "output_evidence": {},
+        "output_failed": [],
+        "decode_verdict": null,
+        "decode_lines": null,
+        "decode_evidence": {},
+        "source_evidence": {
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "not_1080p",
+          "media": {
+            "width": 1280,
+            "height": 720,
+            "capture_coverage": 1.0001,
+            "media_duration_s": 300.02,
+            "audio": {
+              "audio_duration_s": 300.02,
+              "audio_gap_max_ms": 176.7,
+              "audio_overlaps": 0,
+              "audio_packets": 14052,
+              "audio_pts_delta_max_ms": 198.0,
+              "audio_pts_gaps_over_1000ms": 0,
+              "audio_pts_gaps_over_2000ms": 0,
+              "audio_pts_gaps_over_500ms": 0,
+              "audio_pts_max_gap_ms": 176.7
+            }
+          },
+          "windows": 1,
+          "window2": null
+        },
+        "output_pcr_max_gap_ms": null,
+        "output_audio_gaps_500ms": null
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "206087",
+          "catalog_name": "CNN BRASIL FHD¹",
+          "region": "national",
+          "quality_label": "FHD1",
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "206088",
+          "catalog_name": "CNN BRASIL FHD²",
+          "region": "national",
+          "quality_label": "FHD2",
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "206089",
+          "catalog_name": "CNN BRASIL HD¹",
+          "region": "national",
+          "quality_label": "HD1",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 960,
+          "height": 540
+        },
+        {
+          "channel_id": "206086",
+          "catalog_name": "CNN BRASIL H265",
+          "region": "national",
+          "quality_label": "H265",
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "no_media",
+          "width": null,
+          "height": null
+        },
+        {
+          "channel_id": "206090",
+          "catalog_name": "CNN BRASIL HD²",
+          "region": "national",
+          "quality_label": "HD2",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        }
+      ],
+      "rejected": [
+        {
+          "channel_id": "206087",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "206088",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "206089",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "206086",
+          "reason": "no_media"
+        },
+        {
+          "channel_id": "206090",
+          "reason": "not_1080p"
+        }
+      ]
+    },
+    {
+      "identity": "globo-news-206097",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "resolution_exception": false,
+      "category": "Noticias",
+      "filename": "GLOBO NEWS 1080.trp",
+      "chosen": {
+        "channel_id": "206097",
+        "catalog_name": "GLOBO NEWS FHD¹",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 6236,
+        "measured_from": "host-local (triagem 480s; decode 60s; saida 25s)",
+        "windows": 1,
+        "decode_verdict": "artefato_provado",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; artefato SEI-antes-de-SPS provado (1 msg, AUD->SEI->SPS->PPS->IDR, 1801/1801 quadros)",
+        "output_verdict": "output_ok",
+        "output_checks": "protocolo ok (0 B-frames, 1 fatia, ac3 384k, PCR 19.55ms, IDR 1.0s)",
+        "evidence_origin": "scratch/live-batch/triagem10{,-decode,-output}",
+        "resolution_exception_authorized_by": "operador (31/10): qualquer resolucao serve para provar se pega"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "206097",
+          "catalog_name": "GLOBO NEWS FHD¹",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    },
+    {
+      "identity": "globo-news",
+      "category": "Noticias",
+      "filename": "Globo News.trp",
+      "favorite_ids": [
+        "206098"
+      ],
+      "status": "pending",
+      "quality_status": "pending_decode_validation",
+      "approved": false,
+      "chosen": {
+        "channel_id": "206097",
+        "catalog_name": "GLOBO NEWS FHD¹",
+        "region": "national",
+        "quality_label": "FHD1",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "profile": "High",
+        "video_kbps": 6705,
+        "ts_kbps": 7048,
+        "audio_codec": "aac",
+        "pcr_max_gap_ms": 100.0,
+        "evidence_phase": "winner",
+        "evidence_duration_s": 300.0,
+        "source_audio_max_gap_ms": 212.0,
+        "output_verdict": null,
+        "output_evidence": {},
+        "output_failed": [],
+        "decode_verdict": null,
+        "decode_lines": null,
+        "decode_evidence": {},
+        "source_evidence": {
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "candidate_ok",
+          "media": {
+            "width": 1920,
+            "height": 1080,
+            "capture_coverage": null,
+            "media_duration_s": 299.97,
+            "audio": {
+              "audio_duration_s": 299.97,
+              "audio_packets": 9329,
+              "audio_pts_gaps_over_1000ms": 0,
+              "audio_pts_gaps_over_500ms": 0,
+              "audio_pts_max_gap_ms": 212.0
+            }
+          },
+          "windows": 2,
+          "window2": {
+            "duration_s": 300.0,
+            "media_duration_s": 300.01,
+            "coverage": 1.0,
+            "audio_gaps_over_2s": 0,
+            "audio_gaps_over_500ms": 0,
+            "width": 1920,
+            "height": 1080,
+            "verdict": "candidate_ok",
+            "reconnects": 8
+          }
+        },
+        "output_pcr_max_gap_ms": null,
+        "output_audio_gaps_500ms": null
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "206098",
+          "catalog_name": "GLOBO NEWS FHD²",
+          "region": "national",
+          "quality_label": "FHD2",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "channel_id": "206097",
+          "catalog_name": "GLOBO NEWS FHD¹",
+          "region": "national",
+          "quality_label": "FHD1",
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "channel_id": "206099",
+          "catalog_name": "GLOBO NEWS HD¹",
+          "region": "national",
+          "quality_label": "HD1",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        }
+      ],
+      "rejected": [
+        {
+          "channel_id": "206099",
+          "reason": "not_1080p"
+        }
+      ]
+    },
+    {
+      "identity": "jovem-pan-news-fhd-206105",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "category": "Noticias",
+      "filename": "JOVEM PAN NEWS FHD 1080.trp",
+      "chosen": {
+        "channel_id": "206105",
+        "catalog_name": "JOVEM PAN NEWS FHD²",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 2969,
+        "measured_from": "host-local (harness VPS); teste fisico na TV pendente",
+        "windows": 2,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero erros (ou artefato provado)",
+        "output_verdict": "output_ok",
+        "output_checks": "12/12 (0 B-frames, 1 fatia, ac3)",
+        "evidence_origin": "~/canais-sweep/evidence{,-w2,-decode,-output}"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "206105",
+          "catalog_name": "JOVEM PAN NEWS FHD²",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    },
+    {
+      "identity": "record-news-206111",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_720_exception",
+      "resolution_exception": true,
+      "category": "Noticias",
+      "filename": "RECORD NEWS 720.trp",
+      "chosen": {
+        "channel_id": "206111",
+        "catalog_name": "RECORD NEWS FHD¹",
+        "region": "national",
+        "quality_label": "HD",
+        "native_width": 1280,
+        "native_height": 720,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 3664,
+        "measured_from": "host-local (triagem 480s; decode 60s; saida 25s)",
+        "windows": 1,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; artefato SEI-antes-de-SPS provado (1 msg, AUD->SEI->SPS->PPS->IDR, 1801/1801 quadros)",
+        "output_verdict": "output_ok",
+        "output_checks": "protocolo ok (0 B-frames, 1 fatia, ac3 384k, PCR 19.55ms, IDR 1.0s)",
+        "evidence_origin": "scratch/live-batch/triagem10{,-decode,-output}",
+        "resolution_exception_authorized_by": "operador (31/10): qualquer resolucao serve para provar se pega"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "206111",
+          "catalog_name": "RECORD NEWS FHD¹",
+          "region": "national",
+          "quality_label": "HD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1280,
+          "height": 720
+        }
+      ]
+    },
+    {
+      "identity": "record-news",
+      "category": "Noticias",
+      "filename": "Record News.trp",
+      "favorite_ids": [
+        "206111"
+      ],
+      "status": "pending",
+      "quality_status": "pending_no_native_1080",
+      "approved": false,
+      "chosen": {
+        "channel_id": "206111",
+        "catalog_name": "RECORD NEWS FHD¹",
+        "region": "national",
+        "quality_label": "FHD1",
+        "native_width": 1280,
+        "native_height": 720,
+        "video_codec": "h264",
+        "profile": "High",
+        "video_kbps": 3688,
+        "ts_kbps": 3991,
+        "audio_codec": "aac",
+        "pcr_max_gap_ms": 100.1,
+        "evidence_phase": "winner",
+        "evidence_duration_s": 300.0,
+        "source_audio_max_gap_ms": 218.8,
+        "output_verdict": null,
+        "output_evidence": {},
+        "output_failed": [],
+        "decode_verdict": null,
+        "decode_lines": null,
+        "decode_evidence": {},
+        "source_evidence": {
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "not_1080p",
+          "media": {
+            "width": 1280,
+            "height": 720,
+            "capture_coverage": null,
+            "media_duration_s": 299.99,
+            "audio": {
+              "audio_duration_s": 299.99,
+              "audio_packets": 13974,
+              "audio_pts_gaps_over_1000ms": 0,
+              "audio_pts_gaps_over_500ms": 0,
+              "audio_pts_max_gap_ms": 218.8
+            }
+          },
+          "windows": 1,
+          "window2": null
+        },
+        "output_pcr_max_gap_ms": null,
+        "output_audio_gaps_500ms": null
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "206111",
+          "catalog_name": "RECORD NEWS FHD¹",
+          "region": "national",
+          "quality_label": "FHD1",
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "206112",
+          "catalog_name": "RECORD NEWS FHD²",
+          "region": "national",
+          "quality_label": "FHD2",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "206113",
+          "catalog_name": "RECORD NEWS HD¹",
+          "region": "national",
+          "quality_label": "HD1",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "206110",
+          "catalog_name": "RECORD NEWS H265",
+          "region": "national",
+          "quality_label": "H265",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "206114",
+          "catalog_name": "RECORD NEWS HD²",
+          "region": "national",
+          "quality_label": "HD2",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "no_media",
+          "width": null,
+          "height": null
+        }
+      ],
+      "rejected": [
+        {
+          "channel_id": "206111",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "206112",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "206113",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "206110",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "206114",
+          "reason": "no_media"
+        }
+      ]
+    },
+    {
+      "identity": "sbt-news",
+      "category": "Noticias",
+      "filename": "SBT News.trp",
+      "favorite_ids": [
+        "3030726"
+      ],
+      "status": "pending",
+      "quality_status": "pending_source_stability",
+      "approved": false,
+      "chosen": {
+        "channel_id": "3030725",
+        "catalog_name": "SBT NEWS H265",
+        "region": "national",
+        "quality_label": "H265",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "profile": "High",
+        "video_kbps": 2747,
+        "ts_kbps": 3007,
+        "audio_codec": "aac",
+        "pcr_max_gap_ms": 66.74,
+        "evidence_phase": "winner",
+        "evidence_duration_s": 300.0,
+        "source_audio_max_gap_ms": 233.3,
+        "output_verdict": null,
+        "output_evidence": {},
+        "output_failed": [],
+        "decode_verdict": null,
+        "decode_lines": null,
+        "decode_evidence": {},
+        "source_evidence": {
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "candidate_ok",
+          "media": {
+            "width": 1920,
+            "height": 1080,
+            "capture_coverage": null,
+            "media_duration_s": 299.97,
+            "audio": {
+              "audio_duration_s": 299.97,
+              "audio_packets": 14037,
+              "audio_pts_gaps_over_1000ms": 0,
+              "audio_pts_gaps_over_500ms": 0,
+              "audio_pts_max_gap_ms": 233.3
+            }
+          },
+          "windows": 2,
+          "window2": {
+            "duration_s": 300.0,
+            "media_duration_s": 300.01,
+            "coverage": 1.0,
+            "audio_gaps_over_2s": 0,
+            "audio_gaps_over_500ms": 0,
+            "width": 1280,
+            "height": 720,
+            "verdict": "not_1080p",
+            "reconnects": null
+          }
+        },
+        "output_pcr_max_gap_ms": null,
+        "output_audio_gaps_500ms": null
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "3030726",
+          "catalog_name": "SBT NEWS FHD¹",
+          "region": "national",
+          "quality_label": "FHD1",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "3030727",
+          "catalog_name": "SBT NEWS FHD²",
+          "region": "national",
+          "quality_label": "FHD2",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "no_media",
+          "width": null,
+          "height": null
+        },
+        {
+          "channel_id": "3030728",
+          "catalog_name": "SBT NEWS HD¹",
+          "region": "national",
+          "quality_label": "HD1",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "3030725",
+          "catalog_name": "SBT NEWS H265",
+          "region": "national",
+          "quality_label": "H265",
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ],
+      "rejected": [
+        {
+          "channel_id": "3030726",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "3030727",
+          "reason": "no_media"
+        },
+        {
+          "channel_id": "3030728",
+          "reason": "not_1080p"
+        }
+      ]
+    },
+    {
+      "identity": "espn-2-fhd-205523",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "category": "Outros",
+      "filename": "ESPN 2 FHD 1080.trp",
+      "chosen": {
+        "channel_id": "205523",
+        "catalog_name": "ESPN 2 FHD²",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 2769,
+        "measured_from": "host-local (harness VPS); teste fisico na TV pendente",
+        "windows": 2,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero erros (ou artefato provado)",
+        "output_verdict": "output_ok",
+        "output_checks": "12/12 (0 B-frames, 1 fatia, ac3)",
+        "evidence_origin": "~/canais-sweep/evidence{,-w2,-decode,-output}"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "205523",
+          "catalog_name": "ESPN 2 FHD²",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    },
+    {
+      "identity": "sportv-2-fhd-205564",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "category": "Outros",
+      "filename": "SPORTV 2 FHD 1080.trp",
+      "chosen": {
+        "channel_id": "205564",
+        "catalog_name": "SPORTV 2 FHD²",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 2538,
+        "measured_from": "host-local (harness VPS); teste fisico na TV pendente",
+        "windows": 2,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero erros (ou artefato provado)",
+        "output_verdict": "output_ok",
+        "output_checks": "12/12 (0 B-frames, 1 fatia, ac3)",
+        "evidence_origin": "~/canais-sweep/evidence{,-w2,-decode,-output}"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "205564",
+          "catalog_name": "SPORTV 2 FHD²",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    },
+    {
+      "identity": "x-sports-fhd-2059429",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "category": "Outros",
+      "filename": "X-SPORTS FHD 1080.trp",
+      "chosen": {
+        "channel_id": "2059429",
+        "catalog_name": "X-SPORTS FHD²",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 1465,
+        "measured_from": "host-local (harness VPS); teste fisico na TV pendente",
+        "windows": 2,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero erros (ou artefato provado)",
+        "output_verdict": "output_ok",
+        "output_checks": "12/12 (0 B-frames, 1 fatia, ac3)",
+        "evidence_origin": "~/canais-sweep/evidence{,-w2,-decode,-output}"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "2059429",
+          "catalog_name": "X-SPORTS FHD²",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    },
+    {
+      "identity": "arte1-fhd-387593",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "category": "Variedades",
+      "filename": "ARTE1 FHD 1080.trp",
+      "chosen": {
+        "channel_id": "387593",
+        "catalog_name": "ARTE1 FHD²",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 2946,
+        "measured_from": "host-local (harness VPS); teste fisico na TV pendente",
+        "windows": 2,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero erros (ou artefato provado)",
+        "output_verdict": "output_ok",
+        "output_checks": "12/12 (0 B-frames, 1 fatia, ac3)",
+        "evidence_origin": "~/canais-sweep/evidence{,-w2,-decode,-output}"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "387593",
+          "catalog_name": "ARTE1 FHD²",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    },
+    {
+      "identity": "discovery-hh",
+      "category": "Variedades",
+      "filename": "Discovery H&H 1080.trp",
+      "favorite_ids": [
+        "387648"
+      ],
+      "status": "approved",
+      "quality_status": "pending_decode_validation",
+      "approved": true,
+      "chosen": {
+        "channel_id": "387648",
+        "catalog_name": "DISCOVERY H&H FHD¹",
+        "region": "national",
+        "quality_label": "FHD1",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "profile": "High",
+        "video_kbps": 6362,
+        "ts_kbps": 3453,
+        "audio_codec": "aac",
+        "pcr_max_gap_ms": 66.73,
+        "evidence_phase": "winner",
+        "evidence_duration_s": 300.0,
+        "source_audio_max_gap_ms": 46.9,
+        "output_verdict": null,
+        "output_evidence": {},
+        "output_failed": [],
+        "decode_verdict": null,
+        "decode_lines": null,
+        "decode_evidence": {},
+        "source_evidence": {
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "candidate_ok",
+          "media": {
+            "width": 1920,
+            "height": 1080,
+            "capture_coverage": 1.0,
+            "media_duration_s": 299.99,
+            "audio": {
+              "audio_duration_s": 299.99,
+              "audio_gap_max_ms": 46.9,
+              "audio_overlaps": 0,
+              "audio_packets": 14060,
+              "audio_pts_delta_max_ms": 68.3,
+              "audio_pts_gaps_over_1000ms": 0,
+              "audio_pts_gaps_over_2000ms": 0,
+              "audio_pts_gaps_over_500ms": 0,
+              "audio_pts_max_gap_ms": 46.9
+            }
+          },
+          "windows": 2,
+          "window2": {
+            "duration_s": 300.0,
+            "media_duration_s": 300.01,
+            "coverage": 1.0,
+            "audio_gaps_over_2s": 0,
+            "audio_gaps_over_500ms": 0,
+            "width": 1920,
+            "height": 1080,
+            "verdict": "candidate_ok",
+            "reconnects": null
+          }
+        },
+        "output_pcr_max_gap_ms": null,
+        "output_audio_gaps_500ms": null
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "387648",
+          "catalog_name": "DISCOVERY H&H FHD¹",
+          "region": "national",
+          "quality_label": "FHD1",
+          "phase": "winner",
+          "duration_s": 300.0,
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        },
+        {
+          "channel_id": "387649",
+          "catalog_name": "DISCOVERY H&H FHD²",
+          "region": "national",
+          "quality_label": "FHD2",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "387650",
+          "catalog_name": "DISCOVERY H&H HD¹",
+          "region": "national",
+          "quality_label": "HD1",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "387646",
+          "catalog_name": "DISCOVERY H&H 4K",
+          "region": "national",
+          "quality_label": "4K",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "387647",
+          "catalog_name": "DISCOVERY H&H H265",
+          "region": "national",
+          "quality_label": "H265",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        },
+        {
+          "channel_id": "387651",
+          "catalog_name": "DISCOVERY H&H HD²",
+          "region": "national",
+          "quality_label": "HD2",
+          "phase": "triage",
+          "duration_s": 20.0,
+          "verdict": "not_1080p",
+          "width": 1280,
+          "height": 720
+        }
+      ],
+      "rejected": [
+        {
+          "channel_id": "387649",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "387650",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "387646",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "387647",
+          "reason": "not_1080p"
+        },
+        {
+          "channel_id": "387651",
+          "reason": "not_1080p"
+        }
+      ]
+    },
+    {
+      "identity": "e-4k-208316",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "category": "Variedades",
+      "filename": "E! 1080.trp",
+      "chosen": {
+        "channel_id": "208316",
+        "catalog_name": "E! 4K",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 1386,
+        "measured_from": "host-local (harness VPS); teste fisico na TV pendente",
+        "windows": 2,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero erros (ou artefato provado)",
+        "output_verdict": "output_ok",
+        "output_checks": "12/12 (0 B-frames, 1 fatia, ac3)",
+        "evidence_origin": "~/canais-sweep/evidence{,-w2,-decode,-output}"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "208316",
+          "catalog_name": "E! 4K",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    },
+    {
+      "identity": "futura-208436",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "resolution_exception": false,
+      "category": "Variedades",
+      "filename": "FUTURA 1080.trp",
+      "chosen": {
+        "channel_id": "208436",
+        "catalog_name": "FUTURA FHD¹",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 6603,
+        "measured_from": "host-local (triagem 480s; decode 60s; saida 25s)",
+        "windows": 1,
+        "decode_verdict": "artefato_provado",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; artefato SEI-antes-de-SPS provado (1 msg, AUD->SEI->SPS->PPS->IDR, 1801/1801 quadros)",
+        "output_verdict": "output_ok",
+        "output_checks": "protocolo ok (0 B-frames, 1 fatia, ac3 384k, PCR 19.55ms, IDR 1.0s)",
+        "evidence_origin": "scratch/live-batch/triagem10{,-decode,-output}",
+        "resolution_exception_authorized_by": "operador (31/10): qualquer resolucao serve para provar se pega"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "208436",
+          "catalog_name": "FUTURA FHD¹",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    },
+    {
+      "identity": "gloob-fhd-1765005",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "category": "Variedades",
+      "filename": "GLOOB FHD 1080.trp",
+      "chosen": {
+        "channel_id": "1765005",
+        "catalog_name": "GLOOB FHD²",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 6662,
+        "measured_from": "host-local (harness VPS); teste fisico na TV pendente",
+        "windows": 2,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero erros (ou artefato provado)",
+        "output_verdict": "output_ok",
+        "output_checks": "12/12 (0 B-frames, 1 fatia, ac3)",
+        "evidence_origin": "~/canais-sweep/evidence{,-w2,-decode,-output}"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "1765005",
+          "catalog_name": "GLOOB FHD²",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    },
+    {
+      "identity": "gloobinho-4k-1765009",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "category": "Variedades",
+      "filename": "GLOOBINHO 1080.trp",
+      "chosen": {
+        "channel_id": "1765009",
+        "catalog_name": "GLOOBINHO 4K",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 6865,
+        "measured_from": "host-local (harness VPS); teste fisico na TV pendente",
+        "windows": 2,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero erros (ou artefato provado)",
+        "output_verdict": "output_ok",
+        "output_checks": "12/12 (0 B-frames, 1 fatia, ac3)",
+        "evidence_origin": "~/canais-sweep/evidence{,-w2,-decode,-output}"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "1765009",
+          "catalog_name": "GLOOBINHO 4K",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    },
+    {
+      "identity": "gnt-4k-208334",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "category": "Variedades",
+      "filename": "GNT 1080.trp",
+      "chosen": {
+        "channel_id": "208334",
+        "catalog_name": "GNT 4K",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 6538,
+        "measured_from": "host-local (harness VPS); teste fisico na TV pendente",
+        "windows": 2,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero erros (ou artefato provado)",
+        "output_verdict": "output_ok",
+        "output_checks": "12/12 (0 B-frames, 1 fatia, ac3)",
+        "evidence_origin": "~/canais-sweep/evidence{,-w2,-decode,-output}"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "208334",
+          "catalog_name": "GNT 4K",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    },
+    {
+      "identity": "hgtv-fhd-387616",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "category": "Variedades",
+      "filename": "HGTV FHD 1080.trp",
+      "chosen": {
+        "channel_id": "387616",
+        "catalog_name": "HGTV FHD¹",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 3027,
+        "measured_from": "host-local (harness VPS); teste fisico na TV pendente",
+        "windows": 2,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero erros (ou artefato provado)",
+        "output_verdict": "output_ok",
+        "output_checks": "12/12 (0 B-frames, 1 fatia, ac3)",
+        "evidence_origin": "~/canais-sweep/evidence{,-w2,-decode,-output}"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "387616",
+          "catalog_name": "HGTV FHD¹",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    },
+    {
+      "identity": "universal-tv-fhd-360878",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "category": "Variedades",
+      "filename": "UNIVERSAL TV FHD 1080.trp",
+      "chosen": {
+        "channel_id": "360878",
+        "catalog_name": "UNIVERSAL TV FHD²",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 6655,
+        "measured_from": "host-local (harness VPS); teste fisico na TV pendente",
+        "windows": 2,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero erros (ou artefato provado)",
+        "output_verdict": "output_ok",
+        "output_checks": "12/12 (0 B-frames, 1 fatia, ac3)",
+        "evidence_origin": "~/canais-sweep/evidence{,-w2,-decode,-output}"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "360878",
+          "catalog_name": "UNIVERSAL TV FHD²",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    },
+    {
+      "identity": "woohoo-4k-208400",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "category": "Variedades",
+      "filename": "WOOHOO 1080.trp",
+      "chosen": {
+        "channel_id": "208400",
+        "catalog_name": "WOOHOO 4K",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 2079,
+        "measured_from": "host-local (harness VPS); teste fisico na TV pendente",
+        "windows": 2,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero erros (ou artefato provado)",
+        "output_verdict": "output_ok",
+        "output_checks": "12/12 (0 B-frames, 1 fatia, ac3)",
+        "evidence_origin": "~/canais-sweep/evidence{,-w2,-decode,-output}"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "208400",
+          "catalog_name": "WOOHOO 4K",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    },
+    {
+      "identity": "zoomoo-4k-1765047",
+      "favorite_ids": [],
+      "rejected": [],
+      "status": "approved",
+      "approved": true,
+      "quality_status": "native_1080",
+      "category": "Variedades",
+      "filename": "ZOOMOO 1080.trp",
+      "chosen": {
+        "channel_id": "1765047",
+        "catalog_name": "ZOOMOO 4K",
+        "region": "national",
+        "quality_label": "FHD",
+        "native_width": 1920,
+        "native_height": 1080,
+        "video_codec": "h264",
+        "audio_codec": "aac",
+        "video_kbps": 2991,
+        "measured_from": "host-local (harness VPS); teste fisico na TV pendente",
+        "windows": 2,
+        "decode_verdict": "decode_ok",
+        "decode_rule": "ffmpeg -threads 1 com saidas cruas; zero erros (ou artefato provado)",
+        "output_verdict": "output_ok",
+        "output_checks": "12/12 (0 B-frames, 1 fatia, ac3)",
+        "evidence_origin": "~/canais-sweep/evidence{,-w2,-decode,-output}"
+      },
+      "candidates_tested": [
+        {
+          "channel_id": "1765047",
+          "catalog_name": "ZOOMOO 4K",
+          "region": "national",
+          "quality_label": "FHD",
+          "phase": "winner",
+          "verdict": "candidate_ok",
+          "width": 1920,
+          "height": 1080
+        }
+      ]
+    }
+  ],
+  "pending": [
+    {
+      "identity": "band",
+      "favorite_ids": [
+        "207177",
+        "207171",
+        "207172"
+      ],
+      "best_channel_id": "207171",
+      "best_catalog_name": "BAND SP FHD¹",
+      "best_region": "sp",
+      "best_native": "1280x720",
+      "reason": "pending_no_native_1080"
+    },
+    {
+      "identity": "band-news",
+      "favorite_ids": [
+        "206080"
+      ],
+      "best_channel_id": "206081",
+      "best_catalog_name": "BAND NEWS FHD²",
+      "best_region": "national",
+      "best_native": "1920x1080",
+      "reason": "pending_source_stability"
+    },
+    {
+      "identity": "bbc-world",
+      "favorite_ids": [
+        "1765055"
+      ],
+      "best_channel_id": "1765055",
+      "best_catalog_name": "BBC WORLD FHD¹",
+      "best_region": "national",
+      "best_native": "1280x720",
+      "reason": "pending_no_native_1080"
+    },
+    {
+      "identity": "cnn-brasil",
+      "favorite_ids": [
+        "206087"
+      ],
+      "best_channel_id": "206088",
+      "best_catalog_name": "CNN BRASIL FHD²",
+      "best_region": "national",
+      "best_native": "1280x720",
+      "reason": "pending_no_native_1080"
+    },
+    {
+      "identity": "globo-news",
+      "favorite_ids": [
+        "206098"
+      ],
+      "best_channel_id": "206097",
+      "best_catalog_name": "GLOBO NEWS FHD¹",
+      "best_region": "national",
+      "best_native": "1920x1080",
+      "reason": "pending_decode_validation"
+    },
+    {
+      "identity": "record-news",
+      "favorite_ids": [
+        "206111"
+      ],
+      "best_channel_id": "206111",
+      "best_catalog_name": "RECORD NEWS FHD¹",
+      "best_region": "national",
+      "best_native": "1280x720",
+      "reason": "pending_no_native_1080"
+    },
+    {
+      "identity": "redetv",
+      "favorite_ids": [
+        "208423"
+      ],
+      "best_channel_id": "208423",
+      "best_catalog_name": "REDE TV FHD¹",
+      "best_region": "national",
+      "best_native": "1280x720",
+      "reason": "pending_no_native_1080"
+    },
+    {
+      "identity": "sbt-news",
+      "favorite_ids": [
+        "3030726"
+      ],
+      "best_channel_id": "3030725",
+      "best_catalog_name": "SBT NEWS H265",
+      "best_region": "national",
+      "best_native": "1920x1080",
+      "reason": "pending_source_stability"
+    },
+    {
+      "identity": "telecine-action",
+      "best_channel_id": "365243",
+      "best_catalog_name": "TELECINE ACTION H265",
+      "best_region": "national",
+      "best_native": "1920x1080",
+      "favorite_ids": [
+        "365244"
+      ],
+      "reason": "pending_decode_conflict",
+      "detail": "duas rodadas no MESMO id com vereditos opostos: a embutida no export diz decode_errors com video_coverage 0.951 (< 0.97) e a de disco diz decode_ok; sem nova captura nao ha como reconciliar",
+      "missing_evidence": "captura de decode no id 365243 com cobertura de video registrada e >= 0.97"
+    },
+    {
+      "identity": "tv-cultura",
+      "favorite_ids": [
+        "208430"
+      ],
+      "best_channel_id": "208430",
+      "best_catalog_name": "TV CULTURA FHD¹",
+      "best_region": "national",
+      "best_native": "1280x720",
+      "reason": "pending_no_native_1080"
+    }
+  ],
+  "curated_note": "Aprovadas por ID exato: duas janelas de ~300 s candidate_ok, cobertura da janela 2 = 1,0, zero lacuna de audio > 500 ms, decode_ok no ID e saida 12/12 em 1080p30, com cada metrica vinda do artefato nomeado em evidence_ledger. Onde o artefato nao registra capture_coverage (janela 1 de sbt, record e discovery-channel) o valor fica nulo e nao e afirmado como 1,0. telecine-action (365243) fica pendente: duas rodadas de decode no mesmo ID com vereditos opostos. | 31/10: 21 canais aprovados pelo harness da VPS; conteudo adulto excluido por decisao do operador. | 31/10: +10 canais por pedido do operador (excecao de resolucao autorizada); nomes refletem a fonte real (720/1080), nunca upscale. | 01/11: +Globo RJ (720p, excecao autorizada).",
+  "evidence_caveats": [
+    {
+      "identity": "telecine-action",
+      "published_id": "365243",
+      "favorited_id": "365244",
+      "artifact_sha16": "828becf882f48671",
+      "windows": "J1 e J2 completas (300,01 s, cobertura registrada 1,0, zero lacuna > 500 ms) nos artefatos winner-telecine-action-365243.json e window2/winner-telecine-action-365243.json",
+      "decode": "CONFLITO no mesmo ID: a rodada embutida no export diz decode_errors com video_coverage 57,057/60 = 0,951 (< 0,97); a rodada em disco (sha16 828becf882f48671) diz decode_ok, com captura de outro tamanho. Duas capturas diferentes, dois vereditos: nao reconciliado.",
+      "output": "output-telecine-action-365243.json = output_ok, 12/12, failed=[] em 1080p30, porem sem sha256 do bitstream e sem carimbo de medicao",
+      "conclusion": "PENDENTE. Nao ha identidade com evidencia limpa: o ID 365243 tem decode contraditorio e a variante favoritada 365244 falhou a J1",
+      "missing_evidence": "captura de decode no ID 365243 com cobertura de video registrada e >= 0,97"
+    },
+    {
+      "identity": "history",
+      "published_id": "387622",
+      "favorited_id": "387624",
+      "artifact_sha16": "743c5737f1262458",
+      "windows": "J1 e J2 candidate_ok (300,0 s cada, capture_coverage 1,0 nas duas, zero lacuna > 500 ms)",
+      "decode": "decode-history-387622.json = decode_ok, mas o arquivo nao registra metricas de midia nem as checagens de validacao: prova que a decodificacao rodou limpa, nao prova cobertura de video",
+      "output": "output-history-387622.json = output_ok, 12/12, failed=[], 1080p30, sem sha256 do bitstream e sem carimbo de medicao",
+      "conclusion": "APROVADA com limites declarados; nenhuma contradicao encontrada",
+      "missing_evidence": "carimbo de medicao e sha256 do bitstream de saida; cobertura de video na evidencia de decode"
+    },
+    {
+      "identity": "discovery-channel",
+      "published_id": "387640",
+      "favorited_id": "387640",
+      "artifact_sha16": "08f4498144d77497",
+      "windows": "J1 candidate_ok 300,0 s sem lacuna > 500 ms, mas SEM capture_coverage registrado; J2 candidate_ok 300,02 s com cobertura 1,0001",
+      "decode": "decode_ok, sem metricas de midia registradas no artefato",
+      "output": "output_ok, 12/12, failed=[], 1080p30, sem sha256/carimbo",
+      "conclusion": "APROVADA com limites declarados; a cobertura da J1 nao e afirmavel a partir deste artefato",
+      "missing_evidence": "capture_coverage na J1; metricas de midia no decode"
+    },
+    {
+      "identity": "discovery-hh",
+      "published_id": "387648",
+      "favorited_id": "387648",
+      "artifact_sha16": "29b144eebbc479b8",
+      "windows": "J1 299,99 s e J2 300,01 s, cobertura 1,0 nas duas, sem lacuna > 500 ms",
+      "decode": "decode_ok, sem metricas de midia registradas no artefato",
+      "output": "output_ok, 12/12, failed=[], 1080p30, sem sha256/carimbo",
+      "conclusion": "APROVADA com limites. A 1a tentativa medida falhou (input_error, 252,31 s, 5 lacunas > 500 ms) e foi repetida: sinal de instabilidade a reconfirmar em teste fisico",
+      "missing_evidence": "metricas de midia no decode; sha256/carimbo na saida"
+    },
+    {
+      "identity": "sbt",
+      "published_id": "207198",
+      "favorited_id": "207198",
+      "artifact_sha16": "8185503b8ffb2540",
+      "windows": "J1 candidate_ok 299,98 s sem lacuna > 500 ms, mas SEM capture_coverage registrado; J2 candidate_ok 299,99 s com cobertura 1,0",
+      "decode": "decode_ok, sem metricas de midia registradas no artefato",
+      "output": "output_ok, 12/12, failed=[], 1080p30, sem sha256/carimbo",
+      "conclusion": "APROVADA e ja testada na TV. A cobertura da J1 nao e afirmavel a partir deste artefato",
+      "missing_evidence": "capture_coverage na J1; metricas de midia no decode"
+    },
+    {
+      "identity": "record",
+      "published_id": "214640",
+      "favorited_id": "214640",
+      "artifact_sha16": "8a787a8d09e0dc7c",
+      "windows": "J1 candidate_ok 299,97 s sem lacuna > 500 ms, mas SEM capture_coverage registrado; J2 candidate_ok 299,99 s com cobertura 1,0",
+      "decode": "decode_ok, sem metricas de midia registradas no artefato",
+      "output": "output_ok, 12/12, failed=[], 1080p30, sem sha256/carimbo",
+      "conclusion": "APROVADA e ja testada na TV. A cobertura da J1 nao e afirmavel a partir deste artefato",
+      "missing_evidence": "capture_coverage na J1; metricas de midia no decode"
+    },
+    {
+      "identity": "_procedencia_das_evidencias_embutidas",
+      "note": "Para sbt e record o export carrega medicoes (decode e saida) cujos artefatos de origem NAO estao em disco: o tamanho da captura difere do arquivo existente. Essas medicoes embutidas nao sao verificaveis de forma independente; o que pode ser citado sao os artefatos listados em evidence_ledger, com sha256",
+      "comparacao_decode": {
+        "sbt": {
+          "embedded_capture_bytes": 15383476,
+          "on_disk_capture_bytes": 15446268,
+          "same_round": false
+        },
+        "record": {
+          "embedded_capture_bytes": 20621156,
+          "on_disk_capture_bytes": 20483916,
+          "same_round": false
+        }
+      }
+    },
+    {
+      "identity": "globo",
+      "published_id": "10001",
+      "note": "medido no host: 2 janelas de 300 s (1920x1080, cobertura 1,0, zero lacuna > 500 ms), decode_ok pela regra do projeto e saida 12/12 (0 B-frames, 1 fatia, ac3). Motivo de ser SP: NAO existe fonte 1080p medida no RJ (capital RJ = 720p; afiliadas RJ 10012/10017/10022 deram timeout) e a programacao regional de SP difere do RJ pedido. Teste fisico na TV: pendente.",
+      "limits": [
+        "medicao de fonte feita no host; nao substitui teste fisico",
+        "regiao SP difere da preferencia RJ"
+      ]
+    },
+    {
+      "identity": "telecine",
+      "published_id": "365261",
+      "note": "janela 2 com 1 lacuna de audio > 500 ms (abaixo do limite de 2 s do motor)",
+      "limits": [
+        "medicao de fonte no host; teste fisico pendente"
+      ]
+    }
+  ],
+  "evidence_ledger": {
+    "generated_at_utc": "2026-10-29T23:16:12Z",
+    "rule": "cada metrica vem do artefato nomeado, com sha256; metrica nao registrada fica nula e nunca e assumida como 1,0; sha256s sao do proprio arquivo JSON de evidencia",
+    "identities": {
+      "sbt": {
+        "channel_id": "207198",
+        "favorite_channel_id": "207198",
+        "artifact_count": 4,
+        "roles_present": [
+          "decode",
+          "output",
+          "window1",
+          "window2"
+        ],
+        "artifacts": [
+          {
+            "role": "window1",
+            "path": "docs/implementation/evidence/winner-sbt-207198.json",
+            "sha256": "c2d598b86264dc80d5b5685d0cfa18639a61bf5a0308e6dbde879502df1e5d26",
+            "identity": "sbt",
+            "channel_id": "207198",
+            "verdict": "candidate_ok",
+            "measured": {
+              "media_duration_s": 299.98,
+              "capture_coverage": null,
+              "width": 1920,
+              "height": 1080,
+              "audio_gaps_over_500ms": 0
+            },
+            "limits": [
+              "capture_coverage nao registrado neste artefato: nao afirmar 1,0"
+            ]
+          },
+          {
+            "role": "window2",
+            "path": "docs/implementation/evidence/window2/winner-sbt-207198.json",
+            "sha256": "e3af6edd1d58ca3ddf5de93d09c01b3dc6129d55a36b228d58e3cc0806f5b72b",
+            "identity": "sbt",
+            "channel_id": "207198",
+            "verdict": "candidate_ok",
+            "measured": {
+              "media_duration_s": 299.99,
+              "capture_coverage": 1.0,
+              "width": 1920,
+              "height": 1080,
+              "audio_gaps_over_500ms": 0
+            },
+            "limits": []
+          },
+          {
+            "role": "decode",
+            "path": "docs/implementation/evidence/decode/decode-sbt-207198.json",
+            "sha256": "8185503b8ffb25402e7fa5323adcadf8b3bc6f9d60ff5a2ee2b699558d2cded0",
+            "identity": "sbt",
+            "channel_id": "207198",
+            "verdict": "decode_ok",
+            "measured": {
+              "checked_seconds": 60.0,
+              "capture_bytes": 15446268,
+              "video_span_s": null,
+              "validation_checks": 0
+            },
+            "limits": [
+              "artefato nao registra metricas de midia (sem video_span_s): nao ha cobertura de video comprovavel por este arquivo",
+              "artefato nao registra as checagens de validacao"
+            ]
+          },
+          {
+            "role": "output",
+            "path": "docs/implementation/evidence/output-sbt-207198.json",
+            "sha256": "a1af996783d0a49a53d948f23bda1b0a4f2abfac4696033110930d0ac045ac6a",
+            "identity": "sbt",
+            "channel_id": "207198",
+            "verdict": "output_ok",
+            "measured": {
+              "checks_passed": 12,
+              "checks_total": 12,
+              "failed": [],
+              "output_profile": "1080p30",
+              "output_bytes": 18800376
+            },
+            "limits": [
+              "artefato nao registra sha256 do bitstream de saida",
+              "artefato nao registra carimbo de medicao"
+            ]
+          }
+        ]
+      },
+      "record": {
+        "channel_id": "214640",
+        "favorite_channel_id": "214640",
+        "artifact_count": 4,
+        "roles_present": [
+          "decode",
+          "output",
+          "window1",
+          "window2"
+        ],
+        "artifacts": [
+          {
+            "role": "window1",
+            "path": "docs/implementation/evidence/winner-record-214640.json",
+            "sha256": "fb78642fecca2276bcccf4be00ce5349701c6d7013f6b602e12df198ca316cf6",
+            "identity": "record",
+            "channel_id": "214640",
+            "verdict": "candidate_ok",
+            "measured": {
+              "media_duration_s": 299.97,
+              "capture_coverage": null,
+              "width": 1920,
+              "height": 1080,
+              "audio_gaps_over_500ms": 0
+            },
+            "limits": [
+              "capture_coverage nao registrado neste artefato: nao afirmar 1,0"
+            ]
+          },
+          {
+            "role": "window2",
+            "path": "docs/implementation/evidence/window2/winner-record-214640.json",
+            "sha256": "76d52ae1cacfa77f316a65973c53a57b879eebfbcb756f50608c63af28dfb923",
+            "identity": "record",
+            "channel_id": "214640",
+            "verdict": "candidate_ok",
+            "measured": {
+              "media_duration_s": 299.99,
+              "capture_coverage": 1.0,
+              "width": 1920,
+              "height": 1080,
+              "audio_gaps_over_500ms": 0
+            },
+            "limits": []
+          },
+          {
+            "role": "decode",
+            "path": "docs/implementation/evidence/decode/decode-record-214640.json",
+            "sha256": "8a787a8d09e0dc7c2c3e5beb298ec6d79e39eda97e7e5a891dfdcb04b29e1307",
+            "identity": "record",
+            "channel_id": "214640",
+            "verdict": "decode_ok",
+            "measured": {
+              "checked_seconds": 60.0,
+              "capture_bytes": 20483916,
+              "video_span_s": null,
+              "validation_checks": 0
+            },
+            "limits": [
+              "artefato nao registra metricas de midia (sem video_span_s): nao ha cobertura de video comprovavel por este arquivo",
+              "artefato nao registra as checagens de validacao"
+            ]
+          },
+          {
+            "role": "output",
+            "path": "docs/implementation/evidence/output-record-214640.json",
+            "sha256": "baf9717dcd73cae62787f234da204290a37e1afa899014cc96c09c4d7b44dd9b",
+            "identity": "record",
+            "channel_id": "214640",
+            "verdict": "output_ok",
+            "measured": {
+              "checks_passed": 12,
+              "checks_total": 12,
+              "failed": [],
+              "output_profile": "1080p30",
+              "output_bytes": 18808460
+            },
+            "limits": [
+              "artefato nao registra sha256 do bitstream de saida",
+              "artefato nao registra carimbo de medicao"
+            ]
+          }
+        ]
+      },
+      "telecine-action": {
+        "channel_id": "365243",
+        "favorite_channel_id": "365244",
+        "artifact_count": 4,
+        "roles_present": [
+          "decode",
+          "output",
+          "window1",
+          "window2"
+        ],
+        "artifacts": [
+          {
+            "role": "window1",
+            "path": "docs/implementation/evidence/winner-telecine-action-365243.json",
+            "sha256": "654a6dae6da705e9c475d6ce56f604b8bee7ad68a981bd882c55a88d12069579",
+            "identity": "telecine-action",
+            "channel_id": "365243",
+            "verdict": "candidate_ok",
+            "measured": {
+              "media_duration_s": 300.01,
+              "capture_coverage": 1.0,
+              "width": 1920,
+              "height": 1080,
+              "audio_gaps_over_500ms": 0
+            },
+            "limits": []
+          },
+          {
+            "role": "window2",
+            "path": "docs/implementation/evidence/window2/winner-telecine-action-365243.json",
+            "sha256": "f96e530cf2db2eb186ea78fb97c17a22a17c762e7492c09f00dc9d331142de45",
+            "identity": "telecine-action",
+            "channel_id": "365243",
+            "verdict": "candidate_ok",
+            "measured": {
+              "media_duration_s": 300.01,
+              "capture_coverage": 1.0,
+              "width": 1920,
+              "height": 1080,
+              "audio_gaps_over_500ms": 0
+            },
+            "limits": []
+          },
+          {
+            "role": "decode",
+            "path": "docs/implementation/evidence/decode/decode-telecine-action-365243.json",
+            "sha256": "828becf882f48671afea6fe9c32653eab589b52e4a5fa71e546ab410d7151a65",
+            "identity": "telecine-action",
+            "channel_id": "365243",
+            "verdict": "decode_ok",
+            "measured": {
+              "checked_seconds": 60.0,
+              "capture_bytes": 24297684,
+              "video_span_s": null,
+              "validation_checks": 0
+            },
+            "limits": [
+              "artefato nao registra metricas de midia (sem video_span_s): nao ha cobertura de video comprovavel por este arquivo",
+              "artefato nao registra as checagens de validacao"
+            ]
+          },
+          {
+            "role": "output",
+            "path": "docs/implementation/evidence/output-telecine-action-365243.json",
+            "sha256": "d84da53b54b7d008cf9aea398d8c472a2864ff18e915d829ac4e5111ca5e45b2",
+            "identity": "telecine-action",
+            "channel_id": "365243",
+            "verdict": "output_ok",
+            "measured": {
+              "checks_passed": 12,
+              "checks_total": 12,
+              "failed": [],
+              "output_profile": "1080p30",
+              "output_bytes": 18813912
+            },
+            "limits": [
+              "artefato nao registra sha256 do bitstream de saida",
+              "artefato nao registra carimbo de medicao"
+            ]
+          }
+        ]
+      },
+      "history": {
+        "channel_id": "387622",
+        "favorite_channel_id": "387624",
+        "artifact_count": 4,
+        "roles_present": [
+          "decode",
+          "output",
+          "window1",
+          "window2"
+        ],
+        "artifacts": [
+          {
+            "role": "window1",
+            "path": "docs/implementation/evidence/winner-history-387622.json",
+            "sha256": "5fa7e2f8a9352a17aadb16e6608596e6e4df56a58a26871172bae1c63d1f31cb",
+            "identity": "history",
+            "channel_id": "387622",
+            "verdict": "candidate_ok",
+            "measured": {
+              "media_duration_s": 300.0,
+              "capture_coverage": 1.0,
+              "width": 1920,
+              "height": 1080,
+              "audio_gaps_over_500ms": 0
+            },
+            "limits": []
+          },
+          {
+            "role": "window2",
+            "path": "docs/implementation/evidence/window2/winner-history-387622.json",
+            "sha256": "c546d3114c41dc417434279bdcd022c0d96f8f9ea4cafecaf8d7b5791b92bcea",
+            "identity": "history",
+            "channel_id": "387622",
+            "verdict": "candidate_ok",
+            "measured": {
+              "media_duration_s": 300.0,
+              "capture_coverage": 1.0,
+              "width": 1920,
+              "height": 1080,
+              "audio_gaps_over_500ms": 0
+            },
+            "limits": []
+          },
+          {
+            "role": "decode",
+            "path": "docs/implementation/evidence/decode/decode-history-387622.json",
+            "sha256": "743c5737f1262458bc6feb0abcb43717ed2fc8f95a89536f17962697937d7743",
+            "identity": "history",
+            "channel_id": "387622",
+            "verdict": "decode_ok",
+            "measured": {
+              "checked_seconds": 60.0,
+              "capture_bytes": 24661276,
+              "video_span_s": null,
+              "validation_checks": 0
+            },
+            "limits": [
+              "artefato nao registra metricas de midia (sem video_span_s): nao ha cobertura de video comprovavel por este arquivo",
+              "artefato nao registra as checagens de validacao"
+            ]
+          },
+          {
+            "role": "output",
+            "path": "docs/implementation/evidence/output-history-387622.json",
+            "sha256": "578b2e918f7e7b951cb65c63ccc3630d52bdea10b69ed2476d45a5e6f49abe1e",
+            "identity": "history",
+            "channel_id": "387622",
+            "verdict": "output_ok",
+            "measured": {
+              "checks_passed": 12,
+              "checks_total": 12,
+              "failed": [],
+              "output_profile": "1080p30",
+              "output_bytes": 18832712
+            },
+            "limits": [
+              "artefato nao registra sha256 do bitstream de saida",
+              "artefato nao registra carimbo de medicao"
+            ]
+          }
+        ]
+      },
+      "discovery-channel": {
+        "channel_id": "387640",
+        "favorite_channel_id": "387640",
+        "artifact_count": 4,
+        "roles_present": [
+          "decode",
+          "output",
+          "window1",
+          "window2"
+        ],
+        "artifacts": [
+          {
+            "role": "window1",
+            "path": "docs/implementation/evidence/winner-discovery-channel-387640.json",
+            "sha256": "a8a022d33d9a61bc46244122a53994b50caa2464639921d9866640b706ed8b2f",
+            "identity": "discovery-channel",
+            "channel_id": "387640",
+            "verdict": "candidate_ok",
+            "measured": {
+              "media_duration_s": 300.0,
+              "capture_coverage": null,
+              "width": 1920,
+              "height": 1080,
+              "audio_gaps_over_500ms": 0
+            },
+            "limits": [
+              "capture_coverage nao registrado neste artefato: nao afirmar 1,0"
+            ]
+          },
+          {
+            "role": "window2",
+            "path": "docs/implementation/evidence/window2/winner-discovery-channel-387640.json",
+            "sha256": "f3da9e8b426248df120ad0996a2b28b89db6f0ef0459de7a2e9dd57bd030a4ef",
+            "identity": "discovery-channel",
+            "channel_id": "387640",
+            "verdict": "candidate_ok",
+            "measured": {
+              "media_duration_s": 300.02,
+              "capture_coverage": 1.0001,
+              "width": 1920,
+              "height": 1080,
+              "audio_gaps_over_500ms": 0
+            },
+            "limits": []
+          },
+          {
+            "role": "decode",
+            "path": "docs/implementation/evidence/decode/decode-discovery-channel-387640.json",
+            "sha256": "08f4498144d77497905ccea19a87094612c42b39effe6e9f3c3555cdf4bcf858",
+            "identity": "discovery-channel",
+            "channel_id": "387640",
+            "verdict": "decode_ok",
+            "measured": {
+              "checked_seconds": 60.0,
+              "capture_bytes": 24667856,
+              "video_span_s": null,
+              "validation_checks": 0
+            },
+            "limits": [
+              "artefato nao registra metricas de midia (sem video_span_s): nao ha cobertura de video comprovavel por este arquivo",
+              "artefato nao registra as checagens de validacao"
+            ]
+          },
+          {
+            "role": "output",
+            "path": "docs/implementation/evidence/output-discovery-channel-387640.json",
+            "sha256": "b7f4be45d3d6c2d762f65fe7f9be559c9957e601433096f2ca16ca6aeeade2f4",
+            "identity": "discovery-channel",
+            "channel_id": "387640",
+            "verdict": "output_ok",
+            "measured": {
+              "checks_passed": 12,
+              "checks_total": 12,
+              "failed": [],
+              "output_profile": "1080p30",
+              "output_bytes": 18807144
+            },
+            "limits": [
+              "artefato nao registra sha256 do bitstream de saida",
+              "artefato nao registra carimbo de medicao"
+            ]
+          }
+        ]
+      },
+      "discovery-hh": {
+        "channel_id": "387648",
+        "favorite_channel_id": "387648",
+        "artifact_count": 4,
+        "roles_present": [
+          "decode",
+          "output",
+          "window1",
+          "window2"
+        ],
+        "artifacts": [
+          {
+            "role": "window1",
+            "path": "docs/implementation/evidence/winner-discovery-hh-387648.json",
+            "sha256": "2fb6275dc87796a87cc3e9488f275f3242336a6bf1a9cd0932e3a161b9703641",
+            "identity": "discovery-hh",
+            "channel_id": "387648",
+            "verdict": "candidate_ok",
+            "measured": {
+              "media_duration_s": 299.99,
+              "capture_coverage": 1.0,
+              "width": 1920,
+              "height": 1080,
+              "audio_gaps_over_500ms": 0
+            },
+            "limits": []
+          },
+          {
+            "role": "window2",
+            "path": "docs/implementation/evidence/window2/winner-discovery-hh-387648.json",
+            "sha256": "c9eccc18a46340e26143fd23ccdc6c1619e7584dfde884cf7fae44fa289dfa47",
+            "identity": "discovery-hh",
+            "channel_id": "387648",
+            "verdict": "candidate_ok",
+            "measured": {
+              "media_duration_s": 300.01,
+              "capture_coverage": 1.0,
+              "width": 1920,
+              "height": 1080,
+              "audio_gaps_over_500ms": 0
+            },
+            "limits": []
+          },
+          {
+            "role": "decode",
+            "path": "docs/implementation/evidence/decode/decode-discovery-hh-387648.json",
+            "sha256": "29b144eebbc479b81a5a7f49ebd9624e39ccab8dfac586fb2d60f36d21491e58",
+            "identity": "discovery-hh",
+            "channel_id": "387648",
+            "verdict": "decode_ok",
+            "measured": {
+              "checked_seconds": 60.0,
+              "capture_bytes": 25874816,
+              "video_span_s": null,
+              "validation_checks": 0
+            },
+            "limits": [
+              "artefato nao registra metricas de midia (sem video_span_s): nao ha cobertura de video comprovavel por este arquivo",
+              "artefato nao registra as checagens de validacao"
+            ]
+          },
+          {
+            "role": "output",
+            "path": "docs/implementation/evidence/output-discovery-hh-387648.json",
+            "sha256": "59f7dd5ab5efb589542ce0d14f2a3df0a3eaf0096e347b9ab43555e4dd4da7d7",
+            "identity": "discovery-hh",
+            "channel_id": "387648",
+            "verdict": "output_ok",
+            "measured": {
+              "checks_passed": 12,
+              "checks_total": 12,
+              "failed": [],
+              "output_profile": "1080p30",
+              "output_bytes": 18805828
+            },
+            "limits": [
+              "artefato nao registra sha256 do bitstream de saida",
+              "artefato nao registra carimbo de medicao"
+            ]
+          }
+        ]
+      }
+    },
+    "contradictions": [
+      {
+        "identity": "telecine-action",
+        "channel_id": "365243",
+        "kind": "decode_verdict_conflict",
+        "round_embedded_in_export": {
+          "verdict": "decode_errors",
+          "failed_checks": [
+            "video_coverage"
+          ],
+          "video_span_s": 57.057,
+          "checked_seconds": 60.0,
+          "video_coverage": 0.951,
+          "capture_bytes": 24316672,
+          "measured_at": "2026-10-27T20:34:59Z"
+        },
+        "round_on_disk": {
+          "artifact": "docs/implementation/evidence/decode/decode-telecine-action-365243.json",
+          "sha256": "828becf882f48671afea6fe9c32653eab589b52e4a5fa71e546ab410d7151a65",
+          "verdict": "decode_ok",
+          "capture_bytes": 24297684,
+          "metrics_registered": false
+        },
+        "resolution": "nao reconciliada sem nova captura; identidade mantida pendente"
+      }
+    ]
+  },
+  "priority": {
+    "declared_by": "usuario",
+    "declared_at": "2026-10-29",
+    "families": [
+      "Globo",
+      "Telecine",
+      "Discovery",
+      "Band"
+    ],
+    "rule": "prioridade e intencao de produto, nunca evidencia: uma identidade prioritaria so entra em TV/ quando o ID exato tem as duas janelas, decode limpo e saida 12/12 em 1080p nativo; 720p jamais e promovido",
+    "identities": [
+      {
+        "priority_rank": 1,
+        "identity": "globo",
+        "family": "Globo (Rio, região pedida)",
+        "status": "pending",
+        "quality_status": "pending_no_native_1080",
+        "evidence_result": null,
+        "blocked": true
+      },
+      {
+        "priority_rank": 2,
+        "identity": "telecine-action",
+        "family": "Telecine (Action)",
+        "status": "pending",
+        "quality_status": "pending_decode_conflict",
+        "evidence_result": null,
+        "blocked": true
+      },
+      {
+        "priority_rank": 3,
+        "identity": "discovery-channel",
+        "family": "Discovery (Channel)",
+        "status": "approved",
+        "quality_status": "pending_decode_validation",
+        "evidence_result": "DISCOVERY CHANNEL FHD¹",
+        "published_native": "1920x1080",
+        "missing_evidence": "capture_coverage na J1; metricas de midia no decode",
+        "blocked": false
+      },
+      {
+        "priority_rank": 4,
+        "identity": "discovery-hh",
+        "family": "Discovery (Home & Health)",
+        "status": "approved",
+        "quality_status": "pending_decode_validation",
+        "evidence_result": "DISCOVERY H&H FHD¹",
+        "published_native": "1920x1080",
+        "missing_evidence": "metricas de midia no decode; sha256/carimbo na saida",
+        "blocked": false
+      },
+      {
+        "priority_rank": 5,
+        "identity": "band",
+        "family": "Band (SP)",
+        "status": "pending",
+        "quality_status": "pending_no_native_1080",
+        "evidence_result": null,
+        "blocked": true
+      },
+      {
+        "priority_rank": 6,
+        "identity": "globo-news",
+        "family": "Globo (Globo News)",
+        "status": "pending",
+        "quality_status": "pending_decode_validation",
+        "evidence_result": null,
+        "blocked": true
+      },
+      {
+        "priority_rank": 7,
+        "identity": "band-news",
+        "family": "Band (Band News)",
+        "status": "pending",
+        "quality_status": "pending_source_stability",
+        "evidence_result": null,
+        "blocked": true
+      }
+    ],
+    "blocked_count": 5,
+    "research": {
+      "source": "auditoria local sobre dados existentes; nenhuma conexao IPTV nova, nada sondado com a TV em uso",
+      "recorded_at": "2026-10-29",
+      "rule": "um alvo por CANAL distinto; nao sondar outra variante de canal ja aprovado — diversidade primeiro; prioridade nao aprova nada",
+      "vocabulary": {
+        "measured": "resolucao medida em artefato existente",
+        "insufficient": "medicao curta demais para aprovar",
+        "unknown": "tentativa falhou, resolucao nao comprovada",
+        "conflict": "duas rodadas discordam no mesmo ID"
+      },
+      "probe_queue": [
+        {
+          "step": 1,
+          "identity": "telecine-action",
+          "channel": "Telecine Action",
+          "channel_id": "365245",
+          "label": "TELECINE ACTION FHD2",
+          "evidence_now": "medido 1080p em 20 s, 6657 kbps (a melhor medição de Telecine)",
+          "kind": "windows_300s",
+          "what": "duas janelas de 300 s + decode + saida 12/12",
+          "why_first": "Telecine nao tem nenhum canal aprovado e esta e a variante com maior bitrate medido; ao aprovar, as demais variantes saem da fila"
+        },
+        {
+          "step": 2,
+          "identity": "globo",
+          "channel": "Globo SP",
+          "channel_id": "10001",
+          "label": "GLOBO SP",
+          "evidence_now": "20 s em 1080p HEVC",
+          "kind": "windows_300s",
+          "what": "completar com duas janelas de 300 s + decode + saida",
+          "why_first": "canal distinto do Globo RJ (afiliada SP); e o unico Globo com 1080p medido, embora com programacao regional diferente"
+        },
+        {
+          "step": 3,
+          "identity": "globo-news",
+          "channel": "Globo News",
+          "channel_id": "206097",
+          "label": "GLOBO NEWS FHD1",
+          "evidence_now": "1080p, 6711 kbps, decode com 1 erro",
+          "kind": "decode_60s",
+          "what": "captura de decode limpa (>= 0,97 de cobertura)",
+          "why_first": "canal distinto (noticias), maior bitrate medido do catalogo"
+        },
+        {
+          "step": 4,
+          "identity": "globo",
+          "channel": "Globo RJ (afiliadas)",
+          "channel_id": "10012,10017,10022",
+          "label": "afiliadas RJ",
+          "evidence_now": "timeout na triagem, resolucao nao comprovada",
+          "kind": "capture_60s",
+          "what": "remedir resolucao com orcamento maior, um por vez",
+          "why_first": "afiliadas RJ do canal pedido; hoje nao ha medicao valida"
+        },
+        {
+          "step": 5,
+          "identity": "band-news",
+          "channel": "Band News",
+          "channel_id": "206081",
+          "label": "BAND NEWS FHD2",
+          "evidence_now": "1080p, J2 com cobertura 0,7505",
+          "kind": "capture_300s",
+          "what": "segunda janela de 300 s com cobertura >= 0,97",
+          "why_first": "canal distinto (noticias) ja medido em 1080p"
+        },
+        {
+          "step": 6,
+          "identity": "band",
+          "channel": "Band",
+          "channel_id": "207170",
+          "label": "BAND SP FHD1",
+          "evidence_now": "720p medido",
+          "kind": "capture_60s",
+          "what": "remedir a resolucao nativa da melhor variante",
+          "why_first": "unico caminho para descobrir se existe 1080p nesta marca"
+        },
+        {
+          "step": 7,
+          "identity": "telecine-action",
+          "channel": "Telecine Action (H265)",
+          "channel_id": "365243",
+          "label": "TELECINE ACTION H265",
+          "evidence_now": "decode contraditorio entre duas rodadas",
+          "kind": "decode_60s",
+          "what": "captura de decode com video_span_s >= 0,97",
+          "why_first": "fecha a contradicao registrada; entra depois do 365245 para nao gastar janela em duas variantes do mesmo canal"
+        }
+      ],
+      "excluded_variants": [
+        {
+          "channel_id": "207192",
+          "label": "SBT SP FHD1",
+          "approved_channel": "sbt",
+          "reason": "SBT ja aprovado (207198, testado na TV); variante nao traz canal novo"
+        },
+        {
+          "channel_id": "207193",
+          "label": "SBT SP FHD2",
+          "approved_channel": "sbt",
+          "reason": "idem: canal SBT ja aprovado"
+        },
+        {
+          "channel_id": "214642",
+          "label": "RECORD TV RIO HD2",
+          "approved_channel": "record",
+          "reason": "Record ja aprovado (214640, testado na TV)"
+        },
+        {
+          "channel_id": "387624",
+          "label": "HISTORY FHD1",
+          "approved_channel": "history",
+          "reason": "History ja aprovado (387622); esta variante tem J2 sem midia"
+        },
+        {
+          "channel_id": "387641",
+          "label": "Discovery (variante)",
+          "approved_channel": "discovery-channel",
+          "reason": "Discovery Channel ja aprovado (387640)"
+        },
+        {
+          "channel_id": "387649",
+          "label": "Discovery H&H (variante)",
+          "approved_channel": "discovery-hh",
+          "reason": "Discovery H&H ja aprovado (387648)"
+        }
+      ],
+      "physical_confirmation": [
+        {
+          "identity": "discovery-channel",
+          "channel_id": "387640",
+          "what": "abrir na TV e confirmar; provas de host ja existentes"
+        },
+        {
+          "identity": "discovery-hh",
+          "channel_id": "387648",
+          "what": "abrir na TV e confirmar; ha sinal de instabilidade registrado"
+        },
+        {
+          "identity": "history",
+          "channel_id": "387622",
+          "what": "abrir na TV e confirmar; provas de host ja existentes"
+        }
+      ],
+      "later_pool": {
+        "pool_size_estimate": 400,
+        "source": "catalogo com rotulo FHD/1080/4K/UHD no nome (3416 canais, sem campo de resolucao)",
+        "rule": "depois da fila acima: escolher CANAIS NOVOS (nao variantes de canal ja aprovado), medir resolucao primeiro e so entao rodar janelas/decode/saida",
+        "families_unmeasured": {
+          "GLOBO": 66,
+          "RECORD": 21,
+          "DISCOVERY": 21,
+          "TELECINE": 15,
+          "BAND": 5
+        }
+      },
+      "window_rule": "sondagem somente em janela livre autorizada, sequencial, um canal por vez; os demais canais ficam intocados"
+    }
+  }
+}

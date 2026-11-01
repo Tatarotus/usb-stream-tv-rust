@@ -1,0 +1,74 @@
+{
+  "capture": {
+    "bytes": 98393936,
+    "returncode": 0,
+    "stderr_categories": {
+      "source_reconnect": 1
+    },
+    "wall_seconds": 275.136
+  },
+  "catalog_name": "GLOBO RIO DE JANEIRO (RJ) FHD\u00b9",
+  "category": "Abertos",
+  "channel_id": "10006",
+  "duration_s": 300.0,
+  "filename": "Globo.trp",
+  "identity": "globo",
+  "media": {
+    "audio": {
+      "audio_duration_s": 299.99,
+      "audio_packets": 14061,
+      "audio_pts_gaps_over_1000ms": 0,
+      "audio_pts_gaps_over_500ms": 0,
+      "audio_pts_max_gap_ms": 61.3
+    },
+    "audio_bit_rate": "128073",
+    "audio_channels": 2,
+    "audio_codec": "aac",
+    "audio_sample_rate": "48000",
+    "b_frames_seen": 6559,
+    "fps": "30/1",
+    "frames_decoded": 8999,
+    "has_b_frames": 1,
+    "height": 720,
+    "heights_seen": [
+      720
+    ],
+    "i_frames_seen": 189,
+    "idr_gap_max_s": 1.6,
+    "idr_gap_median_s": 1.6,
+    "level": 31,
+    "media_duration_s": 299.99,
+    "p_frames_seen": 2251,
+    "pcr": {
+      "pcr_count": 3001,
+      "pcr_gaps_over_100ms": 748,
+      "pcr_gaps_over_40ms": 3000,
+      "pcr_max_gap_ms": 133.33,
+      "pcr_median_gap_ms": 100.0,
+      "pcr_pid": "0x100",
+      "pcr_pids": 1
+    },
+    "pix_fmt": "yuv420p",
+    "profile": "High",
+    "slices": {
+      "b_frames": 6564,
+      "frames": 9008,
+      "i_frames": 189,
+      "multislice_frames": 8995,
+      "p_frames": 2254,
+      "slices_max": 3,
+      "slices_median": 2.0
+    },
+    "ts_kbps_total": 2624,
+    "video_codec": "h264",
+    "video_kbps": 2382,
+    "width": 1280,
+    "widths_seen": [
+      1280
+    ]
+  },
+  "phase": "winner",
+  "quality_label": "FHD1",
+  "region": "rj",
+  "verdict": "not_1080p"
+}

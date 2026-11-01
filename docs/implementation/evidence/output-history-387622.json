@@ -1,0 +1,171 @@
+{
+  "catalog_name": "HISTORY 4K",
+  "channel_id": "387622",
+  "checks": {
+    "audio_ac3_384k": true,
+    "audio_continuous": true,
+    "geometry": true,
+    "idr_one_second": true,
+    "no_b_frames": true,
+    "no_decode_errors": true,
+    "pcr_filter_ok": true,
+    "pcr_interval": true,
+    "process_ok": true,
+    "resolution_stable": true,
+    "single_slice": true,
+    "stderr_clean": true
+  },
+  "failed": [],
+  "identity": "history",
+  "output": {
+    "audio": {
+      "audio_duration_s": 25.02,
+      "audio_gap_max_ms": 0.0,
+      "audio_overlap_max_ms": 1.04,
+      "audio_overlaps": 5,
+      "audio_packets": 782,
+      "audio_pts_delta_max_ms": 32.1,
+      "audio_pts_gaps_over_1000ms": 0,
+      "audio_pts_gaps_over_2000ms": 0,
+      "audio_pts_gaps_over_500ms": 0,
+      "audio_pts_max_gap_ms": 0.0
+    },
+    "audio_bit_rate": "384000",
+    "audio_channels": 2,
+    "audio_codec": "ac3",
+    "audio_sample_rate": "48000",
+    "b_frames_seen": 0,
+    "capture_coverage": null,
+    "fps": "30/1",
+    "frame_window_s": 150,
+    "frames_decoded": 751,
+    "has_b_frames": 0,
+    "height": 1080,
+    "heights_seen": [
+      1080
+    ],
+    "i_frames_seen": 26,
+    "idr_gap_max_s": 1.0,
+    "idr_gap_median_s": 1.0,
+    "keyframes_scanned": 26,
+    "level": 40,
+    "media_duration_s": 25.02,
+    "p_frames_seen": 725,
+    "pcr": {
+      "pcr_count": 1348,
+      "pcr_gaps_over_100ms": 0,
+      "pcr_gaps_over_40ms": 0,
+      "pcr_max_gap_ms": 19.55,
+      "pcr_median_gap_ms": 19.05,
+      "pcr_pid": "0x100",
+      "pcr_pids": 1
+    },
+    "pix_fmt": "yuv420p",
+    "profile": "Constrained Baseline",
+    "slices": {
+      "b_frames": 0,
+      "frames": 751,
+      "i_frames": 26,
+      "multislice_frames": 0,
+      "p_frames": 725,
+      "slices_max": 1,
+      "slices_median": 1
+    },
+    "ts_kbps_total": 6022,
+    "video_codec": "h264",
+    "video_internal_gaps_over_1s": 0,
+    "video_kbps": 3425,
+    "video_span_s": 25.0,
+    "width": 1920,
+    "widths_seen": [
+      1920
+    ]
+  },
+  "output_capture": {
+    "bounder": {
+      "error": null,
+      "replaced_null_packets": 0
+    },
+    "bytes": 18832712,
+    "raw_bytes": 18832712,
+    "returncode": 0,
+    "stderr_categories": {},
+    "wall_seconds": 15.364
+  },
+  "output_profile": "1080p30",
+  "quality_status": "native_1080",
+  "region": "national",
+  "source": {
+    "audio": {
+      "audio_duration_s": 25.01,
+      "audio_gap_max_ms": 0.0,
+      "audio_overlap_max_ms": 1.03,
+      "audio_overlaps": 5,
+      "audio_packets": 1077,
+      "audio_pts_delta_max_ms": 23.3,
+      "audio_pts_gaps_over_1000ms": 0,
+      "audio_pts_gaps_over_2000ms": 0,
+      "audio_pts_gaps_over_500ms": 0,
+      "audio_pts_max_gap_ms": 0.0
+    },
+    "audio_bit_rate": "131669",
+    "audio_channels": 2,
+    "audio_codec": "aac",
+    "audio_sample_rate": "44100",
+    "b_frames_seen": 250,
+    "capture_coverage": null,
+    "fps": "30/1",
+    "frame_window_s": 150,
+    "frames_decoded": 751,
+    "has_b_frames": 1,
+    "height": 1080,
+    "heights_seen": [
+      1080
+    ],
+    "i_frames_seen": 126,
+    "idr_gap_max_s": 0.2,
+    "idr_gap_median_s": 0.2,
+    "keyframes_scanned": 126,
+    "level": 40,
+    "media_duration_s": 25.01,
+    "p_frames_seen": 375,
+    "pcr": {
+      "pcr_count": 251,
+      "pcr_gaps_over_100ms": 0,
+      "pcr_gaps_over_40ms": 250,
+      "pcr_max_gap_ms": 100.0,
+      "pcr_median_gap_ms": 100.0,
+      "pcr_pid": "0x101",
+      "pcr_pids": 1
+    },
+    "pix_fmt": "yuv420p",
+    "profile": "Main",
+    "slices": {
+      "b_frames": 250,
+      "frames": 753,
+      "i_frames": 126,
+      "multislice_frames": 0,
+      "p_frames": 377,
+      "slices_max": 1,
+      "slices_median": 1
+    },
+    "ts_kbps_total": 3290,
+    "video_codec": "h264",
+    "video_internal_gaps_over_1s": 0,
+    "video_kbps": 3025,
+    "video_span_s": 25.0,
+    "width": 1920,
+    "widths_seen": [
+      1920
+    ]
+  },
+  "source_capture": {
+    "bytes": 10285856,
+    "capture_seconds": 26.506,
+    "returncode": 0,
+    "stderr_categories": {},
+    "wall_seconds": 26.506
+  },
+  "status": "approved",
+  "verdict": "output_ok"
+}

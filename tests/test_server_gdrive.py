@@ -58,7 +58,7 @@ class FakeDrive:
             raise self.failure
         return {
             "storage": "gdrive", "remote_path": task_id + ".mp4",
-            "file_size": os.path.getsize(path), "remote_md5": "verified",
+            "file_size": os.path.getsize(path), "remote_md5": os.urandom(16).hex(),
         }
 
     def delete(self, task):
@@ -94,6 +94,8 @@ class QuietHandler(server.RequestHandler):
 
 
 class TestGDriveServer(unittest.TestCase):
+    REVISION = "md5:0123456789abcdef0123456789abcdef"
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="vod-http-test-")
         self.addCleanup(self.temp.cleanup)
@@ -105,7 +107,7 @@ class TestGDriveServer(unittest.TestCase):
             "id": TASK_ID, "title": "Prepared film", "status": "ready",
             "storage": "gdrive", "remote_path": TASK_ID + ".mp4",
             "file_path": str(self.root / (TASK_ID + ".mp4")),
-            "file_size": len(MEDIA), "remote_md5": "verified",
+            "file_size": len(MEDIA), "remote_md5": "0123456789abcdef0123456789abcdef",
             "template_path": str(self.root / (TASK_ID + ".bin")),
             "display_name": "FILME.MP4",
         }
@@ -256,6 +258,82 @@ class TestGDriveServer(unittest.TestCase):
         self.assertFalse(self.drive.reads)
         self.assertFalse(self.cache.reads)
 
+    def test_internal_ranges_are_authenticated_and_do_not_select_video(self):
+        path = f"/api/internal/vod-range/{TASK_ID}"
+        status, _, _ = self.request(path=path, headers={"Range": "bytes=0-9"})
+        self.assertEqual(status, 403)
+        status, _, _ = self.request(path=path, headers={"X-Auth-PIN": "wrong", "Range": "bytes=0-9"})
+        self.assertEqual(status, 403)
+        with mock.patch.object(server, "AUTH_PIN", ""):
+            self.assertEqual(self.request(path=path, headers={"Range": "bytes=0-9"})[0], 403)
+        self.assertFalse(self.cache.reads)
+        server.ACTIVE_VOD_TASK = "other-id"
+        server.LAST_VOD_STREAM_TIME = 123.0
+        status, headers, body = self.request(path=path, headers={
+            "X-Auth-PIN": "test-pin", "Range": "bytes=10-99",
+            "X-Vod-Revision": self.REVISION})
+        self.assertEqual(status, 206)
+        self.assertEqual(body, MEDIA[10:100])
+        self.assertEqual(headers["Content-Range"], f"bytes 10-99/{len(MEDIA)}")
+        self.assertEqual(server.ACTIVE_VOD_TASK, "other-id")
+        self.assertEqual(server.LAST_VOD_STREAM_TIME, 123.0)
+        self.assertFalse(self.events)
+        self.assertFalse(self.dispatch.called)
+
+    def test_internal_range_requires_matching_content_revision(self):
+        path = f"/api/internal/vod-range/{TASK_ID}"
+        base = {"X-Auth-PIN": "test-pin", "Range": "bytes=10-99"}
+        self.assertEqual(self.request(path=path, headers=base)[0], 412)
+        for bad in ["", "not-a-revision", "md5:" + "0" * 32, "fs:" + "0" * 31, self.REVISION.upper()]:
+            with self.subTest(revision=bad):
+                self.assertEqual(
+                    self.request(path=path, headers=dict(base, **{"X-Vod-Revision": bad}))[0], 412)
+        self.assertFalse(self.cache.reads)
+        status, _, body = self.request(
+            path=path, headers=dict(base, **{"X-Vod-Revision": self.REVISION}))
+        self.assertEqual(status, 206)
+        self.assertEqual(body, MEDIA[10:100])
+
+    def test_internal_range_fails_closed_without_trusted_revision(self):
+        path = f"/api/internal/vod-range/{TASK_ID}"
+        # Published object is available but its bytes cannot be identified, and
+        # there is no readable local source: size alone must not be trusted.
+        self.task["remote_md5"] = "not-an-md5"
+        self.task.pop("file_path")
+        self.assertEqual(self.request(path=path, headers={
+            "X-Auth-PIN": "test-pin", "Range": "bytes=10-99",
+            "X-Vod-Revision": self.REVISION})[0], 503)
+        self.assertFalse(self.cache.reads)
+
+    def test_internal_range_head_validation_and_truncation(self):
+        path = f"/api/internal/vod-range/{TASK_ID}"
+        headers = {"X-Auth-PIN": "test-pin", "X-Vod-Revision": self.REVISION}
+        status, metadata, body = self.request("HEAD", path, headers)
+        self.assertEqual((status, body), (200, b""))
+        self.assertEqual(metadata["Content-Length"], str(len(MEDIA)))
+        self.assertFalse(self.cache.reads)
+        self.assertEqual(self.request(path=path, headers=headers)[0], 400)
+        self.assertEqual(self.request(path=path, headers=dict(headers, Range="bytes=999999-1000000"))[0], 416)
+        self.assertEqual(self.request(path=path, headers=dict(headers, Range="bytes=3-2"))[0], 416)
+        self.assertEqual(self.request(path=path, headers=dict(headers, Range="bytes=0-1,3-4"))[0], 400)
+        self.task["file_size"] = 5 * 1024 * 1024
+        self.assertEqual(self.request(path=path, headers=dict(headers, Range="bytes=0-4194304"))[0], 416)
+        self.task["file_size"] = len(MEDIA)
+        self.task["status"] = "processing"
+        self.assertEqual(self.request(path=path, headers=dict(headers, Range="bytes=0-9"))[0], 404)
+
+    def test_internal_local_range_and_incomplete_remote_fail_closed(self):
+        path = f"/api/internal/vod-range/{TASK_ID}"
+        headers = {"X-Auth-PIN": "test-pin", "Range": "bytes=10-99",
+                   "X-Vod-Revision": self.REVISION}
+        self.task.pop("storage")
+        Path(self.task["file_path"]).write_bytes(MEDIA)
+        self.assertEqual(self.request(path=path, headers=headers)[2], MEDIA[10:100])
+        self.assertFalse(self.cache.reads)
+        self.task["storage"] = "gdrive"
+        self.cache.read = lambda *_: b"short"
+        self.assertEqual(self.request(path=path, headers=headers)[0], 503)
+
     def test_local_video_remains_readable_when_drive_is_enabled(self):
         self.task.pop("storage")
         Path(self.task["file_path"]).write_bytes(MEDIA)
@@ -273,6 +351,9 @@ class TestGDriveServer(unittest.TestCase):
         self.assertEqual(data["storage"], "gdrive")
         self.assertIn("VPS", data["disk"]["label"])
         self.assertEqual(data["tasks"][0]["file_size_bytes"], len(MEDIA))
+        # The authoritative content identity must be exposed for downstream
+        # generation/allowlist/validation to agree on the same bytes.
+        self.assertEqual(data["tasks"][0]["content_revision"], self.REVISION)
 
     def test_history_checkpoint_requires_pin_and_is_exposed_in_status(self):
         self.task["title"] = "A Noiva de Istambul 172 - Star 528p"

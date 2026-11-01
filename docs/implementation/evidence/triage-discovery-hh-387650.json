@@ -1,0 +1,75 @@
+{
+  "capture": {
+    "bytes": 6920468,
+    "returncode": 0,
+    "stderr_categories": {
+      "connection_timeout": 1,
+      "source_reconnect": 2
+    },
+    "wall_seconds": 35.638
+  },
+  "catalog_name": "DISCOVERY H&H HD\u00b9",
+  "category": "Variedades",
+  "channel_id": "387650",
+  "duration_s": 20.0,
+  "filename": "Discovery HH.trp",
+  "identity": "discovery-hh",
+  "media": {
+    "audio": {
+      "audio_duration_s": 19.97,
+      "audio_packets": 928,
+      "audio_pts_gaps_over_1000ms": 0,
+      "audio_pts_gaps_over_500ms": 0,
+      "audio_pts_max_gap_ms": 213.8
+    },
+    "audio_bit_rate": "130959",
+    "audio_channels": 2,
+    "audio_codec": "aac",
+    "audio_sample_rate": "48000",
+    "b_frames_seen": 0,
+    "fps": "30000/1001",
+    "frames_decoded": 600,
+    "has_b_frames": 0,
+    "height": 720,
+    "heights_seen": [
+      720
+    ],
+    "i_frames_seen": 7,
+    "idr_gap_max_s": 3.003,
+    "idr_gap_median_s": 3.003,
+    "level": 31,
+    "media_duration_s": 19.97,
+    "p_frames_seen": 593,
+    "pcr": {
+      "pcr_count": 300,
+      "pcr_gaps_over_100ms": 0,
+      "pcr_gaps_over_40ms": 299,
+      "pcr_max_gap_ms": 66.73,
+      "pcr_median_gap_ms": 66.73,
+      "pcr_pid": "0x100",
+      "pcr_pids": 1
+    },
+    "pix_fmt": "yuv420p",
+    "profile": "Main",
+    "slices": {
+      "b_frames": 0,
+      "frames": 600,
+      "i_frames": 7,
+      "multislice_frames": 0,
+      "p_frames": 593,
+      "slices_max": 1,
+      "slices_median": 1.0
+    },
+    "ts_kbps_total": 2772,
+    "video_codec": "h264",
+    "video_kbps": 2513,
+    "width": 1280,
+    "widths_seen": [
+      1280
+    ]
+  },
+  "phase": "triage",
+  "quality_label": "HD1",
+  "region": "national",
+  "verdict": "not_1080p"
+}

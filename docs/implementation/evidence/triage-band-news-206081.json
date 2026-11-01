@@ -1,0 +1,74 @@
+{
+  "capture": {
+    "bytes": 8810620,
+    "returncode": 0,
+    "stderr_categories": {
+      "source_reconnect": 1
+    },
+    "wall_seconds": 3.521
+  },
+  "catalog_name": "BAND NEWS FHD\u00b2",
+  "category": "Noticias",
+  "channel_id": "206081",
+  "duration_s": 20.0,
+  "filename": "Band News.trp",
+  "identity": "band-news",
+  "media": {
+    "audio": {
+      "audio_duration_s": 19.97,
+      "audio_packets": 936,
+      "audio_pts_gaps_over_1000ms": 0,
+      "audio_pts_gaps_over_500ms": 0,
+      "audio_pts_max_gap_ms": 41.4
+    },
+    "audio_bit_rate": "131555",
+    "audio_channels": 2,
+    "audio_codec": "aac",
+    "audio_sample_rate": "48000",
+    "b_frames_seen": 0,
+    "fps": "30000/1001",
+    "frames_decoded": 600,
+    "has_b_frames": 0,
+    "height": 1080,
+    "heights_seen": [
+      1080
+    ],
+    "i_frames_seen": 8,
+    "idr_gap_max_s": 3.003,
+    "idr_gap_median_s": 3.003,
+    "level": 40,
+    "media_duration_s": 19.97,
+    "p_frames_seen": 592,
+    "pcr": {
+      "pcr_count": 300,
+      "pcr_gaps_over_100ms": 0,
+      "pcr_gaps_over_40ms": 299,
+      "pcr_max_gap_ms": 66.73,
+      "pcr_median_gap_ms": 66.73,
+      "pcr_pid": "0x100",
+      "pcr_pids": 1
+    },
+    "pix_fmt": "yuv420p",
+    "profile": "High",
+    "slices": {
+      "b_frames": 0,
+      "frames": 600,
+      "i_frames": 8,
+      "multislice_frames": 0,
+      "p_frames": 592,
+      "slices_max": 1,
+      "slices_median": 1.0
+    },
+    "ts_kbps_total": 3530,
+    "video_codec": "h264",
+    "video_kbps": 3255,
+    "width": 1920,
+    "widths_seen": [
+      1920
+    ]
+  },
+  "phase": "triage",
+  "quality_label": "FHD2",
+  "region": "national",
+  "verdict": "candidate_ok"
+}

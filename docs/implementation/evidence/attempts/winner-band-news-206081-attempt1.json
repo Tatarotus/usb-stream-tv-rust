@@ -1,0 +1,21 @@
+{
+  "capture": {
+    "bytes": 0,
+    "returncode": 146,
+    "stderr_categories": {
+      "connection_timeout": 3,
+      "input_open_failed": 1
+    },
+    "wall_seconds": 10.631
+  },
+  "catalog_name": "BAND NEWS FHD\u00b2",
+  "category": "Noticias",
+  "channel_id": "206081",
+  "duration_s": 300.0,
+  "filename": "Band News.trp",
+  "identity": "band-news",
+  "phase": "winner",
+  "quality_label": "FHD2",
+  "region": "national",
+  "verdict": "no_media"
+}

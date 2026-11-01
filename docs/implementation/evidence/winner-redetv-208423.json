@@ -1,0 +1,74 @@
+{
+  "capture": {
+    "bytes": 150077392,
+    "returncode": 0,
+    "stderr_categories": {
+      "source_reconnect": 8
+    },
+    "wall_seconds": 50.522
+  },
+  "catalog_name": "REDE TV FHD\u00b9",
+  "category": "Abertos",
+  "channel_id": "208423",
+  "duration_s": 300.0,
+  "filename": "RedeTV.trp",
+  "identity": "redetv",
+  "media": {
+    "audio": {
+      "audio_duration_s": 299.98,
+      "audio_packets": 14031,
+      "audio_pts_gaps_over_1000ms": 0,
+      "audio_pts_gaps_over_500ms": 0,
+      "audio_pts_max_gap_ms": 181.3
+    },
+    "audio_bit_rate": "126893",
+    "audio_channels": 2,
+    "audio_codec": "aac",
+    "audio_sample_rate": "48000",
+    "b_frames_seen": 14897,
+    "fps": "60000/1001",
+    "frames_decoded": 17983,
+    "has_b_frames": 3,
+    "height": 720,
+    "heights_seen": [
+      720
+    ],
+    "i_frames_seen": 218,
+    "idr_gap_max_s": 1.602,
+    "idr_gap_median_s": 1.602,
+    "level": 32,
+    "media_duration_s": 299.98,
+    "p_frames_seen": 2868,
+    "pcr": {
+      "pcr_count": 3755,
+      "pcr_gaps_over_100ms": 216,
+      "pcr_gaps_over_40ms": 3600,
+      "pcr_max_gap_ms": 100.1,
+      "pcr_median_gap_ms": 83.41,
+      "pcr_pid": "0x100",
+      "pcr_pids": 1
+    },
+    "pix_fmt": "yuv420p",
+    "profile": "High",
+    "slices": {
+      "b_frames": 14901,
+      "frames": 18000,
+      "i_frames": 221,
+      "multislice_frames": 15,
+      "p_frames": 2875,
+      "slices_max": 2,
+      "slices_median": 1.0
+    },
+    "ts_kbps_total": 4002,
+    "video_codec": "h264",
+    "video_kbps": 3698,
+    "width": 1280,
+    "widths_seen": [
+      1280
+    ]
+  },
+  "phase": "winner",
+  "quality_label": "FHD1",
+  "region": "national",
+  "verdict": "not_1080p"
+}

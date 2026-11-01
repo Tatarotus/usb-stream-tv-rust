@@ -1,0 +1,22 @@
+{
+  "capture": {
+    "bytes": 0,
+    "requested_duration": 300.0,
+    "returncode": 146,
+    "stderr_categories": {
+      "connection_timeout": 3,
+      "input_open_failed": 1
+    },
+    "wall_seconds": 10.678
+  },
+  "catalog_name": "HISTORY FHD\u00b9",
+  "category": "Documentarios",
+  "channel_id": "387624",
+  "duration_s": 300.0,
+  "filename": "History.trp",
+  "identity": "history",
+  "phase": "winner",
+  "quality_label": "FHD1",
+  "region": "national",
+  "verdict": "no_media"
+}

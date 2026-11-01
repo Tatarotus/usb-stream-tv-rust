@@ -1,5 +1,5 @@
 // Service Worker para PWA do Controle Remoto
-const CACHE_NAME = 'controle-tv-v23';
+const CACHE_NAME = 'controle-tv-v25';
 const STATIC_ASSETS = [
     '/',
     '/manifest.json',
@@ -78,6 +78,11 @@ self.addEventListener('fetch', (event) => {
         event.respondWith(
             fetch(event.request).catch(() => caches.match('/'))
         );
+        return;
+    }
+
+    // /tv é a página legada: sempre da rede, nunca cacheada (a PWA não deve retê-la)
+    if (url.pathname === '/tv') {
         return;
     }
 

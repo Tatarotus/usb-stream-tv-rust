@@ -23,19 +23,23 @@ pub const VOLUME_128_GIB: u64 = 128 * 1024 * 1024 * 1024;
 /// indexes, bitmap and safety margin.
 pub const DEFAULT_METADATA_RESERVE: u64 = 1 << 30;
 /// Legacy C catalog ceiling; retained as an explicit default rejection limit.
-pub const DEFAULT_MAX_ENTRIES: usize = 32;
+pub const DEFAULT_MAX_ENTRIES: usize = 256;
 pub const MIN_MVP_ENTRIES: usize = 1;
+/// Historical MVP ceiling, kept only for the fixture tests of the two-channel
+/// physical baseline. The operational grade uses [`DEFAULT_MAX_ENTRIES`].
 pub const MAX_MVP_ENTRIES: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
     Live,
+    Vod,
 }
 
 impl EntryKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Live => "live",
+            Self::Vod => "vod",
         }
     }
 }
@@ -80,6 +84,13 @@ impl ManifestEntry {
                 file_id: self.file_id,
             });
         }
+        if self.kind == EntryKind::Vod
+            && (self.namespace != "vod"
+                || self.channel_id.len() != 8
+                || !self.channel_id.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)))
+        {
+            return Err(ManifestError::InvalidChannelId { file_id: self.file_id });
+        }
         if self.namespace.trim().is_empty() {
             return Err(ManifestError::EmptyNamespace {
                 file_id: self.file_id,
@@ -98,7 +109,9 @@ impl ManifestEntry {
             file_id: self.file_id,
             source,
         })?;
-        if !self.filename.to_ascii_lowercase().ends_with(TRP_EXTENSION) {
+        let filename = self.filename.to_ascii_lowercase();
+        if (self.kind == EntryKind::Live && !filename.ends_with(TRP_EXTENSION))
+            || (self.kind == EntryKind::Vod && !filename.ends_with(".mp4")) {
             return Err(ManifestError::FilenameNotTrp {
                 file_id: self.file_id,
                 filename: self.filename.clone(),
@@ -110,7 +123,7 @@ impl ManifestEntry {
                 size: self.logical_size,
             });
         }
-        if self.bootstrap_id.trim().is_empty() {
+        if self.kind == EntryKind::Live && self.bootstrap_id.trim().is_empty() {
             return Err(ManifestError::EmptyBootstrap {
                 file_id: self.file_id,
             });
@@ -413,6 +426,19 @@ impl Manifest {
     /// Parses the deterministic JSON emitted by [`Manifest::to_json`] and
     /// rejects any tampering with the canonical `manifest_id` or entry set.
     pub fn from_json(bytes: &[u8]) -> Result<Self, ManifestError> {
+        Self::from_json_with_capacity(bytes, &CapacityPolicy::default())
+    }
+
+    /// Parses and validates against an explicit capacity policy.
+    ///
+    /// The startup path passes the volume declared by the package layout, so a
+    /// package larger than the 128 GiB baseline is not rejected by
+    /// `CapacityPolicy::default()`. [`Self::from_json`] keeps the default and
+    /// preserves the previous behaviour for callers without a layout.
+    pub fn from_json_with_capacity(
+        bytes: &[u8],
+        capacity: &CapacityPolicy,
+    ) -> Result<Self, ManifestError> {
         use super::layout::{parse, Json};
 
         let json = parse(bytes).map_err(|error| ManifestError::Json(format!("{error:?}")))?;
@@ -443,9 +469,11 @@ impl Manifest {
                 .get("kind")
                 .and_then(Json::as_str)
                 .ok_or_else(|| ManifestError::Json("missing kind".into()))?;
-            if kind != EntryKind::Live.as_str() {
-                return Err(ManifestError::Json("non-live kind".into()));
-            }
+            let kind = match kind {
+                "live" => EntryKind::Live,
+                "vod" => EntryKind::Vod,
+                _ => return Err(ManifestError::Json("unsupported kind".into())),
+            };
             let file_id = entry
                 .get("file_id")
                 .and_then(Json::as_u64)
@@ -491,7 +519,7 @@ impl Manifest {
                 file_id,
                 channel_id,
                 namespace,
-                kind: EntryKind::Live,
+                kind,
                 folder,
                 filename,
                 logical_size,
@@ -505,7 +533,7 @@ impl Manifest {
             manifest_id,
             entries: parsed,
         };
-        manifest.validate()?;
+        manifest.validate_with(capacity)?;
         Ok(manifest)
     }
 
@@ -575,6 +603,7 @@ fn manifest_canonical_bytes(
         put_str(&mut out, &entry.channel_id);
         out.push(match entry.kind {
             EntryKind::Live => 1,
+            EntryKind::Vod => 2,
         });
         put_u32(&mut out, entry.folder.len() as u32);
         for component in &entry.folder {
@@ -636,11 +665,18 @@ pub fn entry(
     Ok(entry)
 }
 
-/// Test/fixture helper: the MVP display shape for two channels.
+/// Test/fixture helper: the historical MVP display shape (nested root).
 pub fn mvp_folder(category: &str) -> Vec<String> {
     let mut folder = vec!["Favoritos".to_string()];
     folder.push(category.to_string());
     folder
+}
+
+/// Operational display shape: the category is a directory at the volume root.
+/// The TV opens the USB media directly into `Abertos/`, `Noticias/`, ... so no
+/// intermediate `Favoritos` component is created.
+pub fn root_folder(category: &str) -> Vec<String> {
+    vec![category.to_string()]
 }
 
 /// Builds a `.trp` entry from a display name without extra rules.
@@ -651,7 +687,7 @@ pub fn entry_from_display(
     category: &[String],
     display_name: &str,
 ) -> Result<ManifestEntry, ManifestError> {
-    let mut folder = vec!["Favoritos".to_string()];
+    let mut folder = Vec::new();
     if category.is_empty() {
         folder.push("Outros".to_string());
     } else {
@@ -838,5 +874,48 @@ mod tests {
         assert_eq!(manifest.manifest_id.len(), 64);
         assert!(manifest.manifest_id.chars().all(|c| c.is_ascii_hexdigit()));
         assert_eq!(sha256(manifest.canonical_bytes().as_slice()).len(), 32);
+    }
+
+    /// A generation larger than the 128 GiB baseline must parse when the caller
+    /// supplies the volume actually declared by the package layout. Regression:
+    /// `from_json` used `CapacityPolicy::default()` unconditionally, so a
+    /// 192 GiB package was rejected as `CapacityExceeded` before reaching the TV.
+    #[test]
+    fn from_json_with_capacity_accepts_a_package_above_the_128_gib_baseline() {
+        let entries: Vec<ManifestEntry> = (0..35u32)
+            .map(|i| {
+                entry(
+                    0x1000 + i,
+                    "live",
+                    &format!("channel-{i}"),
+                    mvp_folder("Abertos"),
+                    format!("Channel {i}.trp"),
+                    DEFAULT_LOGICAL_SIZE,
+                )
+                .unwrap()
+            })
+            .collect();
+        // 35 x 4 GB = 140 GB logical: above the default capacity
+        // (128 GiB minus the 1 GiB metadata reserve = 136_365_211_648 bytes).
+        let volume = 192 * 1024 * 1024 * 1024u64;
+        let wide = CapacityPolicy {
+            volume_bytes: volume,
+            ..CapacityPolicy::default()
+        };
+        let built = Manifest::build(1, entries, &wide).unwrap();
+        let json = built.to_json();
+
+        assert!(
+            matches!(
+                Manifest::from_json(json.as_bytes()),
+                Err(ManifestError::CapacityExceeded { .. })
+            ),
+            "the default policy must still reject the oversized package"
+        );
+
+        let parsed = Manifest::from_json_with_capacity(json.as_bytes(), &wide)
+            .expect("the declared package volume must be honoured");
+        assert_eq!(parsed.entries.len(), 35);
+        assert_eq!(parsed.manifest_id, built.manifest_id);
     }
 }

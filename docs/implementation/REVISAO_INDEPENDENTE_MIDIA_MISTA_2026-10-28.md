@@ -1,0 +1,25 @@
+# Revisão independente — mídia mista (28/10/2026)
+
+**Resultado: ainda não aprovada para ativação.** Revisão sem alterar o tablet, USB, container ou reprodução. O pacote local contém 122 entradas: 2 Live e 120 VOD. Os cinco arquivos listados em `SHA256SUMS` do staging no tablet passaram na conferência; isso não prova funcionamento físico.
+
+## Bloqueios
+
+1. **Túneis e pré-verificação.** `scripts/activate_live_favorites_tablet.sh` implementa `tunnel-start` para uma porta e um único PID. A ativação proposta só chama `start`, sem criar os túneis de Live (18190) e VOD (18191). O supervisor passa o endereço VOD, mas não confirma autenticação e leitura do proxy antes de trocar o LUN. Na inspeção, o tablet não tinha listeners nessas portas e o proxy 18191 não estava ouvindo na VPS. Implementar os dois encaminhamentos simultâneos, testar ambos com autenticação real, falhar antes da troca de LUN e validar rollback. Não executar o comando do relatório enquanto isso não estiver resolvido.
+2. **Atualização automática não está completa.** `scripts/mixed_generation_service.py` consulta uma vez e encerra; não foi encontrado agendamento ou serviço que o mantenha monitorando downloads, nem publicação ou ativação da geração pendente. A mudança para atualização segura solicitada pelo usuário precisa de orquestração real, persistência e teste com um download concluído. Gerar em staging não prova que a TV exibirá os arquivos novos.
+3. **Estado desconhecido tratado como inativo.** `is_playback_active({})` retorna `(False, 'server_unreachable_or_offline')`. Isso seria perigoso se usado para decidir uma troca futura: falhas de status devem impedir ativação automática. Hoje o script não ativa o USB, portanto não se constatou interrupção por essa função.
+4. **Reconstrução e fingerprint.** O serviço usa `shutil.rmtree` sem importar `shutil`; reproduzido `NameError` quando a pasta da geração já existe. O fingerprint inclui apenas ID e tamanho: renomear um vídeo, alterar sua pasta ou substituir conteúdo pelo mesmo tamanho não muda o hash. Incluir os metadados relevantes e uma revisão confiável dos bytes, com testes para colisões, reinício e alterações concorrentes.
+5. **Omissão silenciosa.** `process_vod_tasks` ignora itens `ready` com ID inválido ou tamanho ausente/menor que 4096 sem reportá-los. Isso pode esconder vídeos na biblioteca. A geração deve falhar com diagnóstico ou apresentar explicitamente todos os itens omitidos e seus motivos; não declarar biblioteca completa.
+6. **Cache e Drive.** O endpoint interno usa `VOD_PLAYBACK_CACHE.read`; quando a tarefa lida não é a selecionada no cache atual, cada leitura pode buscar novamente um bloco inteiro do Drive sem armazená-lo. Foi reproduzido que quatro leituras consecutivas de 1 MiB ocasionam quatro buscas de 4 MiB para o mesmo bloco (16 MiB transferidos para 4 MiB úteis). Testar o caminho real no Drive, com múltiplas tarefas, seek, latência, concorrência, tráfego e cache isolado sem mudar histórico. O cache do tablet também usa ID+tamanho, insuficientes para invalidar substituição de conteúdo de mesmo tamanho.
+7. **Integridade de staging.** `SHA256SUMS` validou template, layout, pacote, manifesto e allowlist. Binários e supervisor foram comparados separadamente e bateram com os locais, mas não estão cobertos por aquele arquivo e estavam graváveis por todos no tablet; isso contradiz a afirmação de permissões estritas. Vincular e verificar o conjunto inteiro e ajustar permissões no rollout seguro.
+
+## O que foi verificado
+
+- Manifesto local: 122 entradas, incluindo os agrupamentos reportados; não é teste ConnectShare.
+- No staging `mixed-gen7` do tablet não foi encontrada imagem `template.*.bin` expandida; portanto, o relato sobre o espaço físico da imagem expandida não foi confirmado nesse pacote. O arquivo compactado e a composição lógica não demonstram a expansão no hardware.
+- Testes Python focados em geração, pacote, template, proxy e fluxo integrado: **17 passaram, 10 subtestes**. Teste de handoff do watchdog passou. Testes Rust da biblioteca: **311 passaram e 3 foram ignorados**. Os testes de Drive incluem simulações e não medem desempenho do serviço real; não foram executados aqui todos os 420 testes Python relatados.
+- O estado do tablet e VOD mudou desde o relatório original; não presumir episódio, PID, USB ou ausência de espectadores a partir de dados antigos. Na inspeção, o container e a sessão `istanbullu-sync` estavam ativos; USB aparecia `DISCONNECTED` e havia outro VOD selecionado.
+- A validação física do modo misto (pastas, arquivos, seek, Live, troca e áudio) permanece pendente. As medições anteriores de SBT/Record foram em pacote Live separado, não no pacote misto.
+
+## Solicitação ao executor
+
+Corrigir os bloqueios acima em staging e acrescentar testes de falhas reais, dois túneis simultâneos, atualizações automáticas, geração incompleta, status desconhecido e leitura Drive. Atualizar o roteiro de ativação e o relatório para distinguir o que é testado do que é pendente. Repetir revisão independente e, somente com a TV livre, ativar o conjunto completo com rollback verificado e acompanhar o usuário no teste físico.

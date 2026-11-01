@@ -230,6 +230,7 @@ pub struct FavoritesStartup {
     pub session_id: String,
     pub manifest_id: String,
     pub file_count: usize,
+    pub vod_files: Vec<crate::vfs::dispatcher::VodFile>,
 }
 
 impl FavoritesStartup {
@@ -247,17 +248,20 @@ impl FavoritesStartup {
         if package.files.len() != layout.files.len() {
             return Err(StartupError::Package("file count mismatch".into()));
         }
-        let manifest = layout::manifest_file_ids(&manifest_bytes)
+        let manifest = layout::manifest_file_ids_for_volume(&manifest_bytes, layout.volume_bytes)
             .map_err(|error| StartupError::Manifest(format!("{error:?}")))?;
         if manifest.files.len() != layout.files.len() {
             return Err(StartupError::Manifest("file count mismatch".into()));
         }
-        if manifest.files.len() > super::manifest::MAX_MVP_ENTRIES {
+        if manifest.files.len() > super::manifest::DEFAULT_MAX_ENTRIES {
             return Err(StartupError::Manifest("too many entries".into()));
         }
-        let (map, files) = layout
+        let (map, mut files) = layout
             .build_runtime_files(&manifest.files)
             .map_err(|error| StartupError::Package(format!("{error:?}")))?;
+        let total_files = files.len();
+        let vod_ids: std::collections::HashSet<u32> = manifest.vod_files.iter().map(|f| f.file_id).collect();
+        files.retain(|file| !vod_ids.contains(&file.file_id));
         if files.is_empty() {
             return Err(StartupError::Manifest("no Live files".into()));
         }
@@ -282,7 +286,8 @@ impl FavoritesStartup {
             token: options.token,
             session_id: options.session_id,
             manifest_id: manifest.manifest_id,
-            file_count: files.len(),
+            file_count: total_files,
+            vod_files: manifest.vod_files,
         })
     }
 }
@@ -532,6 +537,42 @@ mod tests {
         assert!(verify_template_image(&image_path, &wrong).is_err());
         drop(image);
         let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    #[ignore = "requires FAVORITES_PACKAGE_DIR (layout/package/manifest/archive) and FAVORITES_TEMPLATE_IMAGE"]
+    fn loads_the_generated_grade_package_with_all_root_categories() {
+        let directory = PathBuf::from(
+            std::env::var("FAVORITES_PACKAGE_DIR").expect("set FAVORITES_PACKAGE_DIR"),
+        );
+        let image = std::env::var("FAVORITES_TEMPLATE_IMAGE").expect("set FAVORITES_TEMPLATE_IMAGE");
+        let manifest_bytes = fs::read(directory.join("favorites_manifest.json")).unwrap();
+        let manifest = crate::favorites::manifest::Manifest::from_json(&manifest_bytes).unwrap();
+        let options = FavoritesStartupOptions {
+            layout_path: directory.join("favorites_layout.json"),
+            package_path: directory.join("favorites_package.json"),
+            manifest_path: directory.join("favorites_manifest.json"),
+            template_archive_path: directory.join("favorites_template.sparse.gz"),
+            template_image_path: PathBuf::from(image),
+            session_id: "grade-startup".into(),
+            media_address: "127.0.0.1:9".into(),
+            token: "0123456789abcdef0123456789abcdef".into(),
+        };
+        let startup = FavoritesStartup::load(options).unwrap();
+        assert_eq!(startup.file_count, manifest.entries.len());
+        assert!(startup.file_count > 2);
+        assert_eq!(startup.manifest_id, manifest.manifest_id);
+        for entry in &manifest.entries {
+            assert_eq!(entry.folder.len(), 1, "{} is not at the root", entry.path());
+            assert!(startup.runtime.bootstrap(entry.file_id).is_some());
+            assert_eq!(
+                startup.runtime.map().file_extents(entry.file_id).len(),
+                1
+            );
+            let extents = startup.runtime.map().file_extents(entry.file_id);
+            assert_eq!(extents[0].disk_start % 4096, 0);
+            assert_eq!(extents[0].len(), 4_000_000_000);
+        }
     }
 
     #[test]

@@ -43,10 +43,10 @@
   ],
   "shortcuts": [
     {
-      "name": "TV ao Vivo",
-      "short_name": "TV",
-      "description": "Assistir TV ao Vivo",
-      "url": "/",
+      "name": "Filmes",
+      "short_name": "Filmes",
+      "description": "Abrir o catálogo de filmes",
+      "url": "/?tab=cinema",
       "icons": [
         {
           "src": "/api/app-icon.png",
@@ -56,9 +56,9 @@
       ]
     },
     {
-      "name": "Filmes & Séries",
-      "short_name": "Catálogo",
-      "description": "Catálogo de Filmes e Séries",
+      "name": "Salvos",
+      "short_name": "Salvos",
+      "description": "Vídeos prontos para tocar na TV",
       "url": "/?tab=vod",
       "icons": [
         {

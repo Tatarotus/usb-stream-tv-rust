@@ -1,0 +1,22 @@
+{
+  "capture": {
+    "bytes": 24661276,
+    "requested_duration": 60.0,
+    "returncode": 0,
+    "stderr_categories": {},
+    "wall_seconds": 59.32
+  },
+  "catalog_name": "HISTORY 4K",
+  "channel_id": "387622",
+  "decode": {
+    "categories": {},
+    "checked_seconds": 60.0,
+    "lines": 0,
+    "returncode": 0,
+    "wall_seconds": 5.781
+  },
+  "duration_s": 60.0,
+  "identity": "history",
+  "status": "approved",
+  "verdict": "decode_ok"
+}

@@ -97,14 +97,218 @@ class BridgeConfigTests(unittest.TestCase):
         command = bridge.ffmpeg_command("https://iptv.example/live/test.ts")
         for option, value in (("-g", "30"), ("-keyint_min", "30"), ("-sc_threshold", "0"),
                               ("-c:a", "ac3"), ("-ar", "48000"), ("-ac", "2"),
-                              ("-b:a", "384k"), ("-pcr_period", "20"), ("-pix_fmt", "yuv420p"),
+                              ("-b:a", "384k"), ("-pcr_period", "19"), ("-pix_fmt", "yuv420p"),
                               ("-threads:v", "1"), ("-muxrate", "6000000"), ("-muxdelay", "0"),
-                              ("-bufsize", "100k")):
+                              ("-bufsize", "500k"), ("-maxrate", "4000k"), ("-b:v", "3500k"),
+                              ("-level:v", "4.0")):
             self.assertEqual(command[command.index(option) + 1], value)
+        scale = command[command.index("-vf") + 1]
+        self.assertIn("1920:1080", scale)
         x264 = command[command.index("-x264-params") + 1]
         self.assertIn("slices=1", x264)
         self.assertIn("bframes=0", x264)
         self.assertIn("sliced-threads=0", x264)
+        legacy = bridge.ffmpeg_command("https://iptv.example/live/test.ts", profile_name="720p30")
+        self.assertIn("1280:720", legacy[legacy.index("-vf") + 1])
+        self.assertEqual(legacy[legacy.index("-level:v") + 1], "3.1")
+        self.assertEqual(legacy[legacy.index("-pcr_period") + 1], "20")
+
+    def test_export_config_allowlist_uses_reviewed_candidates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = manifest()
+            data["entries"][0].update(namespace="live", channel_id="207198",
+                                      folder=["Abertos"], filename="SBT.trp")
+            identifier = bridge.file_id_for("207198")
+            data["entries"][0].update(file_id=identifier,
+                                      bootstrap_id=f"bootstrap-{identifier:08x}")
+            entries = [data["entries"][0]]
+            for channel, filename in (("214640", "Record.trp"), ("207177", "Band.trp")):
+                identifier = bridge.file_id_for(channel)
+                entries.append(dict(entries[0], file_id=identifier, channel_id=channel,
+                                    filename=filename,
+                                    bootstrap_id=f"bootstrap-{identifier:08x}"))
+            data["entries"] = entries
+            data["manifest_id"] = bridge.manifest_digest(data)
+            (root / "manifest.json").write_text(json.dumps(data))
+            export = {"schema_version": 1, "generation": 2, "output_profile": "1080p30",
+                      "identities": [
+                          {"identity": "sbt", "category": "Abertos", "filename": "SBT.trp",
+                           "status": "approved", "chosen": {"channel_id": "207198"},
+                           "favorite_ids": ["207198"], "candidates_tested": [{"channel_id": "207198"}]},
+                          {"identity": "record", "category": "Abertos", "filename": "Record.trp",
+                           "status": "approved", "chosen": {"channel_id": "214640"},
+                           "favorite_ids": ["214640"], "candidates_tested": [{"channel_id": "214640"}]},
+                          {"identity": "band", "category": "Abertos", "filename": "Band.trp",
+                           "status": "approved", "chosen": {"channel_id": "207177"},
+                           "favorite_ids": ["207171"], "candidates_tested": [{"channel_id": "207177"}]},
+                      ]}
+            (root / "export.json").write_text(json.dumps(export))
+            rows = [{"stream_id": 207198, "stream_type": "live", "name": "SBT RJ FHD¹"},
+                    {"stream_id": 214640, "stream_type": "live", "name": "RECORD TV RIO FHD²"},
+                    {"stream_id": 207177, "stream_type": "live", "name": "BAND RJ FHD²"}]
+            (root / "live.json").write_text(json.dumps(rows))
+            # Band's chosen candidate is not in the personal favorites list.
+            (root / "favorites.json").write_text(json.dumps(["207198", "214640", "207171"]))
+            with patch.dict(os.environ, {"XTREAM_UPSTREAM": "https://iptv.example",
+                                        "XTREAM_USER": "example", "XTREAM_PASS": "secret"}):
+                manifest_data, sources = bridge.read_config(
+                    root / "manifest.json", live_cache_path=root / "live.json",
+                    export_config_path=root / "export.json")
+            self.assertEqual(len(manifest_data["entries"]), 3)
+            self.assertEqual(len(sources), 3)
+            self.assertIn((bridge.file_id_for("207177"), "207177"), sources)
+
+            export["identities"][2]["status"] = "pending"
+            (root / "export.json").write_text(json.dumps(export))
+            with patch.dict(os.environ, {"XTREAM_UPSTREAM": "https://iptv.example",
+                                        "XTREAM_USER": "example", "XTREAM_PASS": "secret"}):
+                with self.assertRaisesRegex(ValueError, "manifest does not match"):
+                    bridge.read_config(root / "manifest.json", live_cache_path=root / "live.json",
+                                       export_config_path=root / "export.json")
+            export["identities"][2]["status"] = "approved"
+            export["identities"][2]["chosen"]["channel_id"] = "999999"
+            (root / "export.json").write_text(json.dumps(export))
+            with patch.dict(os.environ, {"XTREAM_UPSTREAM": "https://iptv.example",
+                                        "XTREAM_USER": "example", "XTREAM_PASS": "secret"}):
+                with self.assertRaisesRegex(ValueError, "missing from Live catalog"):
+                    bridge.read_config(root / "manifest.json", live_cache_path=root / "live.json",
+                                       export_config_path=root / "export.json")
+
+
+    def test_tv_root_nests_live_channels_and_stays_compatible(self):
+        """`live_root` puts channels in TV/<categoria>/ without breaking the old shape."""
+        def build(root, live_root):
+            data = manifest()
+            entries = []
+            for channel, category, filename in (("207198", "Abertos", "SBT 1080 RJ.trp"),
+                                                ("365243", "Filmes", "Telecine Action 1080.trp")):
+                identifier = bridge.file_id_for(channel)
+                folder = [live_root, category] if live_root else [category]
+                entries.append({"file_id": identifier, "namespace": "live",
+                                "channel_id": channel, "kind": "live", "folder": folder,
+                                "filename": filename, "logical_size": 4_000_000_000,
+                                "bootstrap_id": f"bootstrap-{identifier:08x}"})
+            data["entries"] = entries
+            data["manifest_id"] = bridge.manifest_digest(data)
+            (root / "manifest.json").write_text(json.dumps(data))
+            export = {"schema_version": 1, "generation": 2, "output_profile": "1080p30",
+                      "identities": [
+                          {"identity": "sbt", "category": "Abertos",
+                           "filename": "SBT 1080 RJ.trp", "status": "approved",
+                           "chosen": {"channel_id": "207198"}, "favorite_ids": ["207198"]},
+                          {"identity": "telecine-action", "category": "Filmes",
+                           "filename": "Telecine Action 1080.trp", "status": "approved",
+                           "chosen": {"channel_id": "365243"}, "favorite_ids": ["365244"]}]}
+            if live_root:
+                export["live_root"] = live_root
+            (root / "export.json").write_text(json.dumps(export))
+            (root / "live.json").write_text(json.dumps([
+                {"stream_id": 207198, "stream_type": "live", "name": "SBT RJ FHD1"},
+                {"stream_id": 365243, "stream_type": "live", "name": "TELECINE ACTION H265"}]))
+            (root / "favorites.json").write_text(json.dumps(["207198", "365244"]))
+            with patch.dict(os.environ, {"XTREAM_UPSTREAM": "https://iptv.example",
+                                        "XTREAM_USER": "example", "XTREAM_PASS": "secret"}):
+                return bridge.read_config(root / "manifest.json",
+                                          live_cache_path=root / "live.json",
+                                          export_config_path=root / "export.json")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data, sources = build(root, "TV")
+            self.assertEqual(len(sources), 2)
+            folders = sorted(tuple(e["folder"]) for e in data["entries"])
+            self.assertEqual(folders, [("TV", "Abertos"), ("TV", "Filmes")])
+
+        # A generation published before the TV/ layout keeps working unchanged.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data, sources = build(root, "")
+            self.assertEqual(len(sources), 2)
+            self.assertEqual(sorted(tuple(e["folder"]) for e in data["entries"]),
+                             [("Abertos",), ("Filmes",)])
+
+    def test_a_deeper_nesting_than_a_category_is_rejected(self):
+        """A path the operator never asked for must not be accepted silently."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = manifest()
+            identifier = bridge.file_id_for("207198")
+            data["entries"] = [{"file_id": identifier, "namespace": "live",
+                                "channel_id": "207198", "kind": "live",
+                                "folder": ["TV", "Abertos", "extra"],
+                                "filename": "SBT.trp", "logical_size": 4_000_000_000,
+                                "bootstrap_id": f"bootstrap-{identifier:08x}"}]
+            data["manifest_id"] = bridge.manifest_digest(data)
+            (root / "manifest.json").write_text(json.dumps(data))
+            export = {"schema_version": 1, "generation": 2, "output_profile": "1080p30",
+                      "live_root": "TV",
+                      "identities": [{"identity": "sbt", "category": "Abertos",
+                                      "filename": "SBT.trp", "status": "approved",
+                                      "chosen": {"channel_id": "207198"},
+                                      "favorite_ids": ["207198"]}]}
+            (root / "export.json").write_text(json.dumps(export))
+            (root / "live.json").write_text(json.dumps(
+                [{"stream_id": 207198, "stream_type": "live", "name": "SBT RJ FHD1"}]))
+            (root / "favorites.json").write_text(json.dumps(["207198"]))
+            with patch.dict(os.environ, {"XTREAM_UPSTREAM": "https://iptv.example",
+                                        "XTREAM_USER": "example", "XTREAM_PASS": "secret"}):
+                with self.assertRaisesRegex(ValueError, "not a category path"):
+                    bridge.read_config(root / "manifest.json",
+                                       live_cache_path=root / "live.json",
+                                       export_config_path=root / "export.json")
+
+
+    def test_manager_derives_the_expected_paths_from_the_builder(self):
+        """The manager must not re-implement the builder's path rules."""
+        config = {"schema_version": 1, "generation": 1, "live_root": " TV ",
+                  "identities": [
+                      {"identity": "sbt", "status": "approved", "category": " Abertos ",
+                       "filename": "SBT 1080 RJ", "chosen": {"channel_id": "207198"}}]}
+        expected = bridge._expected_live_entries(config)
+        self.assertEqual(expected, {(("TV", "Abertos"), "SBT 1080 RJ.trp", "207198")})
+
+    def test_duplicate_live_entries_in_a_manifest_are_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            # Two DIFFERENT channels sharing one path: the manifest reader
+            # cannot catch this by file_id, so the path check must.
+            first = bridge.file_id_for("207198")
+            second = bridge.file_id_for("207199")
+            entry = {"file_id": first, "namespace": "live", "channel_id": "207198",
+                     "kind": "live", "folder": ["TV", "Abertos"],
+                     "filename": "SBT 1080 RJ.trp", "logical_size": 4_000_000_000,
+                     "bootstrap_id": f"bootstrap-{first:08x}"}
+            twin = dict(entry, file_id=second, channel_id="207199",
+                        bootstrap_id=f"bootstrap-{second:08x}")
+            data = {"schema_version": 1, "layout_version": 1, "generation": 1,
+                    "entries": [entry, twin]}
+            data["manifest_id"] = bridge.manifest_digest(data)
+            (root / "manifest.json").write_text(json.dumps(data))
+            export = {"schema_version": 1, "generation": 1, "output_profile": "1080p30",
+                      "live_root": "TV",
+                      "identities": [
+                          {"identity": "sbt", "status": "approved",
+                           "category": "Abertos", "filename": "SBT 1080 RJ.trp",
+                           "chosen": {"channel_id": "207198"},
+                           "favorite_ids": ["207198"]},
+                          {"identity": "sbt-twin", "status": "approved",
+                           "category": "Abertos", "filename": "SBT 1080 RJ.trp",
+                           "chosen": {"channel_id": "207199"},
+                           "favorite_ids": ["207199"]}]}
+            (root / "export.json").write_text(json.dumps(export))
+            (root / "live.json").write_text(json.dumps(
+                [{"stream_id": 207198, "stream_type": "live", "name": "SBT RJ FHD1"},
+                 {"stream_id": 207199, "stream_type": "live", "name": "SBT RJ FHD2"}]))
+            (root / "favorites.json").write_text(json.dumps(["207198", "207199"]))
+            with patch.dict(os.environ, {"XTREAM_UPSTREAM": "https://iptv.example",
+                                        "XTREAM_USER": "example", "XTREAM_PASS": "secret"}):
+                # Either layer may speak first: the builder refuses the export
+                # itself, the manager refuses a duplicated manifest entry.
+                with self.assertRaisesRegex(ValueError, "duplicate"):
+                    bridge.read_config(root / "manifest.json",
+                                       live_cache_path=root / "live.json",
+                                       export_config_path=root / "export.json")
 
 
 class BridgeSocketTests(unittest.TestCase):

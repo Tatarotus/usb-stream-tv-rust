@@ -8,10 +8,13 @@ import unittest
 from unittest import mock
 
 from vod_playback_cache import CurrentVideoCache
+import vod_revision
 
 
 MIB = 1024**2
 VIDEO = (bytes(range(256)) * (20 * MIB // 256))
+GEN1 = bytes([0x11]) * len(VIDEO)
+GEN2 = bytes([0x22]) * len(VIDEO)
 
 
 class PlaybackCacheTests(unittest.TestCase):
@@ -46,6 +49,75 @@ class PlaybackCacheTests(unittest.TestCase):
         self.assertFalse(self.directory.exists())
         self.assertIsNone(self.cache._worker)
         self.assertEqual(self.calls, [])
+
+    def test_episode_prefetch_reuses_next_and_retains_previous(self):
+        self.cache.max_bytes = 64 * MIB
+        self.cache._background_interval = 0
+        nxt = dict(self.task, id="cafebabe", remote_path="cafebabe.mp4")
+        self.assertTrue(self.cache.select_episode(self.task, nxt))
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            with self.cache._lock:
+                states = list(self.cache._episode_states.values())
+                if len(states) == 2 and all(len(s["blocks"]) == 5 for s in states):
+                    break
+            time.sleep(.01)
+        else:
+            self.fail("Prefetch did not finish")
+        self.assertLess(max(i for i, call in enumerate(self.calls) if call[0] == "deadbeef"),
+                        min(i for i, call in enumerate(self.calls) if call[0] == "cafebabe"))
+        self.assertTrue(self.cache.select_episode(nxt))
+        with mock.patch.object(self.cache, "fetch", side_effect=AssertionError("origin hit")):
+            self.assertEqual(self.cache.read(nxt, 9 * MIB, 16), VIDEO[9 * MIB:9 * MIB + 16])
+            self.assertEqual(self.cache.read(self.task, 9 * MIB, 16), VIDEO[9 * MIB:9 * MIB + 16])
+
+    def test_episode_prefetch_obeys_shared_limit_and_evicts_old(self):
+        self.cache.max_bytes = 40 * MIB
+        second = dict(self.task, id="cafebabe", remote_path="cafebabe.mp4")
+        third = dict(self.task, id="00000001", remote_path="00000001.mp4")
+        self.assertTrue(self.cache.select_episode(self.task, second))
+        self.assertTrue(self.cache.select_episode(second, third))
+        with self.cache._lock:
+            self.assertNotIn(self.cache._identity(self.task), self.cache._episode_states)
+            self.assertEqual(set(self.cache._episode_states), {self.cache._identity(second), self.cache._identity(third)})
+            self.assertLessEqual(sum(k[2] for k in self.cache._episode_states), self.cache.max_bytes)
+
+    def test_episode_worker_yields_between_requests_and_reads_do_not_wait(self):
+        self.cache._background_interval = .3
+        first = threading.Event()
+        times = []
+        def fetch(task, start, count):
+            times.append(time.monotonic())
+            first.set()
+            return VIDEO[start:start + count]
+        self.cache.fetch = fetch
+        self.assertTrue(self.cache.select_episode(self.task))
+        self.assertTrue(first.wait(2))
+        deadline = time.monotonic() + 2
+        while len(times) < 2 and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertGreaterEqual(len(times), 2)
+        self.assertGreaterEqual(times[1] - times[0], .25)
+        started = time.monotonic()
+        self.assertEqual(self.cache.read(self.task, 0, 64), VIDEO[:64])
+        self.assertLess(time.monotonic() - started, .2)
+
+    def test_episode_cache_expires_after_inactivity_even_for_current_and_next(self):
+        self.cache.max_bytes = 64 * MIB
+        nxt = dict(self.task, id="cafebabe", remote_path="cafebabe.mp4")
+        self.assertTrue(self.cache.select_episode(self.task, nxt))
+        with self.cache._lock:
+            self.cache._episode_last_activity = time.monotonic() - self.cache._episode_retention_seconds - 1
+        self.cache._wake.set()
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            with self.cache._lock:
+                if not self.cache._episode_states:
+                    break
+            time.sleep(.01)
+        else:
+            self.fail("Idle cache did not expire")
+        self.assertEqual(list(self.directory.glob("*.cache")), [])
 
     def test_warm_and_background_completion_serve_without_origin(self):
         self.assertTrue(self.cache.start(self.task))
@@ -251,6 +323,91 @@ class PlaybackCacheTests(unittest.TestCase):
         self.assertEqual(list(self.directory.glob("*.cache")), [])
         with self.assertRaises(RuntimeError):
             self.cache.start(self.task)
+
+    def revision_task(self, revision=None):
+        task = {"id": "deadbeef", "storage": "gdrive", "remote_path": "deadbeef.mp4",
+                "file_size": len(VIDEO)}
+        if revision is not None:
+            task["media_revision"] = revision
+        return task
+
+    def generation_fetch(self, generations):
+        def fetch(task, start, count):
+            marker = task.get("media_revision") or task.get("content_revision")
+            source = generations[marker]
+            self.calls.append((task["id"], start, count))
+            return source[start:start + count]
+        return fetch
+
+    def test_changed_revision_discards_disk_backed_bytes(self):
+        first = self.revision_task("generation-1")
+        second = dict(first, media_revision="generation-2")
+        self.cache.fetch = self.generation_fetch({"generation-1": GEN1, "generation-2": GEN2})
+        self.assertTrue(self.cache.start(first))
+        self.assertEqual(self.cache.read(first, 0, 16), GEN1[:16])
+        before = len(self.calls)
+        self.assertTrue(self.cache.start(second))
+        with self.cache._lock:
+            self.assertEqual(self.cache._state["key"], self.cache._identity(second))
+            self.assertNotEqual(self.cache._state["key"], self.cache._identity(first))
+        self.assertEqual(self.cache.read(second, 0, 16), GEN2[:16])
+        self.assertNotEqual(self.cache.read(second, 0, 16), GEN1[:16])
+        self.assertGreater(len(self.calls), before)
+        self.assertEqual(len(list(self.directory.glob("*.cache"))), 1)
+
+    def test_changed_revision_misses_in_memory_secondary_cache(self):
+        self.cache.max_bytes = MIB  # too small for a disk-backed movie
+        first = self.revision_task("generation-1")
+        second = dict(first, media_revision="generation-2")
+        self.cache.fetch = self.generation_fetch({"generation-1": GEN1, "generation-2": GEN2})
+        self.assertEqual(self.cache.read(first, 0, 32), GEN1[:32])
+        before = len(self.calls)
+        self.assertEqual(self.cache.read(second, 0, 32), GEN2[:32])
+        self.assertGreater(len(self.calls), before)
+        with self.cache._lock:
+            self.assertIsNone(self.cache._state)
+            self.assertIn((self.cache._identity(second), 0), self.cache._secondary_cache)
+        after = len(self.calls)
+        self.assertEqual(self.cache.read(second, 0, 32), GEN2[:32])
+        self.assertEqual(len(self.calls), after)
+
+    def test_unchanged_revision_hits_disk_cache_without_origin(self):
+        task = self.revision_task("generation-1")
+        self.cache.fetch = self.generation_fetch({"generation-1": GEN1})
+        self.assertTrue(self.cache.start(task))
+        before = len(self.calls)
+        with mock.patch.object(self.cache, "fetch", side_effect=AssertionError("origin hit")):
+            self.assertEqual(self.cache.read(task, MIB + 3, 4096), GEN1[MIB + 3:MIB + 3 + 4096])
+        self.assertEqual(len(self.calls), before)
+
+    def test_md5_identity_still_hits_cache_and_carries_revision(self):
+        self.cache.start(self.task)
+        self.wait_complete()
+        digest = hashlib.md5(VIDEO).hexdigest()
+        self.assertEqual(self.cache._identity(self.task),
+                         ("deadbeef", digest, len(VIDEO), "md5:" + digest))
+        before = len(self.calls)
+        with mock.patch.object(self.cache, "fetch", side_effect=AssertionError("origin hit")):
+            self.assertEqual(self.cache.read(self.task, 2, 8), VIDEO[2:10])
+        self.assertEqual(len(self.calls), before)
+
+    def test_unverifiable_revision_still_readable_without_raising(self):
+        task = self.revision_task()
+        self.assertIsNone(vod_revision.content_revision(task))
+        self.assertTrue(self.cache.start(task))
+        self.assertEqual(self.cache.read(task, 100, 64), VIDEO[100:164])
+        self.assertEqual(self.cache._identity(task), ("deadbeef", "", len(VIDEO), None))
+
+    def test_explicit_revision_change_invalidates_memory_cache(self):
+        self.cache.max_bytes = MIB
+        first = self.revision_task()
+        first["content_revision"] = "md5:" + "a" * 32
+        second = dict(first, content_revision="md5:" + "b" * 32)
+        self.cache.fetch = self.generation_fetch({"md5:" + "a" * 32: GEN1, "md5:" + "b" * 32: GEN2})
+        self.assertEqual(self.cache.read(first, 0, 32), GEN1[:32])
+        before = len(self.calls)
+        self.assertEqual(self.cache.read(second, 0, 32), GEN2[:32])
+        self.assertGreater(len(self.calls), before)
 
 
 if __name__ == "__main__":
