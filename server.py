@@ -6417,8 +6417,8 @@ self.addEventListener('message', (event) => {
                                       "message": "Modo de mídia mista indisponível"})
             return
         if params.get("confirm_interrupt") is True:
-            # The user answered the warning: only the manual endpoint may pass
-            # this on, and the publisher still refuses it for unknown states.
+            # The manual click authorises interruption, including when playback
+            # telemetry is unknown; publication safeguards still apply.
             argv = argv + ["--confirm-interrupt"]
         if _mixed_bridge_spool() is None:
             # Direct transport only: the local publisher detaches itself.

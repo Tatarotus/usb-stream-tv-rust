@@ -678,10 +678,8 @@ class MixedGenerationService:
         "invalid_numeric_telemetry",
     )
 
-    # Reasons that positively identify the LEGACY modes reporting activity. They
-    # say nothing about the TV reading the mixed pendrive, so they are the only
-    # ones a human may explicitly confirm through as an interruption. Anything
-    # unknown, stale or unreadable stays a hard block, forever.
+    # Legacy signals do not prove that the mixed pendrive is being read. The
+    # explicit manual request also authorises proceeding with unknown telemetry.
     INTERRUPTIBLE_PLAYBACK_PREFIXES = (
         "active_vod_selected:", "active_live_stream:",
     )
@@ -689,23 +687,23 @@ class MixedGenerationService:
     @classmethod
     def may_interrupt_playback(cls, reason: str, *, manual: bool,
                                confirm_interrupt: bool) -> bool:
-        """Only an explicit manual confirmation may override a legacy signal.
+        """Only an explicitly authorised manual request may override telemetry.
 
-        The automatic path (``manual=False``) can never override, and an
-        unknown/unreadable state can never be overridden by anybody.
+        The automatic path can never override, and unrecognised reasons remain
+        blocked. Transport, guard and publication checks remain independent.
         """
         return bool(manual and confirm_interrupt
                     and isinstance(reason, str)
-                    and reason.startswith(cls.INTERRUPTIBLE_PLAYBACK_PREFIXES))
+                    and reason.startswith(cls.INTERRUPTIBLE_PLAYBACK_PREFIXES
+                                          + cls.UNKNOWN_PLAYBACK_PREFIXES))
 
     def playback_state(self, server_status: dict | None = None, *,
                        now: float | None = None) -> tuple[str, str]:
         """Three-way classification: ``idle`` | ``playing`` | ``unknown``.
 
-        ``unknown`` (missing, stale or malformed telemetry, tablet offline) must
-        never authorise a switch, and ``playing`` must never be interrupted.
-        Only ``idle`` allows the manual update, and even then the caller warns
-        the user that the pendrive will be re-connected.
+        Missing, stale or malformed telemetry and an offline tablet are
+        classified as ``unknown``. Callers separately check authorisation and
+        the transport and publication safeguards.
         """
         active, reason = self.is_playback_active(server_status, now=now)
         if not active:
@@ -1005,9 +1003,8 @@ class MixedGenerationService:
 
         Idempotent: a second call while the same task is being applied reports
         the in-flight state instead of starting another publication.
-        ``confirm_interrupt`` is the user's explicit "yes, interrupt" answer to
-        the UI warning; it is only honoured together with ``manual`` and only
-        for the legacy playback signals.
+        ``confirm_interrupt`` records that the manual request authorises an
+        interruption, including when playback telemetry is unknown.
         """
         if not isinstance(task_id, str) or not re.fullmatch(r"[0-9a-f]{8}", task_id):
             return {"state": "failed", "reason": "invalid_task_id",
@@ -1287,7 +1284,7 @@ class MixedGenerationService:
                                  last_blocked_reason=playback_reason)
             if self.may_interrupt_playback(playback_reason, manual=manual,
                                            confirm_interrupt=confirm_interrupt):
-                # The user answered the warning: the click is the authorisation.
+                # The manual click is the authorisation.
                 # Recorded so the interruption is never silent.
                 self._update_journal(interrupted_legacy=playback_reason,
                                      interrupt_confirmed_ts=self._now())
@@ -1684,9 +1681,11 @@ class MixedGenerationService:
         transport.root_shell(
             f"mkdir -p {_quote(transport.base + '/live-favorites')} "
             f"&& chmod 700 {_quote(package_dir)} 2>/dev/null || true")
-        transport.push(staging_dir, package_dir)
-        verify = transport.root_shell(
-            f"cd {_quote(package_dir)} && busybox sha256sum -c SHA256SUMS", check=False)
+        with self._publication_duration("tablet_push"):
+            transport.push(staging_dir, package_dir)
+        with self._publication_duration("tablet_hash_verification"):
+            verify = transport.root_shell(
+                f"cd {_quote(package_dir)} && busybox sha256sum -c SHA256SUMS", check=False)
         output = (verify.stdout or "") + (verify.stderr or "")
         if verify.returncode != 0 or "FAILED" in output:
             raise PublicationError("tablet package hash verification failed")
@@ -2253,6 +2252,21 @@ class MixedGenerationService:
         self._save_state()
         return journal
 
+    @contextmanager
+    def _publication_duration(self, stage: str):
+        """Record elapsed time without letting telemetry alter publication."""
+        started = time.monotonic()
+        try:
+            yield
+        finally:
+            elapsed = round(max(0.0, time.monotonic() - started), 3)
+            try:
+                durations = dict(self._journal().get("stage_durations_s") or {})
+                durations[stage] = elapsed
+                self._update_journal(stage_durations_s=durations)
+            except Exception:
+                logger.warning("could not record publication stage duration")
+
     def promote_pending_generation(self, confirmation: dict | None = None) -> bool:
         """Mark the pending generation ACTIVE — only with tablet confirmation."""
         if not isinstance(confirmation, dict) or confirmation.get("verified") is not True:
@@ -2353,9 +2367,8 @@ class MixedGenerationService:
                     "interrupts_playback": False, "reconnected": False, "confirmed": None,
                     "message": PUBLISH_BLOCKED_MESSAGES.get(stale, "Publicação bloqueada")}
 
-        # Proven idleness: never touch the USB/LUN while playback may be active.
-        # The only exception is the explicit manual confirmation of a legacy
-        # playback signal (recorded below); unknown states never proceed.
+        # Recheck telemetry; an explicitly authorised manual request may
+        # proceed even if playback is active or its state is unknown.
         playback, idle_reason = self.playback_state()
         if playback != "idle":
             if not self.may_interrupt_playback(idle_reason, manual=manual,
@@ -2373,6 +2386,7 @@ class MixedGenerationService:
         # decision for a measured idle state.
         self._update_journal(phase="publishing", attempts=attempts, last_error=None,
                              started_ts=self._now(), idle_reason=idle_reason,
+                             stage_durations_s={},
                              mixed_reader_proof="not_available",
                              tv_on=idle_reason == "idle_tv_on_no_playback")
         previous_session = str(self.state.get("active_session") or "")
@@ -2399,11 +2413,12 @@ class MixedGenerationService:
             # 2. Transfer the package to the tablet. This does not touch the
             #    LUN and does not interrupt anyone.
             keeper.ensure("transfer")
-            self.transfer_package(session, staging_dir)
+            with self._publication_duration("tablet_transfer"):
+                self.transfer_package(session, staging_dir)
             keeper.ensure("transfer completion")
             self._update_journal(phase="transferred")
 
-            # 3. Proven idleness, re-checked under the guard. Replacing the
+            # 3. Playback authorisation, re-checked under the guard. Replacing the
             #    server-side consumers below makes the previous generation stop
             #    answering, so this is the first step that can interrupt a
             #    reader. The TV remote is outside software control: the manual
@@ -2427,8 +2442,9 @@ class MixedGenerationService:
             #    only through non-destructive PROBE/range checks, because a real
             #    OPEN would advance the manager's generation/epoch counters and
             #    make the tablet's own client appear stale.
-            self.vps_switch_start(staging_dir, session, generation,
-                                  previous_session=previous_session)
+            with self._publication_duration("vps_switch"):
+                self.vps_switch_start(staging_dir, session, generation,
+                                      previous_session=previous_session)
             switched_vps = True
             keeper.ensure("generation switch completion")
 
@@ -2436,8 +2452,10 @@ class MixedGenerationService:
             #    bring the dedicated tunnels up and prove the real end-to-end
             #    path (Live handshake + authenticated VOD byte range) through
             #    them, with the same package and session the tablet will use.
-            self.ensure_tunnels(session)
-            self.preflight_media(session)
+            with self._publication_duration("tunnels"):
+                self.ensure_tunnels(session)
+            with self._publication_duration("preflight"):
+                self.preflight_media(session)
             keeper.ensure("preflight completion")
 
             # 6. Re-check under the guard: playback could not have started
@@ -2496,7 +2514,8 @@ class MixedGenerationService:
             # then undoing is safe and correct.
             activation_requested = True
             try:
-                self.activate_package(session, handoff_token=handoff_token)
+                with self._publication_duration("activation_request"):
+                    self.activate_package(session, handoff_token=handoff_token)
             except ActivationNotStarted:
                 activation_requested = False
                 raise
@@ -2515,8 +2534,9 @@ class MixedGenerationService:
             if keeper is not None:
                 keeper.stop()
 
-        confirmation = self._poll_confirmation(session, generation, manifest_id,
-                                              handoff_token=handoff_token)
+        with self._publication_duration("confirmation"):
+            confirmation = self._poll_confirmation(session, generation, manifest_id,
+                                                  handoff_token=handoff_token)
         if not confirmation["verified"]:
             # Do not record an unconfirmed activation, and do not revert a
             # session that may still be showing media to someone.

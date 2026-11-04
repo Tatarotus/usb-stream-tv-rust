@@ -1067,6 +1067,18 @@ class MixedGenerationServiceTests(unittest.TestCase):
         self.assertIn(device.handoff_leases[-1], start_cmd)
         self.assertTrue(any("'rollback'" not in c for c in flat))
         self.assertEqual(device.rollback_calls, 0)
+        durations = service.state["publication"]["stage_durations_s"]
+        self.assertEqual(set(durations), {"tablet_push", "tablet_hash_verification",
+                         "tablet_transfer", "vps_switch", "tunnels", "preflight",
+                         "activation_request", "confirmation"})
+        self.assertTrue(all(isinstance(value, float) and value >= 0 for value in durations.values()))
+
+    def test_duration_journaling_cannot_hide_publication_errors(self):
+        service = self.service()
+        with mock.patch.object(service, "_update_journal", side_effect=OSError("disk")):
+            with self.assertRaisesRegex(mgs.PublicationError, "original"):
+                with service._publication_duration("test"):
+                    raise mgs.PublicationError("original")
 
     def test_apply_already_current_does_not_reconnect_the_usb(self):
         staging, manifest_id = make_complete_package(self.tmp_dir)
@@ -1185,6 +1197,8 @@ class MixedGenerationServiceTests(unittest.TestCase):
         self.assertFalse(guard.held)                    # guard must be released
         self.assertEqual(service.state["active_generation"], 1)
         self.assertGreaterEqual(device.preflight_calls, 1)
+        self.assertIn("preflight", service.state["publication"]["stage_durations_s"])
+        self.assertNotIn("activation_request", service.state["publication"]["stage_durations_s"])
         # The services were already switched to the new generation before the
         # preflight, so aborting here must put the previous generation back.
         self.assertEqual(device.vps_starts, [SESSION])
@@ -2077,7 +2091,7 @@ class MixedGenerationServiceTests(unittest.TestCase):
         self.assertEqual(service.state["publication"]["interrupted_legacy"],
                          "active_vod_selected:ab27600d")
 
-    def test_unknown_state_is_never_interruptible_even_with_confirmation(self):
+    def test_unknown_telemetry_requires_an_authorised_manual_request(self):
         staging, manifest_id = make_complete_package(self.tmp_dir)
         device = FakeDevice()
         service = self.service(transport=mgs.TabletTransport(runner=device))
@@ -2089,11 +2103,26 @@ class MixedGenerationServiceTests(unittest.TestCase):
                 service.fetch_server_status = (lambda: None) if status is None else \
                     (lambda: status)
                 result = service.apply_task("a1b2c3d4", tasks=[TASK_READY],
-                                            confirm_interrupt=True)
+                                            confirm_interrupt=False)
                 self.assertEqual(result["state"], "blocked")
-                self.assertFalse(result["interruptible"])
+                self.assertTrue(result["interruptible"])
         self.assertEqual(device.start_calls, 0)
         self.assertEqual(device.commands, [])
+        service.fetch_server_status = lambda: idle_status(tv_usb_state="WEIRD")
+        result = service.apply_task("a1b2c3d4", tasks=[TASK_READY],
+                                    confirm_interrupt=True)
+        self.assertEqual(result["state"], "active")
+        self.assertEqual(device.start_calls, 1)
+
+    def test_unknown_override_is_manual_and_limited_to_known_reasons(self):
+        service = self.service()
+        for reason in ("server_unreachable_fail_closed", "stale_status_fail_closed",
+                       "tablet_telemetry_offline_fail_closed", "unknown_usb_state_fail_closed:WEIRD"):
+            with self.subTest(reason=reason):
+                self.assertTrue(service.may_interrupt_playback(reason, manual=True, confirm_interrupt=True))
+                self.assertFalse(service.may_interrupt_playback(reason, manual=False, confirm_interrupt=True))
+                self.assertFalse(service.may_interrupt_playback(reason, manual=True, confirm_interrupt=False))
+        self.assertFalse(service.may_interrupt_playback("unexpected_reason", manual=True, confirm_interrupt=True))
 
     def test_the_automatic_path_can_never_confirm_an_interruption(self):
         staging, manifest_id = make_complete_package(self.tmp_dir)

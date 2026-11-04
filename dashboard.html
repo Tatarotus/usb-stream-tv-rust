@@ -1982,11 +1982,13 @@
         }
         .btn-modal-action.btn-modal-save:hover { filter: brightness(1.08); }
 
-        .btn-modal-action.btn-modal-web {
+        .btn-modal-action.btn-modal-web,
+        .btn-modal-action.btn-modal-checkpoint {
             background: var(--surface-2);
             color: var(--text-primary);
         }
-        .btn-modal-action.btn-modal-web:hover { background: var(--surface-3); }
+        .btn-modal-action.btn-modal-web:hover,
+        .btn-modal-action.btn-modal-checkpoint:hover { background: var(--surface-3); }
 
         .btn-modal-action.btn-modal-close {
             background: var(--surface-2);
@@ -2656,6 +2658,11 @@
             .now-playing-title { font-size: var(--fs-h3); }
         }
 
+        @media (max-width: 480px) {
+            .top-tv-banner { gap: var(--sp-2); padding: var(--sp-3); }
+            .top-tv-banner .btn-return-live { width: 100%; white-space: normal; text-align: center; }
+        }
+
         @media (display-mode: standalone) and (max-width: 1024px) {
             .btn-modal-web,
             #btn-yt-web { display: none !important; }
@@ -2695,8 +2702,13 @@
                 </div>
                 <div id="tv-banner-title" class="now-playing-title">Carregando canal...</div>
                 <div id="tv-banner-subtext" class="now-playing-subtext">Sinal ao vivo • Transmissão direta sem travar</div>
+                <div id="tv-last-episode" class="now-playing-subtext" hidden></div>
             </div>
 
+            <button id="btn-refresh-tv-list" type="button" class="btn-return-live" onclick="refreshTvList()">
+                🔄 ATUALIZAR LISTA DA TV
+            </button>
+            <div class="now-playing-subtext">Atualizar pode interromper a reprodução e reconectar o pendrive.</div>
             <button id="btn-banner-return-live" class="btn-return-live" style="display: none;" onclick="returnToLiveTv()">
                 📺 VOLTAR PARA A TV AO VIVO
             </button>
@@ -3197,6 +3209,9 @@
                 </button>
                 <button id="btn-vod-modal-web" class="btn-modal-action btn-modal-web" onclick="playSelectedVodWeb()">
                     🌐 ASSISTIR NO CELULAR
+                </button>
+                <button id="btn-vod-modal-checkpoint" class="btn-modal-action btn-modal-checkpoint" type="button" style="display: none;" onclick="markSelectedEpisode()">
+                    🔖 MARCAR ESTE EPISÓDIO
                 </button>
                 <button id="btn-vod-modal-delete" class="btn-modal-action btn-modal-delete" onclick="deleteSelectedVodModal()">
                     🗑️ Excluir da Memória da TV
@@ -4192,7 +4207,7 @@ function extractYouTubeId(url) {
                     bannerDot.style.boxShadow = '0 0 10px #f59e0b';
                     bannerDot.style.animation = 'pulse-dot 1.5s infinite';
                 }
-                bannerTitle.innerText = 'TV em Espera';
+                bannerTitle.innerText = 'Lista da TV';
                 // Subtítulo coerente com a aba ativa (antes dizia "canal" até em Filmes/Salvos)
                 const standbyHints = {
                     live: 'Toque em qualquer canal para iniciar a transmissão',
@@ -4397,6 +4412,18 @@ function extractYouTubeId(url) {
         let localSavedMoviesFetchedAt = 0;
         let continueWatching = [];
 
+        function renderLastEpisode() {
+            const label = document.getElementById('tv-last-episode');
+            if (!label) return;
+            const entry = (continueWatching || []).find(item => item && item.episode_number != null);
+            label.hidden = !entry;
+            if (!entry) { label.textContent = ''; return; }
+            const source = entry.position_source === 'manual' ? 'Marcado por você' :
+                entry.position_source === 'selected' ? 'Selecionado anteriormente' : 'Registro de reprodução';
+            const season = entry.season_number != null ? ` · Temporada ${entry.season_number}` : '';
+            label.textContent = `${source}: ${entry.series_title || 'Série'}${season} · Episódio ${entry.episode_number}`;
+        }
+
         async function loadLocalSavedMovies() {
             if (Date.now() - localSavedMoviesFetchedAt < 30000) return;
             try {
@@ -4498,6 +4525,7 @@ function extractYouTubeId(url) {
                 activeVodTask = data.active_vod;
                 vodTasks = data.tasks || [];
                 continueWatching = data.continue_watching || [];
+                renderLastEpisode();
 
                 // 1. Atualiza Central Universal da TV no Topo (Modo Cinema VOD / Séries / YouTube)
                 if (activeVodTask) {
@@ -4948,6 +4976,8 @@ function extractYouTubeId(url) {
             const sizeEl = document.getElementById('vod-modal-size-val');
             const dateEl = document.getElementById('vod-modal-date-val');
             const statusEl = document.getElementById('vod-modal-status-val');
+            const checkpointEl = document.getElementById('btn-vod-modal-checkpoint');
+            if (checkpointEl) checkpointEl.style.display = task.history_episode ? '' : 'none';
 
             let fullTitle = (task.title || task.display_name || 'Vídeo Salvo').trim();
             fullTitle = fullTitle.replace(/^@\s*/, '');
@@ -5047,6 +5077,25 @@ function extractYouTubeId(url) {
             const task = selectedVodTaskForModal;
             closeVodDetailsModal();
             playVodTask(task.id, task.title || task.display_name);
+        }
+
+        async function markSelectedEpisode() {
+            const task = selectedVodTaskForModal;
+            if (!task || !task.history_episode) return;
+            const pin = getAuthPin();
+            try {
+                const res = await fetch('/api/vod/history/checkpoint', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Auth-PIN': pin },
+                    body: JSON.stringify({ task_id: task.id, pin: pin })
+                });
+                const data = await res.json();
+                if (!res.ok || !data.success) throw new Error('checkpoint failed');
+                continueWatching = data.continue_watching || [];
+                renderLastEpisode();
+                showActionBanner('🔖 Episódio marcado por você.', 'success');
+            } catch (err) {
+                showActionBanner('⚠️ Não foi possível marcar o episódio. Verifique o PIN e tente novamente.', 'warn');
+            }
         }
 
         function deleteSelectedVodModal() {
@@ -5168,17 +5217,32 @@ function extractYouTubeId(url) {
         // como assistido e nunca escreve no banner de "vídeo em reprodução".
         // Atualiza a lista a partir do catálogo atual (exclusões e downloads
         // novos). Não depende de existir um VOD pronto para ancorar.
-        async function refreshMixedInventory(displayTitle, mixed, pin, confirmedInterrupt) {
+        async function refreshTvList() {
+            triggerHaptic();
+            const pin = getAuthPin();
+            const probe = await probeMixedStatus(null);
+            if (probe.mode !== 'mixed') {
+                showActionBanner('⚠️ Atualização da lista indisponível. Verifique a conexão e tente novamente.', 'warn', 30000);
+                return;
+            }
+            showActionBanner('⏳ Atualizando a lista da TV. A reprodução pode ser interrompida.');
+            await refreshMixedInventory('Lista da TV', probe.data, pin);
+        }
+
+        async function refreshMixedInventory(displayTitle, mixed, pin) {
             const terminal = ['active', 'already_current', 'failed', 'blocked',
                               'unconfirmed', 'incomplete', 'unknown'];
             let state = '';
             let reason = '';
+            const baselineApplyTimestamp = mixed.apply_updated_ts;
+            let currentApplyTimestamp = baselineApplyTimestamp;
+            let currentMixed = mixed;
             try {
                 const res = await fetch('/api/mixed/refresh', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-Auth-PIN': pin },
                     body: JSON.stringify({ pin: pin,
-                                           confirm_interrupt: confirmedInterrupt === true })
+                                           confirm_interrupt: true })
                 });
                 let data = null;
                 try { data = await res.json(); } catch (err) { data = null; }
@@ -5192,21 +5256,31 @@ function extractYouTubeId(url) {
                     // Ponte indisponível: NÃO caímos no switch legado, porque o
                     // modo misto está ativo e a troca antiga reconectaria o
                     // pendrive com a lista errada.
-                    showActionBanner(`⚠️ "${escapeHtml(displayTitle)}" foi excluído, mas a atualização da lista está indisponível agora. A TV pode continuar mostrando o vídeo excluído.`, 'warn', 40000);
+                    showActionBanner(`⚠️ A atualização da lista está indisponível agora.`, 'warn', 40000);
                     return;
                 }
                 state = data.state || '';
                 reason = data.reason || '';
-                const deadline = Date.now() + 10 * 60 * 1000;
-                while (terminal.indexOf(state) === -1 && Date.now() < deadline) {
+                const deadline = Date.now() + 16 * 60 * 1000;
+                while (Date.now() < deadline) {
+                    const hasNewApply = typeof currentApplyTimestamp === 'number' &&
+                        Number.isFinite(currentApplyTimestamp) && currentApplyTimestamp !== baselineApplyTimestamp;
+                    if (hasNewApply && terminal.indexOf(state) !== -1) break;
                     await new Promise(resolve => setTimeout(resolve, 2000));
                     const probe2 = await probeMixedStatus(null);
                     if (probe2.mode !== 'mixed') continue;
+                    currentMixed = probe2.data;
                     state = probe2.data.state || state;
                     reason = probe2.data.reason || reason;
+                    currentApplyTimestamp = probe2.data.apply_updated_ts;
                 }
             } catch (err) {
                 showActionBanner(`Erro de comunicação ao atualizar a lista. Não afirmo o estado da TV.`, 'warn', 30000);
+                return;
+            }
+            if (typeof currentApplyTimestamp !== 'number' || !Number.isFinite(currentApplyTimestamp) ||
+                    currentApplyTimestamp === baselineApplyTimestamp || terminal.indexOf(state) === -1) {
+                showActionBanner('⏳ A atualização pode continuar em andamento. O resultado é desconhecido; verifique a TV antes de tentar novamente.', 'warn', 30000);
                 return;
             }
             if (state === 'active' || state === 'already_current') {
@@ -5215,11 +5289,13 @@ function extractYouTubeId(url) {
                 if (check.confirmed === true) {
                     // A mensagem diz o que de fato aconteceu: 'active' trocou o
                     // pendrive (a TV reconectou); 'already_current' não trocou.
-                    const reconnected = mixed && mixed.reconnected === true ||
-                        (mixed && mixed.interrupts_playback === true);
+                    const reconnected = currentMixed && currentMixed.reconnected === true ||
+                        (currentMixed && currentMixed.interrupts_playback === true);
                     showActionBanner(reconnected
                         ? `✅ <strong>Lista da TV atualizada</strong> — o pendrive foi reconectado e você já pode navegar nas pastas.`
-                        : `✅ <strong>A lista já estava atualizada</strong> — nada foi alterado na TV.`,
+                        : state === 'already_current'
+                            ? `✅ <strong>A lista já estava atualizada</strong> — nada foi alterado na TV.`
+                            : `✅ <strong>Lista da TV atualizada</strong> — você já pode navegar nas pastas.`,
                         'success', 30000);
                     pollVodStatus();
                 } else if (check.confirmed === false) {
@@ -5228,13 +5304,13 @@ function extractYouTubeId(url) {
                     showActionBanner(`⚠️ Atualização enviada, mas o estado da TV é desconhecido. Confira o pendrive antes de concluir.`, 'warn', 30000);
                 }
             } else if (state === 'blocked') {
-                showActionBanner(`⚠️ A TV está em uso. Pare o vídeo na TV e toque novamente para atualizar a lista.`, 'warn', 30000);
+                showActionBanner(`⚠️ Não foi possível autorizar a atualização (${escapeHtml(String(reason || 'estado da TV desconhecido'))}). Verifique a TV e tente novamente.`, 'warn', 30000);
             } else {
-                showActionBanner(`⚠️ Não foi possível concluir a atualização da lista (${escapeHtml(String(reason || state || 'estado desconhecido'))}). A TV pode continuar mostrando o vídeo excluído.`, 'warn', 40000);
+                showActionBanner(`⚠️ Não foi possível concluir a atualização da lista (${escapeHtml(String(reason || state || 'estado desconhecido'))}). Verifique a TV antes de tentar novamente.`, 'warn', 40000);
             }
         }
 
-        async function applyMixedGeneration(taskId, displayTitle, mixed, pin, confirmedInterrupt) {
+        async function applyMixedGeneration(taskId, displayTitle, mixed, pin) {
             const mixedTerminal = ['active', 'already_current', 'failed', 'blocked', 'unconfirmed', 'incomplete', 'unknown'];
             const bannerStillRunning = () => showActionBanner(
                 `⏳ Atualizando a lista do pendrive... Você pode continuar nesta tela; nada será duplicado.`, 'info', 15000);
@@ -5259,7 +5335,7 @@ function extractYouTubeId(url) {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-Auth-PIN': pin },
                     body: JSON.stringify({ task_id: taskId, pin: pin,
-                                           confirm_interrupt: confirmedInterrupt === true })
+                                           confirm_interrupt: true })
                 });
                 let data = null;
                 try { data = await res.json(); } catch (err) { data = null; }
@@ -5278,7 +5354,7 @@ function extractYouTubeId(url) {
 
                 // Acompanha até um estado final de verdade (ou o limite). Um
                 // timeout NÃO é apresentado como falha: é um estado recuperável.
-                const deadline = Date.now() + 10 * 60 * 1000;
+                const deadline = Date.now() + 16 * 60 * 1000;
                 let ticks = 0;
                 while (Date.now() < deadline) {
                     const hasNewApply = typeof currentApplyTimestamp === 'number' &&
@@ -5332,20 +5408,7 @@ function extractYouTubeId(url) {
             } else if ((state === 'active' || state === 'already_current') && !inventoryConfirmed) {
                 showActionBanner(`⚠️ A TV ainda não confirmou a lista completa. Verifique a atualização antes de continuar.`, 'warn', 30000);
             } else if (state === 'blocked') {
-                const legacy = String(reason).indexOf('active_') === 0 || /bitrate|listeners|vod/.test(String(reason));
-                if ((mixed.interruptible === true || legacy) && confirmedInterrupt !== true) {
-                    // A reprodução pode ser interrompida com o aviso e o clique
-                    // do usuário — nunca automaticamente. Estados desconhecidos
-                    // (unknown/stale) não chegam a este ramo.
-                    if (confirm('A TV pode estar reproduzindo. Atualizar a lista vai interromper o que estiver na tela e reconectar o pendrive. Continuar?')) {
-                        return applyMixedGeneration(taskId, displayTitle, mixed, pin, true);
-                    }
-                    showActionBanner(`Atualização cancelada — nada foi alterado.`, 'info', 15000);
-                } else if (legacy && confirmedInterrupt === true) {
-                    showActionBanner(`⚠️ A TV informou que ainda está ocupada. Pare o vídeo na TV e toque no botão novamente.`, 'warn', 20000);
-                } else {
-                    showActionBanner(`⚠️ Estado da TV desconhecido ou desatualizado; nada foi alterado. Aguarde alguns segundos e toque de novo.`, 'warn', 20000);
-                }
+                showActionBanner(`⚠️ Não foi possível autorizar a atualização (${escapeHtml(String(reason || 'estado da TV desconhecido'))}). Verifique a TV e tente novamente.`, 'warn', 20000);
             } else if (state === 'unconfirmed') {
                 showActionBanner(`⚠️ Estado desconhecido na TV após a atualização. Verifique o pendrive; não afirmo que a lista anterior está intacta.`, 'warn', 30000);
             } else if (state === 'failed' || state === 'incomplete') {
