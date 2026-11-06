@@ -229,6 +229,67 @@ class TestMixedApply(unittest.TestCase):
         self.assertNotIsInstance(argv, str)
         self.assertEqual(argv[:2], [sys.executable, str(self.stub)])
 
+    def test_apply_without_a_store_keeps_the_legacy_response(self):
+        """Migration guarantee: with no store configured nothing changes.
+
+        The persistent operation model is additive. If the endpoint started
+        depending on it, an unset or broken store could block a publication —
+        which is exactly what must not happen.
+        """
+        with mock.patch.dict("os.environ", {"MIXED_OPERATIONS_DB": ""}, clear=False):
+            status, body = self.request("POST", "/api/mixed/apply",
+                                        {"task_id": TASK_ID})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["state"], "started")
+        self.assertNotIn("operation_id", body)
+        self.popen.assert_called_once()
+
+    def test_apply_with_a_store_adds_a_persistent_operation_id(self):
+        """With the store on, the panel gets a durable id to follow."""
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "ops.db")
+            with mock.patch.dict("os.environ", {"MIXED_OPERATIONS_DB": db},
+                                 clear=False):
+                patcher = mock.patch.object(server, "_mixed_ops_store", None,
+                                            create=True)
+                patcher.start()
+                self.addCleanup(patcher.stop)
+                status, body = self.request("POST", "/api/mixed/apply",
+                                            {"task_id": TASK_ID})
+            self.assertEqual(status, 200)
+            operation_id = body.get("operation_id")
+            self.assertIsNotNone(operation_id)
+            # The id was persisted before the launch and is readable.
+            from scripts.mixed_operations import OperationStore
+            row = OperationStore(db).get(operation_id)
+            self.assertEqual(row["tablet_id"], "tablet")
+            self.assertIn(row["state"], ("preparing", "queued"))
+
+    def test_apply_records_a_failed_safe_operation_when_the_launch_fails(self):
+        """A launch that never happened must not read as progress."""
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "ops.db")
+            with mock.patch.dict("os.environ", {"MIXED_OPERATIONS_DB": db},
+                                 clear=False):
+                patcher = mock.patch.object(server, "_mixed_ops_store", None,
+                                            create=True)
+                patcher.start()
+                self.addCleanup(patcher.stop)
+                self.popen.side_effect = OSError("boom")
+                status, body = self.request("POST", "/api/mixed/apply",
+                                            {"task_id": TASK_ID})
+            self.assertEqual(status, 503)
+            self.assertFalse(body["ok"])
+            from scripts.mixed_operations import OperationStore
+            store = OperationStore(db)
+            active = store.active_for_tablet("tablet")
+            self.assertIsNone(active)
+
     def test_foreign_guard_blocks_apply_without_launching(self):
         token = self.guard.acquire("other-publisher", 60, "publishing")["token"]
         try:

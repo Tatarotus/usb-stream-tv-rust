@@ -32,6 +32,8 @@ import atexit
 from vod_storage import GDriveStorage, StorageError
 from vod_playback_cache import CurrentVideoCache
 from scripts.mixed_cache_signal import MixedCacheSignal, next_episode
+from scripts.mixed_watch_signal import MixedWatchRecorder
+from scripts.mixed_operations import OperationStore
 from vod_history import VodHistory, resolve_episode_identity
 from vod_revision import (REVISION_HEADER, content_revision, is_valid_revision)
 
@@ -120,6 +122,15 @@ VOD_PLAYBACK_CACHE = CurrentVideoCache(
     min_free_bytes=VOD_MIN_FREE_BYTES,
 )
 MIXED_CACHE_SIGNAL = MixedCacheSignal()
+
+
+def _mixed_watch_lookup(task_id):
+    with VOD_TASKS_LOCK:
+        task = VOD_TASKS.get(task_id)
+        return dict(task) if task else None
+
+
+MIXED_WATCH_RECORDER = MixedWatchRecorder(_mixed_watch_lookup, VOD_HISTORY)
 
 
 def _mixed_cache_hint(task, start, length):
@@ -3139,6 +3150,41 @@ def _mixed_available():
     if _mixed_bridge_client_argv("apply", "00000000") is not None:
         return True
     return _mixed_apply_command() is not None
+
+
+# ---- persistent operations (Geracoes V2, fase 1) ----------------------------
+# Additive during migration: with MIXED_OPERATIONS_DB unset (or unopenable) the
+# endpoints behave exactly as before, so a misconfigured store can never block a
+# publication. The store only changes what the panel is TOLD.
+_MIXED_OPS_DB_ENV = "MIXED_OPERATIONS_DB"
+_mixed_ops_store = None
+_mixed_ops_store_path = None
+
+
+def _mixed_get_operations_store():
+    """The operation store, or None when not configured/available."""
+    global _mixed_ops_store, _mixed_ops_store_path
+    path = os.environ.get(_MIXED_OPS_DB_ENV, "").strip()
+    if not path:
+        return None
+    if _mixed_ops_store is not None and _mixed_ops_store_path == path:
+        return _mixed_ops_store
+    try:
+        _mixed_ops_store = OperationStore(path)
+        _mixed_ops_store_path = path
+    except Exception:
+        log_event("MIXED_OPS_STORE_UNAVAILABLE")
+        return None
+    return _mixed_ops_store
+
+
+def _mixed_tablet_id():
+    """Stable identity of the tablet this deployment publishes to."""
+    for key in ("MIXED_TABLET_ID", "ADB_SERIAL", "TABLET_SERIAL"):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    return "tablet"
 
 
 def _mixed_action_argv(action, task_id):
@@ -6417,26 +6463,58 @@ self.addEventListener('message', (event) => {
                                       "message": "Modo de mídia mista indisponível"})
             return
         if params.get("confirm_interrupt") is True:
-            # The manual click authorises interruption, including when playback
-            # telemetry is unknown; publication safeguards still apply.
+            # The user answered the warning: only the manual endpoint may pass
+            # this on, and the publisher still refuses it for unknown states.
             argv = argv + ["--confirm-interrupt"]
         if _mixed_bridge_spool() is None:
             # Direct transport only: the local publisher detaches itself.
             argv = argv + ["--background"]
+
+        # Persisted BEFORE the launch: the id the panel will follow exists even
+        # if this process dies immediately after. Best-effort, so a store
+        # problem never blocks the publication itself.
+        operation_id = None
+        store = _mixed_get_operations_store()
+        if store is not None:
+            try:
+                row, created = store.begin(
+                    tablet_id=_mixed_tablet_id(), principal="dashboard",
+                    intention={"task_id": task_id, "operation": "apply",
+                               "confirm_interrupt": params.get("confirm_interrupt") is True},
+                    idempotency_key=params.get("idempotency_key"),
+                    user_message="Atualização solicitada")
+                operation_id = row
+                store.set_phase(row, state="preparing", stage="launch")
+            except Exception:
+                log_event("MIXED_OPS_BEGIN_FAILED")
+                operation_id = None
+
         try:
             subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              stdin=subprocess.DEVNULL, start_new_session=True,
                              cwd=_mixed_app_dir() or None)
         except OSError as exc:
             log_event(f"MIXED_APPLY_LAUNCH_FAILED {type(exc).__name__}")
+            if operation_id is not None and store is not None:
+                try:
+                    store.finish(operation_id, state="failed_safe",
+                                 error_code="launch_failed",
+                                 user_message="Não foi possível iniciar a atualização; "
+                                              "nada foi alterado na TV.")
+                except Exception:
+                    pass
             self._send_vod_json(503, {"ok": False,
                                       "error": "não foi possível iniciar a atualização"})
             return
         log_event(f"MIXED_APPLY_REQUESTED {task_id}")
         view = _mixed_status_view(state, task_id)
-        self._send_vod_json(200, {"ok": True, "available": True, "state": "started",
-                                  "message": view["message"] or "Lista em atualização",
-                                  "interrupts_playback": view["interrupts_playback"]})
+        response = {"ok": True, "available": True, "state": "started",
+                    "message": view["message"] or "Lista em atualização",
+                    "interrupts_playback": view["interrupts_playback"]}
+        # Additive: existing clients read the same fields they always did.
+        if operation_id is not None:
+            response["operation_id"] = operation_id
+        self._send_vod_json(200, response)
 
     def handle_mixed_refresh(self):
         """Publish the CURRENT inventory, with no video to anchor on.
@@ -6929,6 +7007,12 @@ self.addEventListener('message', (event) => {
             self.wfile.write(data)
         except OSError:
             self.close_connection = True
+            return
+        if os.environ.get("MIXED_WATCH_INFERENCE", "1") == "1":
+            try:
+                MIXED_WATCH_RECORDER.observe(dict(task, file_size=size), start, length)
+            except Exception as exc:
+                print(f"[VOD] Watch signal ignored: {type(exc).__name__}")
 
     def stream_mp4_file(self, file_path):
         if not file_path or not os.path.exists(file_path):
