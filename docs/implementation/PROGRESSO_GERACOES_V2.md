@@ -167,9 +167,35 @@ pasta — que é o que bloqueou a publicação 19 (`previous_generation_owns_loc
 **Não enfraquecer** `previous_generation_owns_lock`: a raiz é dependência de
 caminho/identidade, não a checagem de dono.
 
-### Próximo passo concreto imediato
+### Achado do passo 1 (já executado)
 
-Ler `previous_supervisor_capability()` e o protocolo de lease em
-`scripts/mixed_generation_service.py` e `scripts/activate_live_favorites_tablet.sh`
-para saber exatamente qual tupla de identidade já existe antes de inventar
-campos novos.
+Lido o protocolo. A prova de identidade **já é bem desenhada**:
+
+```python
+HANDOFF_PROTOCOL_ANNOUNCEMENT = "handoff.ack 1"
+# "The RUNNING supervisor's own announcement is the proof. Reading the script
+#  file is not: a later revision can replace it while the old process still
+#  supervises."
+```
+
+Ou seja: a prova é o **processo em execução**, não o arquivo. Isso já está certo.
+
+**A lacuna real é outra:** toda a identidade é derivada de
+`self._package_dir_on_tablet(session)` — isto é, **caminho**. Foi exatamente isso
+que recusou a publicação 19 (`previous_generation_owns_lock`): a geração 18 foi
+recuperada em pasta alternativa, então o caminho registrado não corresponde ao
+processo que está de fato supervisionando.
+
+Confirma a §4 da arquitetura: *"caminho é localização, não identidade"*.
+
+### Próximo passo concreto
+
+Adicionar a ação `describe` em
+`scripts/activate_live_favorites_tablet.sh` de forma **puramente aditiva** (nova
+ação no `case`, nenhuma existente alterada), devolvendo a tupla:
+protocolo, device_id, boot_id, instance_id, PID+starttime, geração, manifest_id,
+package_digest, runtime_digest, caminho, LUN e lock_owned. Depois fazer
+`handoff_lease` negociar por essa tupla em vez de por caminho.
+
+Provar com `tests/test_activate_favorites_tunnel.sh` (suíte existente) mais um
+teste novo para a ação. **Não** enfraquecer `previous_generation_owns_lock`.
