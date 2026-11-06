@@ -809,4 +809,61 @@ grep -q 'already_free=1' <<<"$out"
 rm -f "$LEASE"
 echo "OK"
 
+# Test 32: describe reports the running supervisor's identity, not the path
+#
+# Path is a location, not an identity: a generation recovered into an alternative
+# directory supervises the same content from elsewhere, and correlating by path is
+# exactly what refused publication 19. This action must therefore expose an
+# incarnation the caller can compare.
+echo "=== Test 32: describe exposes incarnation identity, read-only ==="
+cp /bin/sleep "$PKG/favorites_fuse"
+"$PKG/favorites_fuse" 30 &
+DESC_PID=$!
+echo "$DESC_PID" > "$PKG/activation/candidate.pid"
+echo "$DESC_PID" > "$PKG/activation/supervisor.pid"
+echo active > "$PKG/activation/result"
+echo "$PKG/mnt/tv_stream.img" > "$TMP/usb/f_mass_storage/lun0/file"
+mkdir -p "$TMP/base/mode_switch.lock"
+echo "$DESC_PID" > "$TMP/base/mode_switch.lock/pid"
+printf 'handoff.ack 1\n' > "$PKG/activation/handoff.protocol"
+out=$(run_script "describe '$PKG'")
+echo "$out" | grep -q "describe protocol=handoff.ack 1" \
+    || { echo "FAIL: describe must report the protocol: $out" >&2; exit 1; }
+echo "$out" | grep -q "generation=2" \
+    || { echo "FAIL: describe must report the generation: $out" >&2; exit 1; }
+echo "$out" | grep -q "manifest_id=$MOCK_MID" \
+    || { echo "FAIL: describe must report the manifest id: $out" >&2; exit 1; }
+echo "$out" | grep -q "lock_owned=1" \
+    || { echo "FAIL: describe must prove lock ownership: $out" >&2; exit 1; }
+# The incarnation is "<pid>-<starttime>", so a recycled pid is distinguishable.
+echo "$out" | grep -qE "supervisor=${DESC_PID}-[0-9]+" \
+    || { echo "FAIL: describe must report pid plus starttime: $out" >&2; exit 1; }
+echo "$out" | grep -qE "candidate=${DESC_PID}-[0-9]+" \
+    || { echo "FAIL: describe must report the candidate incarnation: $out" >&2; exit 1; }
+echo "$out" | grep -q "lun=$PKG/mnt/tv_stream.img" \
+    || { echo "FAIL: describe must report the LUN: $out" >&2; exit 1; }
+# Read-only: a describe must not release the lock, change the result or move the LUN.
+[ "$(cat "$PKG/activation/result")" = active ] \
+    || { echo "FAIL: describe changed the activation result" >&2; exit 1; }
+[ "$(cat "$TMP/base/mode_switch.lock/pid")" = "$DESC_PID" ] \
+    || { echo "FAIL: describe touched the mode lock" >&2; exit 1; }
+[ "$(cat "$TMP/usb/f_mass_storage/lun0/file")" = "$PKG/mnt/tv_stream.img" ] \
+    || { echo "FAIL: describe moved the LUN" >&2; exit 1; }
+kill "$DESC_PID" 2>/dev/null || true
+rm -rf "$TMP/base/mode_switch.lock"
+echo "OK"
+
+# Test 33: describe on a package with no manifest still answers, saying none
+echo "=== Test 33: describe reports none instead of inventing fields ==="
+BARE=$TMP/base/live-favorites/bare-pkg
+mkdir -p "$BARE/activation"
+out=$(run_script "describe '$BARE'")
+echo "$out" | grep -q "generation=none" \
+    || { echo "FAIL: describe invented a generation: $out" >&2; exit 1; }
+echo "$out" | grep -q "manifest_id=none" \
+    || { echo "FAIL: describe invented a manifest id: $out" >&2; exit 1; }
+echo "$out" | grep -q "protocol=none" \
+    || { echo "FAIL: describe invented a protocol: $out" >&2; exit 1; }
+echo "OK"
+
 echo "ALL TUNNEL, INTEGRITY, PREFLIGHT AND VERIFICATION TESTS PASSED!"

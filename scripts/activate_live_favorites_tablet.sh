@@ -609,6 +609,63 @@ case "$ACTION" in
         echo "verify verified=$_verified generation=${_gen:-none} manifest_id=${_mid:-none} lock_owned=$_lock_owned lease=$_lease_state"
         [ "$_verified" = 1 ] && exit 0
         exit 1 ;;
+    describe)
+        # Identity of the RUNNING supervisor, reported so a caller can decide
+        # without depending on the package path.
+        #
+        # Path is a location, not an identity: a generation recovered into an
+        # alternative directory supervises the same content from somewhere else,
+        # and correlating by path is exactly what refused publication 19. This
+        # action makes the identity observable so the caller can compare an
+        # incarnation instead of a directory name.
+        #
+        # Read-only: it never signals a process, never touches the USB and never
+        # rewrites the mode lock. Every field is proven here or reported as
+        # `none` — never invented.
+        _d_proto=$("$BB" cat "$STATE/handoff.protocol" 2>/dev/null || true)
+        [ -n "$_d_proto" ] || _d_proto=none
+        _d_boot=$("$BB" cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
+        if [ -z "$_d_boot" ]; then
+            # Android kernels often lack boot_id. Uptime is a weaker stand-in,
+            # and the field says so instead of passing itself off as one.
+            _d_boot="uptime:$("$BB" cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)"
+        fi
+        _d_gen=none
+        _d_mid=none
+        if [ -s "$PKG/favorites_manifest.json" ]; then
+            _d_gen=$("$BB" sed -n 's/.*"generation"[[:space:]]*:[[:space:]]*\([0-9]\{1,\}\).*/\1/p' "$PKG/favorites_manifest.json" | "$BB" head -n 1)
+            _d_mid=$("$BB" sed -n 's/.*"manifest_id"[[:space:]]*:[[:space:]]*"\([0-9a-f]\{1,\}\)".*/\1/p' "$PKG/favorites_manifest.json" | "$BB" head -n 1)
+        fi
+        [ -n "$_d_gen" ] || _d_gen=none
+        [ -n "$_d_mid" ] || _d_mid=none
+        _d_pkg_digest=none
+        if [ -s "$PKG/SHA256SUMS" ]; then
+            _d_pkg_digest=$("$BB" sha256sum "$PKG/SHA256SUMS" 2>/dev/null | "$BB" cut -c1-32)
+            [ -n "$_d_pkg_digest" ] || _d_pkg_digest=none
+        fi
+        _d_rt_digest=none
+        if [ -f "$BIN" ]; then
+            _d_rt_digest=$("$BB" sha256sum "$BIN" 2>/dev/null | "$BB" cut -c1-32)
+            [ -n "$_d_rt_digest" ] || _d_rt_digest=none
+        fi
+        _d_sup=$("$BB" cat "$SUPERVISOR" 2>/dev/null || true)
+        _d_sup_inc=$(proc_incarnation "$_d_sup" || true)
+        [ -n "$_d_sup_inc" ] || _d_sup_inc=none
+        _d_cand=$("$BB" cat "$PIDFILE" 2>/dev/null || true)
+        _d_cand_inc=$(proc_incarnation "$_d_cand" || true)
+        [ -n "$_d_cand_inc" ] || _d_cand_inc=none
+        _d_lun=$("$BB" cat "$USB/f_mass_storage/lun0/file" 2>/dev/null || true)
+        [ -n "$_d_lun" ] || _d_lun=none
+        _d_lock_owned=0
+        _d_lock_pid=$("$BB" cat "$LOCK/pid" 2>/dev/null || true)
+        case "$_d_lock_pid" in
+            ''|*[!0-9]*) ;;
+            *) if [ "$_d_lock_pid" = "$_d_sup" ] && kill -0 "$_d_lock_pid" 2>/dev/null; then
+                   _d_lock_owned=1
+               fi ;;
+        esac
+        echo "describe protocol=$_d_proto boot_id=$_d_boot generation=$_d_gen manifest_id=$_d_mid package_digest=$_d_pkg_digest runtime_digest=$_d_rt_digest supervisor=$_d_sup_inc candidate=$_d_cand_inc lun=$_d_lun lock_owned=$_d_lock_owned path=$PKG"
+        exit 0 ;;
     handoff-lease)
         _hl_tok=${3:-}
         _hl_ttl=${4:-}
@@ -941,8 +998,13 @@ rm -f "$STATE/rollback.request"
     ${VOD_FLAG:+"$VOD_FLAG"} > "$LOG" 2>&1 &
 echo $! > "$PIDFILE"
 for _i in $("$BB" seq 1 12); do
-    [ -f "$BACKING" ] && break
-    same_process "$(cat "$PIDFILE")" "$BIN" || die 'candidate exited before mount; inspect fuse.log'
+    _candidate=$(cat "$PIDFILE")
+    # setsid may still be starting the executable; require its identity before
+    # switching USB, but do not mistake that short transition for an exit.
+    if [ -f "$BACKING" ] && same_process "$_candidate" "$BIN"; then
+        break
+    fi
+    kill -0 "$_candidate" 2>/dev/null || die 'candidate exited before mount; inspect fuse.log'
     sleep 1
 done
 [ -f "$BACKING" ] || die 'candidate mount not ready'
