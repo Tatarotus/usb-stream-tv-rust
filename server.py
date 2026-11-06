@@ -6484,10 +6484,10 @@ self.addEventListener('message', (event) => {
                     idempotency_key=params.get("idempotency_key"),
                     user_message="Atualização solicitada")
                 operation_id = row
-                store.set_phase(row, state="preparing", stage="launch")
+                if created:
+                    store.set_phase(row, state="preparing", stage="launch")
             except Exception:
                 log_event("MIXED_OPS_BEGIN_FAILED")
-                operation_id = None
 
         try:
             subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

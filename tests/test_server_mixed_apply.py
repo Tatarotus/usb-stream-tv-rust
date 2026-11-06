@@ -290,6 +290,41 @@ class TestMixedApply(unittest.TestCase):
             active = store.active_for_tablet("tablet")
             self.assertIsNone(active)
 
+    def test_duplicate_click_does_not_reset_the_phase_of_a_running_operation(self):
+        """The `if created` guard: a repeat must not rewind a live operation.
+
+        Without it, a second POST with the same idempotency key would push the
+        phase back to preparing/launch while the publisher is already further
+        along, making the panel report progress that went backwards.
+        """
+        import tempfile
+        from pathlib import Path
+        from scripts.mixed_operations import OperationStore
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "ops.db")
+            with mock.patch.dict("os.environ", {"MIXED_OPERATIONS_DB": db},
+                                 clear=False):
+                patcher = mock.patch.object(server, "_mixed_ops_store", None,
+                                            create=True)
+                patcher.start()
+                self.addCleanup(patcher.stop)
+                status, first = self.request("POST", "/api/mixed/apply",
+                                             {"task_id": TASK_ID,
+                                              "idempotency_key": "k-dup"})
+                self.assertEqual(status, 200)
+                op_id = first["operation_id"]
+                # The publisher moves the operation forward.
+                store = OperationStore(db)
+                store.set_phase(op_id, state="transferring")
+                # A duplicate click arrives.
+                status2, second = self.request("POST", "/api/mixed/apply",
+                                               {"task_id": TASK_ID,
+                                                "idempotency_key": "k-dup"})
+            self.assertEqual(status2, 200)
+            self.assertEqual(second["operation_id"], op_id)
+            # The phase must NOT have been rewound to preparing.
+            self.assertEqual(OperationStore(db).get(op_id)["state"], "transferring")
+
     def test_foreign_guard_blocks_apply_without_launching(self):
         token = self.guard.acquire("other-publisher", 60, "publishing")["token"]
         try:
