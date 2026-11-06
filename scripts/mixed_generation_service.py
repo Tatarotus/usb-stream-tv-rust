@@ -2949,31 +2949,71 @@ class _OperationTracker:
     by tablet id because the store enforces at most one active operation per
     tablet — the same guarantee that makes the lookup unambiguous.
 
-    Everything here is best-effort on purpose: observability must never be able
-    to block a publication. A failure is logged and the work continues, which is
-    also why the store itself never performs RPC.
+    Everything in ``phase``/``finish`` is best-effort on purpose: notification
+    failure must never block a publication. Coordination is the opposite — see
+    :meth:`claim`, which fails closed.
     """
 
-    def __init__(self, tablet_id: str):
+    def __init__(self, tablet_id: str, task_id: str | None = None):
+        self.tablet_id = tablet_id
+        self.task_id = str(task_id) if task_id else None
         self.operation_id = None
         self._store = None
-        path = os.environ.get("MIXED_OPERATIONS_DB", "").strip()
-        if not path:
-            return
+        self._configured = bool(os.environ.get("MIXED_OPERATIONS_DB", "").strip())
+
+    def claim(self) -> str:
+        """Establish ownership BEFORE the interruptive effect. Fails closed.
+
+        Three outcomes, and the distinction is the whole point:
+
+        ``legacy``   no store configured, so coordination is not required and
+                     existing deployments stay byte-identical;
+        ``owned``    this publication holds a recorded operation for THIS task;
+        ``blocked``  coordination was required and could not be proven. Acting
+                     on the device with no recorded owner is worse than not
+                     acting, so the caller aborts before any effect.
+
+        Correlation is by ``(tablet_id, task_id)``, never by tablet alone: the
+        slot is unique per tablet, so adopting whatever happens to be active
+        would attach this run to an operation meant for a different task.
+        """
+        if not self._configured:
+            return "legacy"
         try:
             import mixed_operations
-            self._store = mixed_operations.OperationStore(path)
+            self._store = mixed_operations.OperationStore(
+                os.environ["MIXED_OPERATIONS_DB"].strip())
         except Exception as exc:
-            logger.warning("operation store unavailable (%s); publication continues",
-                           type(exc).__name__)
+            logger.error("coordination store configured but unusable (%s); "
+                         "refusing to publish", type(exc).__name__)
             self._store = None
-            return
+            return "blocked"
         try:
-            active = self._store.active_for_tablet(tablet_id)
-        except Exception:
-            active = None
+            active = self._store.active_for_tablet(self.tablet_id)
+        except Exception as exc:
+            logger.error("could not read the active operation (%s); refusing "
+                         "to publish", type(exc).__name__)
+            return "blocked"
         if active is not None:
+            if not self.task_id or str(active.get("task_id") or "") != self.task_id:
+                logger.error("tablet %s is publishing task %r while this run is "
+                             "%r; refusing to attach to another intention",
+                             self.tablet_id, active.get("task_id"), self.task_id)
+                return "blocked"
             self.operation_id = active["operation_id"]
+            return "owned"
+        # Nothing active: record this publication's intent here, so a durable
+        # owner exists before any effect rather than after it.
+        try:
+            self.operation_id, _created = self._store.begin(
+                tablet_id=self.tablet_id, principal="publisher",
+                intention={"task_id": self.task_id, "operation": "apply"},
+                user_message="Publicação iniciada pelo publicador")
+        except Exception as exc:
+            logger.error("could not record the operation before publishing "
+                         "(%s); refusing to publish", type(exc).__name__)
+            return "blocked"
+        return "owned"
 
     @property
     def active(self) -> bool:
@@ -3097,7 +3137,22 @@ def _apply_command(args) -> int:
         return 0
     # The endpoint already persisted the operation; adopt it so the panel sees
     # real phases instead of a row frozen in `preparing` forever.
-    tracker = _OperationTracker(_publisher_tablet_id())
+    # Coordination before any effect: if the store is configured but ownership
+    # cannot be recorded, refuse. Acting on the device with no durable owner is
+    # worse than not acting.
+    tracker = _OperationTracker(_publisher_tablet_id(), str(args.task_id))
+    decision = tracker.claim()
+    if decision == "blocked":
+        payload = {"state": "blocked", "generation": None,
+                   "interrupts_playback": False, "reconnected": False,
+                   "reason": "coordination_unavailable",
+                   "message": "Não foi possível registrar a operação antes de "
+                              "publicar; nada foi alterado na TV."}
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            print(payload["message"])
+        return 3
     tracker.phase("preparing", "publication", "Preparando a publicação")
     try:
         result = service.apply_task(str(args.task_id),

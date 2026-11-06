@@ -207,6 +207,13 @@ class OperationStore:
                     principal          TEXT NOT NULL,
                     idempotency_key    TEXT,
                     intention_hash     TEXT NOT NULL,
+                    -- Explicit task identity. The intention *hash* cannot be used
+                    -- for correlation because callers legitimately build the
+                    -- intention differently (the endpoint records
+                    -- confirm_interrupt, the publisher does not), so equal work
+                    -- would hash differently and a valid adoption would look
+                    -- like a conflict.
+                    task_id            TEXT,
                     state              TEXT NOT NULL,
                     stage              TEXT,
                     stage_started_at   REAL,
@@ -285,6 +292,8 @@ class OperationStore:
             if "pendency_closed" not in cols:
                 conn.execute("ALTER TABLE operations ADD COLUMN "
                              "pendency_closed INTEGER NOT NULL DEFAULT 0")
+            if "task_id" not in cols:
+                conn.execute("ALTER TABLE operations ADD COLUMN task_id TEXT")
         finally:
             conn.close()
 
@@ -300,6 +309,10 @@ class OperationStore:
         when a *different* operation already holds the tablet slot.
         """
         digest = intention_hash(intention)
+        # Explicit identity, kept alongside the hash so a reader can correlate by
+        # task without depending on how each caller built the intention.
+        task_id = intention.get("task_id") if isinstance(intention, dict) else None
+        task_id = str(task_id) if task_id else None
         now = self._now()
         op_id = new_operation_id()
         try:
@@ -333,12 +346,12 @@ class OperationStore:
                 conn.execute(
                     """INSERT INTO operations (
                            operation_id, tablet_id, principal, idempotency_key,
-                           intention_hash, state, stage, stage_started_at,
+                           intention_hash, task_id, state, stage, stage_started_at,
                            created_at, updated_at, heartbeat_at,
                            desired_generation, user_message, expires_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (op_id, tablet_id, principal, idempotency_key, digest,
-                     state, stage, now, now, now, now, desired_generation,
+                     task_id, state, stage, now, now, now, now, desired_generation,
                      user_message, None))
                 conn.execute(
                     "INSERT INTO events (operation_id, kind, state, stage, "

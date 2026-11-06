@@ -2910,14 +2910,16 @@ class OperationTrackerTests(unittest.TestCase):
     def test_tracker_adopts_the_operation_the_endpoint_created(self):
         op_id = self._create_operation_like_the_endpoint()
         os.environ["MIXED_OPERATIONS_DB"] = str(self.db)
-        tracker = mgs._OperationTracker(mgs._publisher_tablet_id())
+        tracker = mgs._OperationTracker(mgs._publisher_tablet_id(), "a1b2c3d4")
+        self.assertEqual(tracker.claim(), "owned")
         self.assertTrue(tracker.active)
         self.assertEqual(tracker.operation_id, op_id)
 
     def test_worker_records_phases_and_finishes_the_operation(self):
         op_id = self._create_operation_like_the_endpoint()
         os.environ["MIXED_OPERATIONS_DB"] = str(self.db)
-        tracker = mgs._OperationTracker(mgs._publisher_tablet_id())
+        tracker = mgs._OperationTracker(mgs._publisher_tablet_id(), "a1b2c3d4")
+        self.assertEqual(tracker.claim(), "owned")
         tracker.phase("preparing", "publication", "Preparando a publicação")
         tracker.finish("succeeded", "Lista atualizada")
         store = self._open_store()
@@ -2926,6 +2928,40 @@ class OperationTrackerTests(unittest.TestCase):
         self.assertEqual(row["user_message"], "Lista atualizada")
         # The slot is free again, so the next click is not refused.
         self.assertIsNone(store.active_for_tablet(mgs._publisher_tablet_id()))
+
+    def test_correlation_refuses_an_active_operation_for_another_task(self):
+        """Uniqueness by tablet alone is not proof of association.
+
+        The slot is unique per tablet, so adopting whatever is active would
+        attach this run to an operation meant for a different video.
+        """
+        self._create_operation_like_the_endpoint()  # task a1b2c3d4
+        os.environ["MIXED_OPERATIONS_DB"] = str(self.db)
+        tracker = mgs._OperationTracker(mgs._publisher_tablet_id(), "ffffffff")
+        self.assertEqual(tracker.claim(), "blocked")
+        self.assertFalse(tracker.active)
+
+    def test_a_publisher_with_no_active_operation_records_its_own_intent(self):
+        """Ownership is recorded BEFORE any effect, not negotiated after it."""
+        os.environ["MIXED_OPERATIONS_DB"] = str(self.db)
+        tracker = mgs._OperationTracker(mgs._publisher_tablet_id(), "b2c3d4e5")
+        self.assertEqual(tracker.claim(), "owned")
+        row = self._open_store().get(tracker.operation_id)
+        self.assertEqual(row["task_id"], "b2c3d4e5")
+        self.assertEqual(row["principal"], "publisher")
+
+    def test_no_store_configured_is_legacy_and_never_blocks(self):
+        tracker = mgs._OperationTracker("tablet", "a1b2c3d4")
+        self.assertEqual(tracker.claim(), "legacy")
+        self.assertFalse(tracker.active)
+
+    def test_an_unusable_store_blocks_instead_of_publishing_blind(self):
+        """Configured but broken must refuse: no owner, no effect."""
+        os.environ["MIXED_OPERATIONS_DB"] = str(self.db)
+        self.db.write_text("not a database")
+        tracker = mgs._OperationTracker(mgs._publisher_tablet_id(), "a1b2c3d4")
+        self.assertEqual(tracker.claim(), "blocked")
+        self.assertFalse(tracker.active)
 
     def test_ambiguous_results_require_reconciliation_not_a_clean_failure(self):
         # `unconfirmed`/`unknown` mean the device may have been touched.
