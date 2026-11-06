@@ -38,7 +38,10 @@ from __future__ import annotations
 
 import re
 
-import mixed_operations as ops
+try:  # imported as a top-level module (scripts/ already on sys.path)
+    import mixed_operations as ops
+except ImportError:  # imported as scripts.mixed_ops_api, e.g. from server.py
+    from scripts import mixed_operations as ops
 
 # HTTP statuses this adapter can return. Kept explicit so the caller cannot
 # invent one by accident.

@@ -325,6 +325,69 @@ class TestMixedApply(unittest.TestCase):
             # The phase must NOT have been rewound to preparing.
             self.assertEqual(OperationStore(db).get(op_id)["state"], "transferring")
 
+    def test_events_without_a_store_says_unavailable_not_empty(self):
+        """"No store" and "no events" are different facts.
+
+        A panel that read `available: false` as "nothing happened" would
+        silently drop a pending failure, so the endpoint must say which one it
+        is.
+        """
+        with mock.patch.dict("os.environ", {"MIXED_OPERATIONS_DB": ""}, clear=False):
+            status, body = self.request("GET", "/api/mixed/events")
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertFalse(body["available"])
+        self.assertEqual(body["events"], [])
+        self.assertEqual(body["unresolved"], [])
+
+    def test_events_with_a_store_returns_a_cursor_after_an_operation(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "ops.db")
+            with mock.patch.dict("os.environ", {"MIXED_OPERATIONS_DB": db},
+                                 clear=False):
+                patcher = mock.patch.object(server, "_mixed_ops_store", None,
+                                            create=True)
+                patcher.start()
+                self.addCleanup(patcher.stop)
+                self.request("POST", "/api/mixed/apply", {"task_id": TASK_ID})
+                status, body = self.request("GET", "/api/mixed/events")
+            self.assertEqual(status, 200)
+            self.assertTrue(body["available"])
+            self.assertGreater(body["cursor"], 0)
+            # Two events for one operation: `created` from begin(), then `phase`
+            # from the preparing/launch transition.
+            kinds = [e["kind"] for e in body["events"]]
+            self.assertEqual(kinds, ["created", "phase"])
+            self.assertEqual(body["events"][0]["state"], "queued")
+            # Following the cursor from the end yields nothing new.
+            with mock.patch.dict("os.environ", {"MIXED_OPERATIONS_DB": db},
+                                 clear=False):
+                patcher = mock.patch.object(server, "_mixed_ops_store", None,
+                                            create=True)
+                patcher.start()
+                self.addCleanup(patcher.stop)
+                status2, later = self.request(
+                    "GET", "/api/mixed/events?cursor=%d" % body["cursor"])
+            self.assertEqual(status2, 200)
+            self.assertEqual(later["events"], [])
+
+    def test_events_rejects_an_invalid_cursor(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "ops.db")
+            with mock.patch.dict("os.environ", {"MIXED_OPERATIONS_DB": db},
+                                 clear=False):
+                patcher = mock.patch.object(server, "_mixed_ops_store", None,
+                                            create=True)
+                patcher.start()
+                self.addCleanup(patcher.stop)
+                status, body = self.request("GET", "/api/mixed/events?cursor=abc")
+            self.assertEqual(status, 400)
+            self.assertFalse(body["ok"])
+
     def test_foreign_guard_blocks_apply_without_launching(self):
         token = self.guard.acquire("other-publisher", 60, "publishing")["token"]
         try:

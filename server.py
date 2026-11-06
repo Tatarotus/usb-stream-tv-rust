@@ -4313,6 +4313,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.handle_mode_guard()
         elif path == "/api/mixed/status":
             self.handle_mixed_status(query)
+        elif path == "/api/mixed/events":
+            self.handle_mixed_events(query)
         elif path == "/api/mixed/confirm":
             self.handle_mixed_confirm(query)
         elif path == "/api/channels":
@@ -6340,6 +6342,40 @@ self.addEventListener('message', (event) => {
             task_id = None
         state = _mixed_read_state()
         self._send_vod_json(200, _mixed_status_view(state, task_id))
+
+    def handle_mixed_events(self, query=None):
+        """Events after ``cursor`` plus any problem still pending.
+
+        Read-only and token-free. When the operation store is not configured the
+        answer says so instead of showing an empty history: "no store" and "no
+        events" are different facts, and a panel that cannot tell them apart
+        would silently drop a pending failure.
+        """
+        query = query or {}
+        cursor = 0
+        if isinstance(query, dict):
+            values = query.get("cursor") or []
+            if values:
+                try:
+                    cursor = int(values[0])
+                except (TypeError, ValueError):
+                    self._send_vod_json(400, {"ok": False, "error": "cursor inválido"})
+                    return
+        unavailable = {"ok": True, "available": False, "cursor": cursor,
+                       "events": [], "operations": [], "unresolved": []}
+        store = _mixed_get_operations_store()
+        if store is None:
+            self._send_vod_json(200, unavailable)
+            return
+        try:
+            from scripts.mixed_ops_api import request_events
+            status, payload = request_events(store, cursor=cursor)
+        except Exception:
+            log_event("MIXED_OPS_EVENTS_FAILED")
+            self._send_vod_json(200, unavailable)
+            return
+        payload["available"] = True
+        self._send_vod_json(status, payload)
 
     def handle_mixed_confirm(self, query=None):
         """Read-only proof, taken from the tablet, that the list is current.
