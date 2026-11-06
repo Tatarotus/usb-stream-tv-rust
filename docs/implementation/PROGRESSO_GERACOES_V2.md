@@ -7,7 +7,7 @@ Prompt do builder: `docs/prompts/GERACOES_V2_BUILDER.md`
 
 ---
 
-## Estado: fase 1 PARCIAL (armazenamento pronto, integração não feita)
+## Estado: fase 1 PARCIAL (store + adapter prontos, integração não feita)
 
 ### Feito e commitado
 
@@ -18,6 +18,8 @@ idempotencia e eventos`
 | --- | --- |
 | `scripts/mixed_operations.py` | Store SQLite: operações, eventos, outbox, fencing |
 | `tests/test_mixed_operations.py` | **40 testes**, todos passando |
+| `scripts/mixed_ops_api.py` | Adapter HTTP fino: pedido → operação, operação → payload público |
+| `tests/test_mixed_ops_api.py` | **19 testes + 5 subtests**, todos passando |
 
 Cobertura real (medida, não presumida):
 
@@ -36,15 +38,19 @@ Cobertura real (medida, não presumida):
 - `bytes_done`/`bytes_total` = `NULL` quando não medidos.
 - Outbox deduplicado, fora do caminho crítico.
 
-Suite combinada com o que já existia: **193 testes passando**.
+Suite combinada com o que já existia: **212 testes passando**.
 
 ### Não feito (é onde retomar)
 
 | Passo | Arquivo | Nota |
 | --- | --- | --- |
-| Endpoints 202 + `operation_id`, status por ID, eventos com cursor | `server.py` | `handle_mixed_apply`, `handle_mixed_refresh`, `_mixed_status_view` (~linha 3295) |
+| Ligar o adapter em `server.py` preservando `/api/mixed/*` | `server.py` | `handle_mixed_apply`, `handle_mixed_refresh`, `_mixed_status_view` (~3295) |
 | Polling global único + indicador persistente | `dashboard.html` | `applyMixedGeneration` (~5320), `refreshMixedInventory` |
 | Fases 2 a 5 | vários | ver especificação |
+
+O adapter (`mixed_ops_api.py`) é chamável hoje: `request_apply` devolve 202 +
+`operation_id` (ou 409 com `active_operation_id`), `request_status` responde por
+id e `request_events` entrega cursor + pendências. Falta só o encanamento HTTP.
 
 **Nada foi implantado.** O módulo não é importado por ninguém ainda.
 
