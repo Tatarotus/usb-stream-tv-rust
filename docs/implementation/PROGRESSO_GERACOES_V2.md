@@ -7,7 +7,7 @@ Prompt do builder: `docs/prompts/GERACOES_V2_BUILDER.md`
 
 ---
 
-## Estado: fase 1 PARCIAL (store + adapter prontos, integração não feita)
+## Estado: fase 1 PARCIAL (store + adapter + endpoint apply prontos; painel pendente)
 
 ### Feito e commitado
 
@@ -38,14 +38,16 @@ Cobertura real (medida, não presumida):
 - `bytes_done`/`bytes_total` = `NULL` quando não medidos.
 - Outbox deduplicado, fora do caminho crítico.
 
-Suite combinada com o que já existia: **212 testes passando**.
+Suite combinada com o que já existia: **225 testes passando**.
 
 ### Não feito (é onde retomar)
 
 | Passo | Arquivo | Nota |
 | --- | --- | --- |
-| Ligar o adapter em `server.py` preservando `/api/mixed/*` | `server.py` | `handle_mixed_apply`, `handle_mixed_refresh`, `_mixed_status_view` (~3295) |
+| ~~Ligar o adapter em `server.py`~~ ✅ feito (`fa7350f`) | `server.py` | `/api/mixed/apply` aceita `idempotency_key`, devolve `operation_id` |
 | Polling global único + indicador persistente | `dashboard.html` | `applyMixedGeneration` (~5320), `refreshMixedInventory` |
+| `/api/mixed/refresh` e `/api/mixed/status` por `operation_id` | `server.py` | o apply está feito; faltam os outros dois |
+| Expor eventos com cursor (`/api/mixed/events`) | `server.py` | `mixed_ops_api.request_events` já pronto, falta a rota |
 | Fases 2 a 5 | vários | ver especificação |
 
 O adapter (`mixed_ops_api.py`) é chamável hoje: `request_apply` devolve 202 +
