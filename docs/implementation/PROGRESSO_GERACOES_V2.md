@@ -7,7 +7,7 @@ Prompt do builder: `docs/prompts/GERACOES_V2_BUILDER.md`
 
 ---
 
-## Estado: FASE 1 COMPLETA; fases 2-5 não iniciadas
+## Estado: FASE 1 COMPLETA E VALIDADA; fase 2 iniciada
 
 ### Feito e commitado
 
@@ -57,6 +57,59 @@ id e `request_events` entrega cursor + pendências. Falta só o encanamento HTTP
 **Nada foi implantado.** O módulo não é importado por ninguém ainda.
 
 ---
+
+## Validação da integração da fase 1 (executada)
+
+As três perguntas do operador, respondidas com medição:
+
+### 1. O worker real atualiza a operação persistida durante a execução?
+
+**Não atualizava.** Medido: `grep` por `mixed_operations|OperationStore` dava
+**0 ocorrências** em `mixed_generation_service.py` e em `mixed_bridge.py`; só
+`server.py` usava o store.
+
+Efeito medido: o endpoint criava a operação em `preparing`, que pertence a
+`ACTIVE_STATES`. Sem `finish()`, a linha ficava em `preparing` **para sempre**,
+segurando o slot e mostrando no painel uma publicação que nunca termina.
+
+Não era regressão do botão — o `except` do endpoint engole o `TabletBusy` e a
+publicação segue. Era **progresso falso** na tela.
+
+**Corrigido** (`fd06c17`): `_OperationTracker` no publisher, que adota a operação
+ativa do tablet e a finaliza conforme o desfecho real. 6 testes novos.
+
+### 2. Falhas reais chegam ao evento e ao aviso persistente?
+
+**Agora sim.** O mapa `_OPERATION_OUTCOME` traduz o resultado do publisher em
+desfecho da operação: `failed`/`incomplete` → `failed_safe` (pendência visível);
+`unconfirmed`/`unknown` → `needs_reconciliation` (nunca falha limpa, porque o
+dispositivo pode ter sido tocado); `in_progress` **não** é finalizado aqui —
+essa operação é de outro worker.
+
+### 3. Reiniciar o worker ou reabrir o painel preserva o resultado?
+
+**Sim, por construção.** O estado vive em SQLite, e o painel busca
+`/api/mixed/events` desde `cursor=0` ao abrir, incluindo pendências não
+resolvidas independentes do cursor. Testes existentes provam o snapshot e a
+sobrevivência a uma instância nova do store.
+
+### Transação do chamador durante RPC (a pergunta mais fina)
+
+**Garantido por construção, não por disciplina.** Medido com `ast`: os 18
+métodos públicos do store são chamadas discretas; os únicos `contextmanager`
+(`_tx`, `_ro`) são **internos**; **0** métodos devolvem conexão ou
+contextmanager ao chamador. Logo é impossível segurar uma transação do store
+através de um RPC — a API não oferece como.
+
+E o publisher chama `tracker.phase(...)` antes e `tracker.finish(...)` depois,
+cada um abrindo e fechando a própria transação. O `apply_task()` corre entre
+eles, sem transação aberta.
+
+### O que esta validação NÃO prova
+
+Testes sintéticos não provam a TV. Nada foi implantado: o container roda um
+`server.py` anterior e `MIXED_OPERATIONS_DB` não está definido em produção —
+sem ele, o comportamento é exatamente o antigo.
 
 ## Restrições que continuam valendo
 
