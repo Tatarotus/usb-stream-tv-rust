@@ -38,14 +38,14 @@ Cobertura real (medida, não presumida):
 - `bytes_done`/`bytes_total` = `NULL` quando não medidos.
 - Outbox deduplicado, fora do caminho crítico.
 
-Suite combinada com o que já existia: **225 testes passando**.
+Suite combinada com o que já existia: **216 testes passando**.
 
 ### Não feito (é onde retomar)
 
 | Passo | Arquivo | Nota |
 | --- | --- | --- |
 | ~~Ligar o adapter em `server.py`~~ ✅ feito (`fa7350f`) | `server.py` | `/api/mixed/apply` aceita `idempotency_key`, devolve `operation_id` |
-| Polling global único + indicador persistente | `dashboard.html` | `applyMixedGeneration` (~5320), `refreshMixedInventory` |
+| Polling global único + indicador persistente | `dashboard.html` | **NADA FEITO** — é a metade que falta da fase 1 |
 | `/api/mixed/refresh` e `/api/mixed/status` por `operation_id` | `server.py` | o apply está feito; faltam os outros dois |
 | Expor eventos com cursor (`/api/mixed/events`) | `server.py` | `mixed_ops_api.request_events` já pronto, falta a rota |
 | Fases 2 a 5 | vários | ver especificação |
@@ -127,3 +127,26 @@ coluna `pendency_closed` e teste que prova `unresolved` 1 → 0 e slot liberado.
 
 **Ordem sugerida das fases** (§8 da arquitetura): observabilidade → identidade
 reconciliação → runtime/transporte → máquina de estados → janela física.
+
+## Revisão independente sobre a ligação no server.py
+
+`aider-argon` revisou o recorte do endpoint. **Ele editou `server.py` diretamente,
+o que não foi pedido** — avaliado e parcialmente aceito, com teste próprio:
+
+| Sugestão | Veredito | Por quê |
+| --- | --- | --- |
+| `if created:` antes de `set_phase` | aceito | sem a guarda, clique duplicado rebobinava a fase de uma operação viva |
+| remover `operation_id = None` do except | aceito | a variável já nasce `None`; manter o id permite registrar `failed_safe` |
+
+Teste `test_duplicate_click_does_not_reset_the_phase_of_a_running_operation`
+prova a guarda.
+
+**Lição operacional:** ao usar `aider-argon` com `--read`, ele ainda pode escrever
+em arquivos do repositório. Conferir `git status` depois de cada invocação.
+
+## Pendência imediata antes de qualquer deploy
+
+O container roda um `server.py` **anterior** (`20168a4b5cd6`). Para o endpoint
+novo valer, é preciso recriar o container — o que **interrompe a TV**. Pende de
+janela livre autorizada. Além disso, `MIXED_OPERATIONS_DB` precisa ser definido
+para o store ligar; sem ele o comportamento é exatamente o antigo.
