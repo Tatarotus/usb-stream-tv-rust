@@ -519,6 +519,38 @@
             border-left-color: var(--tertiary);
             color: var(--info-ink);
         }
+        /* Indicador persistente de operação. Mesmo visual do banner, mas sem
+           expiração: as cores vêm dos tokens para funcionar no tema claro e no
+           escuro, e a largura é contida para não estourar em mobile. */
+        .mixed-ops-indicator {
+            margin: 8px 12px;
+            padding: 10px 12px;
+            border-radius: 8px;
+            border-left: 4px solid var(--info-border);
+            background: var(--info-dim);
+            color: var(--info-ink);
+            font-size: 0.9rem;
+            line-height: 1.35;
+            max-width: 100%;
+            overflow-wrap: anywhere;
+        }
+        .mixed-ops-indicator.is-problem {
+            background: var(--warn-dim, var(--info-dim));
+            border-left-color: var(--warn-border, var(--info-border));
+            color: var(--warn-ink, var(--info-ink));
+        }
+        .mixed-ops-indicator .mixed-ops-actions {
+            margin-top: 6px;
+        }
+        .mixed-ops-indicator button {
+            font: inherit;
+            background: transparent;
+            border: 1px solid currentColor;
+            border-radius: 6px;
+            color: inherit;
+            padding: 4px 10px;
+            cursor: pointer;
+        }
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(-4px); }
             to   { opacity: 1; transform: none; }
@@ -2719,6 +2751,14 @@
         <!-- Banner de Confirmação de Ação (Aviso Longo) -->
         <div id="action-banner" class="action-banner" role="status" aria-live="polite"></div>
 
+        <!-- Aviso persistente de operação de publicação (Gerações V2).
+             Diferente do banner acima, este NÃO expira por temporizador: uma
+             falha terminal precisa continuar visível depois que o usuário sai
+             e volta. O usuário pode dispensar o detalhe, mas enquanto a
+             pendência não for resolvida o indicador permanece. -->
+        <div id="mixed-ops-indicator" class="mixed-ops-indicator" role="status"
+             aria-live="polite" style="display: none;"></div>
+
         <!-- ==================== ÁREA DA MEMÓRIA DA TV (SALVOS & BAIXADOS - STITCH DESIGN) ==================== -->
         <div id="section-saved" style="display: none; flex-direction: column; gap: 16px;">
             <!-- Cartão Informativo de Armazenamento Stitch -->
@@ -3972,6 +4012,94 @@ function extractYouTubeId(url) {
             }, duration);
         }
 
+        // ==================== Operações de publicação (Gerações V2) =============
+        // Um ÚNICO laço global, independente de qual botão foi usado. Não é
+        // setInterval: cada ciclo só agenda o próximo depois de terminar, para
+        // que uma resposta lenta não sobreponha requisições. Cadência: 2 s
+        // enquanto há pendência, 15 s parado, backoff até 30 s em falha de rede.
+        let mixedOpsCursor = 0;
+        let mixedOpsTimer = null;
+        let mixedOpsBackoff = 0;
+        let mixedOpsDismissed = false;
+        let mixedOpsLastUnresolved = [];
+
+        // Dispensar remove o DETALHE, nunca a pendência. Um problema ainda não
+        // resolvido volta a aparecer: "aviso visto" e "problema resolvido" são
+        // coisas diferentes, e confundi-los esconde falha real.
+        function dismissMixedOpsIndicator() {
+            if (mixedOpsLastUnresolved && mixedOpsLastUnresolved.length) return;
+            mixedOpsDismissed = true;
+            const el = document.getElementById('mixed-ops-indicator');
+            if (el) { el.style.display = 'none'; el.innerHTML = ''; }
+        }
+
+        function renderMixedOpsIndicator(operations, unresolved) {
+            const el = document.getElementById('mixed-ops-indicator');
+            if (!el) return;
+            const ops = operations || [];
+            mixedOpsLastUnresolved = unresolved || [];
+            const isProblem = mixedOpsLastUnresolved.length > 0;
+            let op = null;
+            if (isProblem) {
+                op = ops.find(o => mixedOpsLastUnresolved.indexOf(o.operation_id) !== -1) || null;
+            } else if (!mixedOpsDismissed) {
+                // Resultado terminal: mostrado uma vez, e dispensável.
+                const terminal = ops.filter(o => o.state === 'succeeded'
+                                              || o.state === 'failed_safe');
+                op = terminal.length ? terminal[terminal.length - 1] : null;
+            }
+            if (!op) { el.style.display = 'none'; el.innerHTML = ''; return; }
+            el.classList.toggle('is-problem', isProblem);
+            const stage = op.stage ? ' <span style="opacity:.7">(' + escapeHtml(op.stage) + ')</span>' : '';
+            let html = '<div>' + escapeHtml(op.user_message || op.state || '') + stage + '</div>';
+            if (!isProblem) {
+                html += '<div class="mixed-ops-actions">'
+                      + '<button type="button" onclick="dismissMixedOpsIndicator()">Dispensar</button>'
+                      + '</div>';
+            }
+            el.innerHTML = html;
+            el.style.display = 'block';
+        }
+
+        async function pollMixedEvents() {
+            let nextIn = 15000;
+            try {
+                const res = await fetch('/api/mixed/events?cursor=' + mixedOpsCursor,
+                                        { signal: AbortSignal.timeout(6000) });
+                if (!res.ok) throw new Error('http_' + res.status);
+                const data = await res.json();
+                if (data && data.available) {
+                    mixedOpsCursor = data.cursor || mixedOpsCursor;
+                    mixedOpsBackoff = 0;
+                    const unresolved = data.unresolved || [];
+                    renderMixedOpsIndicator(data.operations || [], unresolved);
+                    nextIn = unresolved.length ? 2000 : 15000;
+                } else {
+                    // Sem store configurado: nada a mostrar, cadência lenta.
+                    renderMixedOpsIndicator([], []);
+                }
+            } catch (err) {
+                // Falha de rede não inventa estado: só desacelera o laço.
+                mixedOpsBackoff = Math.min(30000, Math.max(2000, (mixedOpsBackoff || 1000) * 2));
+                nextIn = mixedOpsBackoff;
+            }
+            mixedOpsTimer = setTimeout(pollMixedEvents, nextIn);
+        }
+
+        function startMixedOpsPolling() {
+            if (mixedOpsTimer) return;   // um único laço por página
+            pollMixedEvents();
+        }
+
+        // Iniciado aqui, depois das declarações `let` acima: chamar antes delas
+        // cairia na temporal dead zone e derrubaria o script inteiro.
+        startMixedOpsPolling();
+        // Ao voltar para a aba, sondar imediatamente: o tempo em segundo plano
+        // não deve atrasar a descoberta de uma falha.
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) pollMixedEvents();
+        });
+
         // Autenticação Silenciosa (PIN 1233 padrão)
         function getAuthPin() {
             let pin = localStorage.getItem('tv_pin');
@@ -4419,7 +4547,8 @@ function extractYouTubeId(url) {
             label.hidden = !entry;
             if (!entry) { label.textContent = ''; return; }
             const source = entry.position_source === 'manual' ? 'Marcado por você' :
-                entry.position_source === 'selected' ? 'Selecionado anteriormente' : 'Registro de reprodução';
+                entry.position_source === 'selected' ? 'Selecionado anteriormente' :
+                entry.position_source === 'inferred_stream' ? 'Possível reprodução na TV' : 'Registro de reprodução';
             const season = entry.season_number != null ? ` · Temporada ${entry.season_number}` : '';
             label.textContent = `${source}: ${entry.series_title || 'Série'}${season} · Episódio ${entry.episode_number}`;
         }
@@ -4463,7 +4592,8 @@ function extractYouTubeId(url) {
             label.hidden = !entry;
             if (!entry) { label.textContent = ''; return; }
             const season = entry.season_number != null ? 'Temporada ' + entry.season_number + ' · ' : '';
-            const prefix = entry.position_source === 'selected' ? 'Último episódio iniciado: ' : 'Onde você parou: ';
+            const prefix = entry.position_source === 'selected' ? 'Último episódio iniciado: ' :
+                entry.position_source === 'inferred_stream' ? 'Possível episódio reproduzido na TV: ' : 'Onde você parou: ';
             label.textContent = prefix + season + 'Episódio ' + entry.episode_number;
         }
 
