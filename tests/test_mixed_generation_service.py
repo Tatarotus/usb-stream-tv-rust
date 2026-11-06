@@ -3016,3 +3016,89 @@ class OperationTrackerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SupervisorIdentityTests(unittest.TestCase):
+    """Fase 2: identity is an INCARNATION, not a path.
+
+    Covers the scenarios the architect required: recovery into an alternative
+    folder, same manifest with a different owner, and a reused PID.
+    """
+
+    LINE = ("describe protocol=handoff.ack 1 boot_id=abc123 generation=18 "
+            "manifest_id=b9d04e0a package_digest=aaa111 runtime_digest=bbb222 "
+            "supervisor=1076-4242 candidate=1350-5151 "
+            "lun=/data/local/tmp/x/mnt/tv_stream.img lock_owned=1 "
+            "path=/data/local/tmp/live-favorites/mixed-gen18-0ca1b784")
+
+    def parse(self, line=None):
+        return mgs.SupervisorIdentity.parse(self.LINE if line is None else line)
+
+    def test_parses_every_reported_field(self):
+        ident = self.parse()
+        self.assertEqual(ident.protocol, "handoff.ack 1")
+        self.assertEqual(ident.generation, "18")
+        self.assertEqual(ident.manifest_id, "b9d04e0a")
+        self.assertEqual(ident.incarnation, "1076-4242")
+        self.assertTrue(ident.lock_owned)
+
+    def test_a_value_with_spaces_is_not_truncated(self):
+        """The protocol announcement itself contains a space.
+
+        Splitting on whitespace silently cut it to `handoff.ack`, which would
+        make a valid supervisor look unsupported.
+        """
+        ident = self.parse()
+        self.assertEqual(ident.protocol, "handoff.ack 1")
+
+    def test_a_path_with_spaces_is_not_truncated(self):
+        alt = self.LINE.replace(
+            "path=/data/local/tmp/live-favorites/mixed-gen18-0ca1b784",
+            "path=/data/local/tmp/live-favorites/gen 18 recuperada")
+        self.assertEqual(self.parse(alt).path,
+                         "/data/local/tmp/live-favorites/gen 18 recuperada")
+
+    def test_recovery_in_an_alternative_folder_keeps_the_same_identity(self):
+        """The case that refused publication 19: same supervisor, other path."""
+        recovered = self.LINE.replace(
+            "path=/data/local/tmp/live-favorites/mixed-gen18-0ca1b784",
+            "path=/data/local/tmp/live-favorites/gen18-recuperada")
+        original, moved = self.parse(), self.parse(recovered)
+        self.assertNotEqual(original.path, moved.path)
+        self.assertTrue(original.same_incarnation(moved))
+
+    def test_a_reused_pid_is_not_the_same_supervisor(self):
+        """A pid alone is recycled by the kernel; the start time is the proof."""
+        reused = self.LINE.replace("supervisor=1076-4242", "supervisor=1076-9999")
+        self.assertFalse(self.parse().same_incarnation(self.parse(reused)))
+
+    def test_a_reboot_changes_the_incarnation(self):
+        rebooted = (self.LINE.replace("supervisor=1076-4242", "supervisor=2048-77")
+                    .replace("boot_id=abc123", "boot_id=def456"))
+        ident = self.parse(rebooted)
+        self.assertFalse(self.parse().same_incarnation(ident))
+        self.assertEqual(ident.boot_id, "def456")
+
+    def test_same_manifest_with_a_different_owner_is_a_different_instance(self):
+        """Equal manifest alone does not prove it is the same supervisor."""
+        other = (self.LINE.replace("supervisor=1076-4242", "supervisor=3000-111")
+                 .replace("path=/data/local/tmp/live-favorites/mixed-gen18-0ca1b784",
+                          "path=/data/local/tmp/live-favorites/outra"))
+        a, b = self.parse(), self.parse(other)
+        self.assertEqual(a.manifest_id, b.manifest_id)
+        self.assertFalse(a.same_incarnation(b))
+
+    def test_none_never_matches_anything(self):
+        """Two unknowns are not evidence of sameness."""
+        unknown = self.parse(self.LINE.replace("supervisor=1076-4242",
+                                               "supervisor=none"))
+        self.assertFalse(self.parse().same_incarnation(unknown))
+        self.assertFalse(unknown.same_incarnation(unknown))
+
+    def test_a_reply_without_the_protocol_is_refused(self):
+        chopped = self.LINE.replace("protocol=handoff.ack 1 ", "")
+        self.assertIsNone(self.parse(chopped))
+
+    def test_unrelated_output_is_not_an_identity(self):
+        self.assertIsNone(self.parse("nada aqui"))
+        self.assertIsNone(self.parse(""))

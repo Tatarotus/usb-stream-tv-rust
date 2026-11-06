@@ -1634,6 +1634,24 @@ class MixedGenerationService:
         return ("busybox sh " + package_dir + "/activate_live_favorites_tablet.sh "
                 + " ".join(_quote(a) for a in args))
 
+    def describe_supervisor(self, package_dir: str):
+        """Read the running supervisor's identity. Read-only.
+
+        Returns None when the tablet did not answer in the expected protocol, so
+        a caller can tell "no identity" from "identity says none" instead of
+        trusting a half-built object. It never signals a process and never
+        touches the LUN.
+        """
+        transport = self._require_transport()
+        try:
+            completed = transport.root_shell(
+                self._script_command(package_dir, "describe", package_dir),
+                check=False)
+        except (PublicationError, TabletCommandError):
+            return None
+        return SupervisorIdentity.parse(
+            (completed.stdout or "") + (completed.stderr or ""))
+
     def verify_active_on_tablet(self, session: str, generation: int,
                                 manifest_id: str) -> dict:
         """Ask the tablet to prove which generation/manifest is active."""
@@ -2923,6 +2941,92 @@ def _publisher_tablet_id() -> str:
         if value:
             return value
     return "tablet"
+
+
+# Field boundaries in the tablet's ``describe`` line. A value may contain
+# spaces (``protocol=handoff.ack 1``, a package path with spaces), so the split
+# is on `` <name>=`` and never on bare whitespace.
+_IDENTITY_FIELD_RE = re.compile(r"(?:^|\s)([a-z_]+)=")
+
+
+class SupervisorIdentity:
+    """Identity of the supervisor ACTUALLY running on the tablet.
+
+    This is an *incarnation*, not a location. ``supervisor`` is
+    ``<pid>-<starttime>`` as reported by the tablet's own ``proc_incarnation``: a
+    pid alone is reused by the kernel, so the start time is what distinguishes
+    one process lifetime from the next. A generation recovered into an
+    alternative directory supervises the same content from elsewhere, so
+    correlating by path is exactly what refused publication 19 — this object
+    makes the incarnation comparable instead.
+
+    Every field is what the tablet reported. A missing field stays ``none`` and
+    is never filled in by guessing.
+    """
+
+    __slots__ = ("protocol", "boot_id", "generation", "manifest_id",
+                 "package_digest", "runtime_digest", "supervisor", "candidate",
+                 "lun", "lock_owned", "path")
+
+    FIELDS = __slots__
+
+    def __init__(self, fields: dict):
+        for name in self.__slots__:
+            setattr(self, name, str(fields.get(name, "none")))
+        self.lock_owned = self.lock_owned == "1"
+
+    @classmethod
+    def parse(cls, output: str):
+        """Parse the single ``describe ...`` line, or return None.
+
+        Fields are split on `` <name>=`` boundaries rather than on whitespace: a
+        value may legitimately contain spaces (the protocol announcement is
+        ``handoff.ack 1``, and a package path may contain spaces). Splitting on
+        whitespace would silently truncate both.
+
+        Only an answer carrying at least the protocol and the incarnation is
+        accepted; a truncated or unrelated reply yields None rather than a
+        half-built identity a caller might trust.
+        """
+        for line in (output or "").splitlines():
+            line = line.strip()
+            if not line.startswith("describe "):
+                continue
+            body = line[len("describe "):]
+            matches = list(_IDENTITY_FIELD_RE.finditer(body))
+            if not matches:
+                return None
+            fields = {}
+            for index, match in enumerate(matches):
+                start = match.end()
+                end = (matches[index + 1].start()
+                       if index + 1 < len(matches) else len(body))
+                fields[match.group(1)] = body[start:end].strip()
+            if "protocol" not in fields or "supervisor" not in fields:
+                return None
+            return cls(fields)
+        return None
+
+    @property
+    def incarnation(self) -> str:
+        return self.supervisor
+
+    def same_incarnation(self, other: "SupervisorIdentity | None") -> bool:
+        """True only when both name the SAME running process.
+
+        ``none`` never matches: an unproven incarnation is not evidence of
+        sameness, and treating two unknowns as equal is how a stale marker gets
+        accepted.
+        """
+        return (isinstance(other, SupervisorIdentity)
+                and self.incarnation != "none"
+                and self.incarnation == other.incarnation)
+
+    def __repr__(self) -> str:
+        return ("SupervisorIdentity(protocol=%s generation=%s manifest=%s "
+                "incarnation=%s lock_owned=%s)" % (
+                    self.protocol, self.generation, self.manifest_id,
+                    self.incarnation, self.lock_owned))
 
 
 # An apply result maps onto an operation outcome. ``in_progress`` is deliberately
