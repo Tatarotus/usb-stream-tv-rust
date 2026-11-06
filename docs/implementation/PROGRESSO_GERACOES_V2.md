@@ -7,7 +7,7 @@ Prompt do builder: `docs/prompts/GERACOES_V2_BUILDER.md`
 
 ---
 
-## Estado: fase 1 PARCIAL (store + adapter + endpoint apply prontos; painel pendente)
+## Estado: FASE 1 COMPLETA; fases 2-5 não iniciadas
 
 ### Feito e commitado
 
@@ -38,16 +38,16 @@ Cobertura real (medida, não presumida):
 - `bytes_done`/`bytes_total` = `NULL` quando não medidos.
 - Outbox deduplicado, fora do caminho crítico.
 
-Suite combinada com o que já existia: **216 testes passando**.
+Suite combinada com o que já existia: **244 testes passando**.
 
 ### Não feito (é onde retomar)
 
 | Passo | Arquivo | Nota |
 | --- | --- | --- |
 | ~~Ligar o adapter em `server.py`~~ ✅ feito (`fa7350f`) | `server.py` | `/api/mixed/apply` aceita `idempotency_key`, devolve `operation_id` |
-| Polling global único + indicador persistente | `dashboard.html` | **NADA FEITO** — é a metade que falta da fase 1 |
-| `/api/mixed/refresh` e `/api/mixed/status` por `operation_id` | `server.py` | o apply está feito; faltam os outros dois |
-| Expor eventos com cursor (`/api/mixed/events`) | `server.py` | `mixed_ops_api.request_events` já pronto, falta a rota |
+| ~~Polling global + aviso persistente no painel~~ ✅ feito (`f8c0226`) | `dashboard.html` | laço único, 2s/15s/backoff, não expira |
+| ~~`/api/mixed/events` com cursor~~ ✅ feito (`2d74a0c`) | `server.py` | — |
+| `/api/mixed/refresh` ainda não cria operação | `server.py` | só o `apply` passa pelo store hoje |
 | Fases 2 a 5 | vários | ver especificação |
 
 O adapter (`mixed_ops_api.py`) é chamável hoje: `request_apply` devolve 202 +
@@ -150,3 +150,26 @@ O container roda um `server.py` **anterior** (`20168a4b5cd6`). Para o endpoint
 novo valer, é preciso recriar o container — o que **interrompe a TV**. Pende de
 janela livre autorizada. Além disso, `MIXED_OPERATIONS_DB` precisa ser definido
 para o store ligar; sem ele o comportamento é exatamente o antigo.
+
+## Fase 2 — plano (identidade e reconciliação do tablet)
+
+Objetivo: reconhecer a geração real pelo supervisor, sem depender do nome da
+pasta — que é o que bloqueou a publicação 19 (`previous_generation_owns_lock`).
+
+| Passo | Aceite |
+| --- | --- |
+| 1. `describe` no supervisor do tablet | devolve protocolo, device_id, boot_id, instance_id, PID/starttime, geração, manifest_id, digests, caminho, LUN, lock_owned |
+| 2. Identidade validada por posse | caminho é localização, não identidade; PID/instance/starttime impedem confusão após reboot |
+| 3. Reconciliar localização observada | CAS no registro ativo; nunca adotar pasta só por conter o mesmo manifesto |
+| 4. Lease com fencing e ack durável | ack ligado a operation_id + boot_id + instance_id; perder a guarda impede avanço |
+| 5. Supervisor antigo não é morto | só recuperado por roteiro supervisionado em janela livre |
+
+**Não enfraquecer** `previous_generation_owns_lock`: a raiz é dependência de
+caminho/identidade, não a checagem de dono.
+
+### Próximo passo concreto imediato
+
+Ler `previous_supervisor_capability()` e o protocolo de lease em
+`scripts/mixed_generation_service.py` e `scripts/activate_live_favorites_tablet.sh`
+para saber exatamente qual tupla de identidade já existe antes de inventar
+campos novos.
