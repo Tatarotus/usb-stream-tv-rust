@@ -7,7 +7,7 @@ Prompt do builder: `docs/prompts/GERACOES_V2_BUILDER.md`
 
 ---
 
-## Estado: FASE 1 COMPLETA E VALIDADA; fase 2 iniciada
+## Estado: FASE 1 COMPLETA E VALIDADA; FASE 2 em andamento (1/5 itens)
 
 ### Feito e commitado
 
@@ -38,7 +38,7 @@ Cobertura real (medida, não presumida):
 - `bytes_done`/`bytes_total` = `NULL` quando não medidos.
 - Outbox deduplicado, fora do caminho crítico.
 
-Suite combinada com o que já existia: **244 testes passando**.
+Suite combinada: **220 testes Python + 33 testes shell**.
 
 ### Não feito (é onde retomar)
 
@@ -110,6 +110,46 @@ eles, sem transação aberta.
 Testes sintéticos não provam a TV. Nada foi implantado: o container roda um
 `server.py` anterior e `MIXED_OPERATIONS_DB` não está definido em produção —
 sem ele, o comportamento é exatamente o antigo.
+
+## Fase 2 — estado item a item (medido)
+
+| # | Item | Estado |
+| --- | --- | --- |
+| 1 | Ação `describe` no supervisor do tablet | ✅ **implementado e testado** (`0d02159`, 2 testes shell novos, 33 verdes) |
+| 2 | Identidade independente do caminho | ❌ não implementado |
+| 3 | Reconciliação da localização observada (CAS) | ❌ não implementado |
+| 4 | Handoff vinculado à instância observada | ❌ não implementado |
+| 5 | Revalidar identidade sob a guarda antes da mutação | ❌ não implementado |
+
+### O que o item 1 entrega
+
+```
+describe protocol=<> boot_id=<> generation=<> manifest_id=<>
+         package_digest=<> runtime_digest=<>
+         supervisor=<pid>-<starttime> candidate=<pid>-<starttime>
+         lun=<> lock_owned=<0|1> path=<>
+```
+
+Puramente aditivo: novo ramo no `case`, nenhuma ação existente alterada.
+
+**Reuso, não reimplementação:** `proc_incarnation` (pid + campo 22 de
+`/proc/<pid>/stat`) já existia e já era usada em `handoff.takeover` e
+`verify-active`. A primitiva de identidade que a §4 exige já estava lá; faltava
+expor. Isso torna o item 4 mais barato do que parecia: o handoff já tem a
+encarnação, falta negociar por ela em vez de por `package_dir`.
+
+**Campos honestos:** sem `boot_id` (kernels Android costumam não ter
+`/proc/sys/kernel/random/boot_id`) o campo reporta `uptime:<s>`, dizendo que é
+substituto mais fraco, em vez de se passar por boot_id.
+
+### Revisões da integração (feitas antes, a pedido)
+
+* **Correlação por `task_id`**, não por tablet. Medido ao implementar: o *hash*
+  da intenção não serve, porque o endpoint registra `confirm_interrupt` e o
+  publisher não — trabalho igual hashearia diferente. Coluna `task_id`
+  adicionada (migração aditiva).
+* **Coordenação separada de notificação.** `claim()` falha fechado antes de
+  qualquer efeito; `phase()`/`finish()` seguem best-effort.
 
 ## Restrições que continuam valendo
 
