@@ -2938,6 +2938,28 @@ class OperationTrackerTests(unittest.TestCase):
         # A publication owned by another worker must not be finished here.
         self.assertNotIn("in_progress", mgs._OPERATION_OUTCOME)
 
+    def test_unrecognised_state_fails_closed_into_reconciliation(self):
+        """An unknown result must not leave the operation stuck.
+
+        Found by independent review: if the publisher ever returns a state that
+        is not in the map (a future status, a typo), the row would stay in its
+        last active state and hold the tablet slot forever. The ambiguity is
+        exactly what reconciliation exists for.
+        """
+        for state in ("timeout", "cancelled", "some_future_state", ""):
+            with self.subTest(state=state):
+                self.assertEqual(mgs._operation_outcome_for(state),
+                                 "needs_reconciliation")
+
+    def test_known_states_map_to_their_outcome(self):
+        self.assertEqual(mgs._operation_outcome_for("active"), "succeeded")
+        self.assertEqual(mgs._operation_outcome_for("already_current"),
+                         "succeeded")
+        self.assertEqual(mgs._operation_outcome_for("failed"), "failed_safe")
+        self.assertEqual(mgs._operation_outcome_for("blocked"), "blocked")
+        self.assertEqual(mgs._operation_outcome_for("unconfirmed"),
+                         "needs_reconciliation")
+
     def test_a_stale_operation_for_another_tablet_is_not_adopted(self):
         store = self._open_store()
         store.begin(tablet_id="other-tablet", principal="dashboard",

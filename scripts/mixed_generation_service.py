@@ -3001,6 +3001,22 @@ class _OperationTracker:
                            state, type(exc).__name__)
 
 
+def _operation_outcome_for(state: str) -> str:
+    """Map an apply result onto an operation outcome, failing closed.
+
+    An unrecognised state is the ambiguous case by definition: the device may
+    have been touched and this code cannot say what happened. Returning the last
+    active state would hold the tablet slot forever, so it becomes
+    ``needs_reconciliation`` — the caller must look at the device, not guess.
+    """
+    outcome = _OPERATION_OUTCOME.get(state)
+    if outcome is None:
+        logger.warning("unrecognised apply state %r; marking for reconciliation",
+                       state)
+        return "needs_reconciliation"
+    return outcome
+
+
 def _apply_command(args) -> int:
     """Manual application entry point used by the dashboard button."""
     refusal = _acquire_publication_guard(args)
@@ -3093,12 +3109,11 @@ def _apply_command(args) -> int:
                   "interrupts_playback": True, "reason": "state_locked",
                   "message": "⏳ Atualização da lista já está em andamento"}
     state = str(result.get("state") or "unknown")
-    outcome = _OPERATION_OUTCOME.get(state)
-    if outcome is not None:
-        tracker.finish(outcome,
-                       str(result.get("message") or state),
-                       error_code=result.get("reason"),
-                       reconnected=bool(result.get("reconnected")))
+    outcome = _operation_outcome_for(state)
+    tracker.finish(outcome,
+                   str(result.get("message") or state),
+                   error_code=result.get("reason"),
+                   reconnected=bool(result.get("reconnected")))
     if args.json:
         print(json.dumps(result, indent=2))
     else:
