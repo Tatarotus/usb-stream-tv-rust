@@ -2916,6 +2916,91 @@ def _acquire_publication_guard(args) -> dict | None:
     return None
 
 
+def _publisher_tablet_id() -> str:
+    """Same identity derivation the server uses, so both address one operation."""
+    for key in ("MIXED_TABLET_ID", "ADB_SERIAL", "TABLET_SERIAL"):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    return "tablet"
+
+
+# An apply result maps onto an operation outcome. ``in_progress`` is deliberately
+# absent: that operation belongs to another worker, so finishing it here would
+# be stealing a result.
+_OPERATION_OUTCOME = {
+    "active": "succeeded",
+    "already_current": "succeeded",
+    "failed": "failed_safe",
+    "incomplete": "failed_safe",
+    "blocked": "blocked",
+    # Ambiguous outcomes must be reconciled, never reported as a clean failure:
+    # the device may have been touched and the truth is not known here.
+    "unconfirmed": "needs_reconciliation",
+    "unknown": "needs_reconciliation",
+}
+
+
+class _OperationTracker:
+    """Keep the persistent operation in step with the real publication.
+
+    The publisher inherits ``MIXED_OPERATIONS_DB`` from the bridge environment,
+    so no new flag and no spool schema change is needed. The operation is found
+    by tablet id because the store enforces at most one active operation per
+    tablet — the same guarantee that makes the lookup unambiguous.
+
+    Everything here is best-effort on purpose: observability must never be able
+    to block a publication. A failure is logged and the work continues, which is
+    also why the store itself never performs RPC.
+    """
+
+    def __init__(self, tablet_id: str):
+        self.operation_id = None
+        self._store = None
+        path = os.environ.get("MIXED_OPERATIONS_DB", "").strip()
+        if not path:
+            return
+        try:
+            import mixed_operations
+            self._store = mixed_operations.OperationStore(path)
+        except Exception as exc:
+            logger.warning("operation store unavailable (%s); publication continues",
+                           type(exc).__name__)
+            self._store = None
+            return
+        try:
+            active = self._store.active_for_tablet(tablet_id)
+        except Exception:
+            active = None
+        if active is not None:
+            self.operation_id = active["operation_id"]
+
+    @property
+    def active(self) -> bool:
+        return self._store is not None and self.operation_id is not None
+
+    def phase(self, state: str, stage: str | None = None,
+              message: str | None = None) -> None:
+        if not self.active:
+            return
+        try:
+            self._store.set_phase(self.operation_id, state=state, stage=stage,
+                                  user_message=message)
+        except Exception as exc:
+            logger.warning("could not record operation phase %s (%s)",
+                           state, type(exc).__name__)
+
+    def finish(self, state: str, message: str, **kw) -> None:
+        if not self.active:
+            return
+        try:
+            self._store.finish(self.operation_id, state=state,
+                               user_message=message, **kw)
+        except Exception as exc:
+            logger.warning("could not record operation result %s (%s)",
+                           state, type(exc).__name__)
+
+
 def _apply_command(args) -> int:
     """Manual application entry point used by the dashboard button."""
     refusal = _acquire_publication_guard(args)
@@ -2994,6 +3079,10 @@ def _apply_command(args) -> int:
                           "message": "⏳ Atualizando a lista do pendrive…",
                           "reason": None}))
         return 0
+    # The endpoint already persisted the operation; adopt it so the panel sees
+    # real phases instead of a row frozen in `preparing` forever.
+    tracker = _OperationTracker(_publisher_tablet_id())
+    tracker.phase("preparing", "publication", "Preparando a publicação")
     try:
         result = service.apply_task(str(args.task_id),
                                     confirm_interrupt=args.confirm_interrupt)
@@ -3003,6 +3092,13 @@ def _apply_command(args) -> int:
         result = {"state": "in_progress", "generation": None,
                   "interrupts_playback": True, "reason": "state_locked",
                   "message": "⏳ Atualização da lista já está em andamento"}
+    state = str(result.get("state") or "unknown")
+    outcome = _OPERATION_OUTCOME.get(state)
+    if outcome is not None:
+        tracker.finish(outcome,
+                       str(result.get("message") or state),
+                       error_code=result.get("reason"),
+                       reconnected=bool(result.get("reconnected")))
     if args.json:
         print(json.dumps(result, indent=2))
     else:

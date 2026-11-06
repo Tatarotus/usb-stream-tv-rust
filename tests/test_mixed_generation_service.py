@@ -2867,5 +2867,94 @@ class ApplyCliContractTest(unittest.TestCase):
         self.assertIn("state", payload)
 
 
+class OperationTrackerTests(unittest.TestCase):
+    """The publisher must adopt and finish the operation the endpoint created.
+
+    Without this, the row stays in `preparing` forever: `preparing` holds the
+    tablet slot, and the panel would show a publication that never ends. This is
+    the caller side that a store-only test cannot prove.
+    """
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.db = Path(self._dir.name) / "ops.db"
+        self._env = mock.patch.dict(os.environ, {}, clear=False)
+        self._env.start()
+        self.addCleanup(self._env.stop)
+        os.environ.pop("MIXED_OPERATIONS_DB", None)
+        os.environ.pop("MIXED_TABLET_ID", None)
+        os.environ.pop("ADB_SERIAL", None)
+        os.environ.pop("TABLET_SERIAL", None)
+
+    def _open_store(self):
+        import mixed_operations
+        return mixed_operations.OperationStore(self.db)
+
+    def _create_operation_like_the_endpoint(self, state="preparing"):
+        store = self._open_store()
+        op_id, _ = store.begin(
+            tablet_id=mgs._publisher_tablet_id(), principal="dashboard",
+            intention={"task_id": "a1b2c3d4", "operation": "apply"},
+            user_message="Atualização solicitada")
+        store.set_phase(op_id, state=state, stage="launch")
+        return op_id
+
+    def test_without_a_store_the_tracker_is_inert(self):
+        tracker = mgs._OperationTracker("tablet")
+        self.assertFalse(tracker.active)
+        # Must not raise: observability never blocks a publication.
+        tracker.phase("preparing", "x")
+        tracker.finish("succeeded", "x")
+
+    def test_tracker_adopts_the_operation_the_endpoint_created(self):
+        op_id = self._create_operation_like_the_endpoint()
+        os.environ["MIXED_OPERATIONS_DB"] = str(self.db)
+        tracker = mgs._OperationTracker(mgs._publisher_tablet_id())
+        self.assertTrue(tracker.active)
+        self.assertEqual(tracker.operation_id, op_id)
+
+    def test_worker_records_phases_and_finishes_the_operation(self):
+        op_id = self._create_operation_like_the_endpoint()
+        os.environ["MIXED_OPERATIONS_DB"] = str(self.db)
+        tracker = mgs._OperationTracker(mgs._publisher_tablet_id())
+        tracker.phase("preparing", "publication", "Preparando a publicação")
+        tracker.finish("succeeded", "Lista atualizada")
+        store = self._open_store()
+        row = store.get(op_id)
+        self.assertEqual(row["state"], "succeeded")
+        self.assertEqual(row["user_message"], "Lista atualizada")
+        # The slot is free again, so the next click is not refused.
+        self.assertIsNone(store.active_for_tablet(mgs._publisher_tablet_id()))
+
+    def test_ambiguous_results_require_reconciliation_not_a_clean_failure(self):
+        # `unconfirmed`/`unknown` mean the device may have been touched.
+        self.assertEqual(mgs._OPERATION_OUTCOME["unconfirmed"],
+                         "needs_reconciliation")
+        self.assertEqual(mgs._OPERATION_OUTCOME["unknown"],
+                         "needs_reconciliation")
+        self.assertEqual(mgs._OPERATION_OUTCOME["failed"], "failed_safe")
+        self.assertEqual(mgs._OPERATION_OUTCOME["active"], "succeeded")
+        # A publication owned by another worker must not be finished here.
+        self.assertNotIn("in_progress", mgs._OPERATION_OUTCOME)
+
+    def test_a_stale_operation_for_another_tablet_is_not_adopted(self):
+        store = self._open_store()
+        store.begin(tablet_id="other-tablet", principal="dashboard",
+                    intention={"task_id": "deadbeef"})
+        os.environ["MIXED_OPERATIONS_DB"] = str(self.db)
+        tracker = mgs._OperationTracker("tablet")
+        self.assertFalse(tracker.active)
+
+    def test_a_broken_store_does_not_stop_the_publisher(self):
+        os.environ["MIXED_OPERATIONS_DB"] = str(Path(self._dir.name) / "nope" / "x.db")
+        Path(os.environ["MIXED_OPERATIONS_DB"]).parent.mkdir(parents=True, exist_ok=True)
+        Path(os.environ["MIXED_OPERATIONS_DB"]).write_text("not a database")
+        tracker = mgs._OperationTracker("tablet")
+        self.assertFalse(tracker.active)
+        tracker.phase("preparing")
+        tracker.finish("succeeded", "x")
+
+
 if __name__ == "__main__":
     unittest.main()
