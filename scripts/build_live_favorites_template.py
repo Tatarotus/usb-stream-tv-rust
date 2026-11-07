@@ -25,7 +25,12 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRATCH = ROOT / "scratch"
-DEFAULT_VOLUME_BYTES = 128 * 1024**3
+# O runtime real do tablet usa uma imagem de 256 GiB (medido: 274877906944 B em
+# /data/local/tmp/live-favorites/*/mnt/tv_stream.img) e a grade ativa tem 40 canais
+# Live (~149 GiB). Com o teto em 128 GiB este validador recusava uma grade que o
+# próprio sistema já serve - o build falhava com "capacity exceeded" e a mensagem
+# era confundida com falta de disco no host. O teto passa a acompanhar o runtime.
+DEFAULT_VOLUME_BYTES = 256 * 1024**3
 DEFAULT_FILE_BYTES = 4_000_000_000
 MAX_PHYSICAL_BYTES = 256 * 1024**2
 MAX_FILES = 32

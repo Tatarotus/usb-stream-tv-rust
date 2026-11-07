@@ -383,7 +383,11 @@ class MixedGenerationService:
         export_config_path: Path = SCRATCH / "grade-1080p/export-revisao-sol.json",
         staging_base: Path = SCRATCH / "mixed-staging",
         state_file: Path = SCRATCH / "mixed_generation_state.json",
-        volume_bytes: int = 128 * 1024 * 1024 * 1024,
+        # Alinhado ao runtime real (imagem de 256 GiB medida no tablet). O default
+        # anterior de 128 GiB fazia o caminho _apply_command recusar a grade ativa
+        # (40 canais Live ~149 GiB) com "capacity exceeded", que parecia falta de
+        # disco no host - era o default do construtor contradizendo o runtime.
+        volume_bytes: int = OPERATIONAL_VOLUME_BYTES,
         binaries_dir: Path | None = None,
         private_dir: Path | None = None,
         transport: TabletTransport | None = None,

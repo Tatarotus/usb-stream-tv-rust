@@ -26,7 +26,11 @@ import build_live_favorites_manifest as manifest_builder  # noqa: E402
 ARTIFACTS = ("favorites_template.sparse.gz", "favorites_layout.json",
              "favorites_package.json", "favorites_manifest.json")
 VOLUME_MIN = 128 * 1024**2
-VOLUME_MAX = 128 * 1024**3
+# Teto do volume VALIDADO. Precisa acompanhar o runtime real do tablet (imagem de
+# 256 GiB, medida em /data/local/tmp/live-favorites/*/mnt/tv_stream.img) e a grade
+# ativa (40 canais Live ~149 GiB); com 128 GiB o validador recusava exatamente a
+# grade que o sistema já serve, e a mensagem parecia falta de disco no host.
+VOLUME_MAX = 256 * 1024**3
 CLUSTER = 4096
 
 

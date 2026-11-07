@@ -361,6 +361,19 @@ def build_package(
     # they fit; the first VOD that does not fit never stops the scan, because a
     # smaller later video may still fit. An omitted video is always reported,
     # never silently dropped, and the total allocation never exceeds the limit.
+    # Instrumentação: o volume que CHEGA aqui é o que decide se a grade cabe. Já
+    # houve um build recusando a grade ativa com available=127 GiB (volume de
+    # 128 GiB) enquanto todas as constantes lidas diziam 256 GiB, então o valor
+    # efetivo e o chamador ficam registrados em vez de inferidos.
+    try:
+        import sys as _sys
+        _caller = _sys._getframe(1).f_code.co_name
+    except Exception:
+        _caller = "?"
+    print("build volume_bytes=%d (%.0f GiB) reserve=%d caller=%s"
+          % (volume_bytes, volume_bytes / 1024**3,
+             min(1024**3, volume_bytes // 8), _caller), file=sys.stderr, flush=True)
+
     reserve = min(1024**3, volume_bytes // 8)
     available = volume_bytes - reserve
 

@@ -25,6 +25,10 @@ COPY torrent_downloader.py ./
 COPY scripts/mixed_bridge.py ./scripts/mixed_bridge.py
 COPY scripts/mixed_cache_signal.py ./scripts/mixed_cache_signal.py
 COPY scripts/mixed_watch_signal.py ./scripts/mixed_watch_signal.py
+# Fase 2: o servidor importa estes módulos diretamente; sem eles o container
+# sobe com ImportError (foi a razão de não trocar server.py sem rebuild).
+COPY scripts/mixed_operations.py ./scripts/mixed_operations.py
+COPY scripts/mixed_ops_api.py ./scripts/mixed_ops_api.py
 COPY channels.json ./
 COPY generate_slate.sh ./
 COPY dashboard.html ./
