@@ -119,6 +119,43 @@ class PlaybackCacheTests(unittest.TestCase):
             self.fail("Idle cache did not expire")
         self.assertEqual(list(self.directory.glob("*.cache")), [])
 
+    def test_episode_retention_is_72h_and_the_boundary_is_respected(self):
+        """Limiar temporal: 72 h — preso à CONSTANTE, não ao valor dinâmico.
+
+        O teste antigo subtraía `_episode_retention_seconds` do relógio, então
+        passava com 6 h e com 72 h: não provava nada sobre o LIMIAR. Aqui o valor
+        é afirmado e o comportamento é exercitado nos dois lados da fronteira.
+        """
+        self.assertEqual(self.cache._episode_retention_seconds, 3 * 24 * 3600,
+                         "retenção temporal deve ser 72 h")
+        self.assertEqual(self.cache._episode_max_entries, 4,
+                         "o limite de ENTRADAS segue 4 e é independente do tempo")
+        self.cache.max_bytes = 64 * MIB      # espaço de sobra: nada evicta por capacidade
+        nxt = dict(self.task, id="cafebabe", remote_path="cafebabe.mp4")
+        self.assertTrue(self.cache.select_episode(self.task, nxt))
+
+        # 71 h de inatividade: RETIDO (antes do limiar).
+        with self.cache._lock:
+            self.cache._episode_last_activity = time.monotonic() - 71 * 3600
+        self.cache._wake.set()
+        time.sleep(.6)
+        with self.cache._lock:
+            self.assertTrue(self.cache._episode_states,
+                            "71 h de inatividade NÃO pode descartar o cache")
+
+        # 73 h: DESCARTADO (após o limiar).
+        with self.cache._lock:
+            self.cache._episode_last_activity = time.monotonic() - 73 * 3600
+        self.cache._wake.set()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            with self.cache._lock:
+                if not self.cache._episode_states:
+                    break
+            time.sleep(.02)
+        else:
+            self.fail("73 h de inatividade deveria descartar o cache")
+
     def test_warm_and_background_completion_serve_without_origin(self):
         self.assertTrue(self.cache.start(self.task))
         self.wait_complete()

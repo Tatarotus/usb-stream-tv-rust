@@ -42,7 +42,11 @@ class CurrentVideoCache:
         self._episode_states = collections.OrderedDict()
         self._episode_next_key = None
         self._episode_mode = False
-        self._episode_retention_seconds = 6 * 3600
+        # Retenção temporal do cache de episódios: 72 h. É independente da
+        # reserva de espaço (_max_bytes / min_free) e do número de entradas:
+        # um episódio ainda pode ser evictado por CAPACIDADE antes das 72 h,
+        # então 72 h é o teto de retenção, não uma promessa de retenção.
+        self._episode_retention_seconds = 3 * 24 * 3600
         self._episode_max_entries = 4
         self._episode_last_activity = 0.0
         self._background_interval = 0.5
