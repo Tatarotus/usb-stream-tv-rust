@@ -168,6 +168,28 @@ SCRIPT=$ROOT/scripts/activate_live_favorites_tablet.sh
 run_script() { # args...
     bash -c "BB=$TMP/bin/busybox BASE=$TMP/base USB=$TMP/usb bash '$SCRIPT' $*"
 }
+token_of() { # <pkgdir> -> the FULL identity token `describe` reports for it
+    run_script "describe '$1'" | sed -n 's/.* identity=\([^ ]*\) .*/\1/p'
+}
+token_with() { # <token> <field-index> <value> -> token with one field replaced
+    printf '%s\n' "$1" | awk -F'|' -v i="$2" -v v="$3" 'BEGIN{OFS="|"}{$i=v;print}'
+}
+make_identifiable() { # <pkgdir> <pid>: give a fake package a real identity
+    mkdir -p "$1/activation"
+    echo "$2" > "$1/activation/supervisor.pid"
+    printf '%s' "instance-$2-$RANDOM" | sha256sum | cut -c1-32 > "$1/activation/instance.id"
+    [ -s "$1/favorites_manifest.json" ] || cp "$PKG/favorites_manifest.json" "$1/favorites_manifest.json"
+    [ -s "$1/SHA256SUMS" ] || cp "$PKG/SHA256SUMS" "$1/SHA256SUMS"
+}
+inc_of() { # <pid> -> "<pid>-<starttime>", the identity the tablet proves
+    _io_pid=$1
+    _io_stat=$(cat "/proc/$_io_pid/stat" 2>/dev/null) || return 1
+    _io_rest=${_io_stat##*\) }
+    set -- $_io_rest
+    # After the ')' split, state is $1, so starttime (field 22) is $20.
+    [ -n "${20:-}" ] || return 1
+    echo "$_io_pid-${20}"
+}
 
 # Test 1: tunnel-start with both ports succeeding
 echo "=== Test 1: tunnel-start success ==="
@@ -637,14 +659,33 @@ FOREIGN_PID=$!
 mkdir -p "$TMP/base/mode_switch.lock"
 echo "$FOREIGN_PID" > "$TMP/base/mode_switch.lock/pid"
 set +e
-out=$(run_script "handoff-takeover '$PKG' $TOK other-session" 2>&1)
+# The caller's observation names a DIFFERENT instance than the live lock owner:
+# identity refuses it, and the directory name plays no part.
+# The activation dir of the named session exists, so the ONLY thing that can
+# refuse is identity: this test must not pass because some directory is absent.
+mkdir -p "$TMP/base/live-favorites/other-session/activation"
+# A COMPLETE identity that describes a different instance (the manifest field
+# is replaced). Complete matters: an incomplete token is refused as unproven
+# before it is compared at all. This package is its own, so the test does not
+# depend on anything a later test creates.
+# Complete means every component is real: a live pid, its instance id and the
+# package digests. Only then does the comparison happen at all.
+T24_DIR=$TMP/base/live-favorites/t24-reference
+make_identifiable "$T24_DIR" "$FOREIGN_PID"
+T24_TOK=$(token_of "$T24_DIR")
+case "$T24_TOK" in *none*) echo "FAIL: test fixture identity is incomplete: $T24_TOK" >&2; exit 1 ;; esac
+FOREIGN_TOK=$(token_with "$T24_TOK" 4 deadbeef)
+out=$(run_script "handoff-takeover '$PKG' $TOK other-session '$FOREIGN_TOK'" 2>&1)
 rc=$?
 set -e
 # The exit status is masked by adb/su on the real tablet, so the printed
 # marker is the contract; the human reason travels on stderr.
-grep -q 'takeover released=0' <<<"$out"
-grep -q 'reason=lock_foreign' <<<"$out"
-grep -q 'foreign lock owner; refusing to take over' <<<"$out"
+grep -q 'takeover released=0' <<<"$out" \
+    || { echo "FAIL: no refusal marker: $out" >&2; exit 1; }
+# The owner is a process whose supervised package cannot be proven at all, so
+# the refusal is the stronger one: no identity could be established for it.
+grep -q 'reason=lock_incarnation_unproven' <<<"$out" \
+    || { echo "FAIL: wrong refusal: $out" >&2; exit 1; }
 kill -0 "$FOREIGN_PID" 2>/dev/null && echo "foreign owner untouched" || { echo "FAIL: killed a foreign process" >&2; exit 1; }
 [ ! -e "$TMP/base/live-favorites/other-session/activation/takeover.request" ]
 rm -rf "$TMP/base/mode_switch.lock"; kill -9 "$FOREIGN_PID" 2>/dev/null || true; wait "$FOREIGN_PID" 2>/dev/null || true
@@ -658,11 +699,23 @@ SAME_PID=$!
 mkdir -p "$TMP/base/mode_switch.lock"
 echo "$SAME_PID" > "$TMP/base/mode_switch.lock/pid"
 set +e
-out=$(run_script "handoff-takeover '$PKG' $TOK test-pkg" 2>&1)
+# A session whose activation directory does not exist cannot present a complete
+# identity at all (no instance id, no supervisor pid there), so the identity gate
+# refuses it BEFORE the directory check. That is strictly stronger than the old
+# directory refusal, and the owner is still never signalled.
+T25_DIR=$TMP/base/live-favorites/t25-reference
+make_identifiable "$T25_DIR" "$SAME_PID"
+SOMETOK=$(token_of "$T25_DIR")
+out=$(run_script "handoff-takeover '$PKG' $TOK sessao-sem-ativacao '$SOMETOK'" 2>&1)
 rc=$?
 set -e
-grep -q 'takeover released=0' <<<"$out"
-grep -q 'reason=lock_foreign' <<<"$out"
+grep -q 'takeover released=0' <<<"$out" \
+    || { echo "FAIL: no refusal marker: $out" >&2; exit 1; }
+# The owner cannot be tied to any supervised package, so no identity can be
+# established: the refusal is the strong one, and it happens before the
+# directory is even consulted.
+grep -q 'reason=lock_incarnation_unproven' <<<"$out" \
+    || { echo "FAIL: wrong refusal for an unprovable owner: $out" >&2; exit 1; }
 kill -0 "$SAME_PID" 2>/dev/null || { echo "FAIL: killed the lock owner" >&2; exit 1; }
 rm -rf "$TMP/base/mode_switch.lock"; kill -9 "$SAME_PID" 2>/dev/null || true; wait "$SAME_PID" 2>/dev/null || true
 rm -f "$LEASE"
@@ -723,8 +776,8 @@ echo "OK"
 echo "=== Test 28: a takeover without the supervisor's ack is UNKNOWN, never success ==="
 # The exact production failure: the previous supervisor is gone (possibly after
 # restoring the legacy mode) but nothing proves the handoff was accepted.
-# The takeover proves ownership with /proc/<pid>/cmdline against $BASE, so the
-# previous package must live under the same BASE this script runs with.
+# The previous package must live under the same BASE this script runs with,
+# because the takeover writes its marker into that package's activation dir.
 ACK_ROOT=$TMP/base
 ACK_PKG=$ACK_ROOT/live-favorites/ackprev
 mkdir -p "$ACK_PKG/activation"
@@ -738,8 +791,13 @@ ACK_OWNER=$!
 sleep 0.3
 mkdir -p "$TMP/base/mode_switch.lock"
 echo "$ACK_OWNER" > "$TMP/base/mode_switch.lock/pid"
+# The takeover only signals an instance the caller OBSERVED: the caller proves
+# it with `describe` (here: the incarnation of the process holding the lock).
+make_identifiable "$ACK_PKG" "$ACK_OWNER"
+ACK_TOK=$(token_of "$ACK_PKG")
+case "$ACK_TOK" in ''|*none*) echo "FAIL: ack fixture identity incomplete: $ACK_TOK" >&2; exit 1 ;; esac
 set +e
-out=$(run_script "handoff-takeover '$PKG' $TOK ackprev" 2>&1)
+out=$(run_script "handoff-takeover '$PKG' $TOK ackprev '$ACK_TOK'" 2>&1)
 rc=$?
 set -e
 wait "$ACK_OWNER" 2>/dev/null || true
@@ -758,10 +816,15 @@ RR_PID=$!
 mkdir -p "$TMP/base/mode_switch.lock"
 echo "$RR_PID" > "$TMP/base/mode_switch.lock/pid"
 set +e
-out=$(run_script "handoff-takeover '$PKG' $TOK foreign-session" 2>&1)
+# An observed instance that is NOT the live lock owner: a COMPLETE identity is
+# refused because it does not describe the owner, and the owner is untouched.
+T29_DIR=$TMP/base/live-favorites/t29-reference
+make_identifiable "$T29_DIR" "$RR_PID"
+RR_TOK=$(token_with "$(token_of "$T29_DIR")" 4 feedface)
+out=$(run_script "handoff-takeover '$PKG' $TOK foreign-session '$RR_TOK'" 2>&1)
 set -e
 grep -q 'takeover released=0' <<<"$out" || { echo "FAIL: expected explicit refusal: $out" >&2; exit 1; }
-grep -q 'reason=lock_foreign' <<<"$out"
+grep -q 'reason=lock_incarnation_unproven' <<<"$out" || { echo "FAIL: wrong refusal: $out" >&2; exit 1; }
 kill -0 "$RR_PID" 2>/dev/null || { echo "FAIL: refusal killed the owner" >&2; exit 1; }
 rm -rf "$TMP/base/mode_switch.lock"; kill -9 "$RR_PID" 2>/dev/null || true; wait "$RR_PID" 2>/dev/null || true
 rm -f "$LEASE"
@@ -864,6 +927,246 @@ echo "$out" | grep -q "manifest_id=none" \
     || { echo "FAIL: describe invented a manifest id: $out" >&2; exit 1; }
 echo "$out" | grep -q "protocol=none" \
     || { echo "FAIL: describe invented a protocol: $out" >&2; exit 1; }
+echo "OK"
+
+# Test 34: recovery into an ALTERNATIVE FOLDER is authorised by identity
+# A generation recovered elsewhere supervises the same content from another
+# path, so the path substring check refused a legitimate handover. The caller
+# that observed the running supervisor passes its incarnation.
+echo "=== Test 34: recovery in an alternative folder, authorised by full identity ==="
+ALT=$TMP/base/live-favorites/gen18-recuperada
+mkdir -p "$ALT/activation" "$ALT/mnt"
+cp /bin/sleep "$ALT/favorites_fuse"
+# A real supervisor's cmdline names the script it supervises; discovery uses
+# that, and the identity computed from the discovered package is the proof.
+bash -c "exec -a 'busybox sh $ALT/activate_live_favorites_tablet.sh start' '$ALT/favorites_fuse' 30" &
+ALT_PID=$!
+printf '#!/bin/sh\nexit 0\n' > "$ALT/activate_live_favorites_tablet.sh"
+chmod +x "$ALT/activate_live_favorites_tablet.sh"
+make_identifiable "$ALT" "$ALT_PID"
+rm -f "$LEASE"
+mkdir -p "$TMP/base/mode_switch.lock"
+echo "$ALT_PID" > "$TMP/base/mode_switch.lock/pid"
+ALT_TOK=$(token_of "$ALT")
+case "$ALT_TOK" in ''|*none*|*'|'*'|'*'|'*'|'*) ;; esac
+[ -n "$ALT_TOK" ] || { echo "FAIL: could not read the identity" >&2; exit 1; }
+# Five components, none of them a placeholder: the token is the whole identity.
+[ "$(printf '%s' "$ALT_TOK" | awk -F'|' '{print NF}')" = 5 ] \
+    || { echo "FAIL: incomplete identity token: $ALT_TOK" >&2; exit 1; }
+out=$(run_script "handoff-lease '$PKG' $TOK 30 'mixed-gen18-0ca1b784' '$ALT_TOK'")
+[ "$out" = "handoff-lease token=$TOK expires_in=30" ] \
+    || { echo "FAIL: identity must authorise the alternative folder: $out" >&2; exit 1; }
+rm -f "$LEASE"
+echo "OK"
+
+# Test 35: the same manifest under a DIFFERENT owner is never authorised by
+# the path. The owner's cmdline does contain the previous session folder, which
+# is exactly what the removed fallback used to accept.
+echo "=== Test 35: a divergent owner is refused even when the path matches ==="
+FAKE=$TMP/base/live-favorites/mixed-gen18-0ca1b784
+mkdir -p "$FAKE/activation" "$FAKE/mnt"
+printf '#!/bin/sh\nsleep 30\n' > "$FAKE/activate_live_favorites_tablet.sh"
+chmod +x "$FAKE/activate_live_favorites_tablet.sh"
+"$FAKE/activate_live_favorites_tablet.sh" &
+FAKE_PID=$!
+sleep 0.2
+rm -f "$LEASE"
+echo "$FAKE_PID" > "$TMP/base/mode_switch.lock/pid"
+set +e
+out=$(run_script "handoff-lease '$PKG' $TOK 30 'mixed-gen18-0ca1b784' 2>&1")
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || { echo "FAIL: the lease was granted on path evidence alone" >&2; exit 1; }
+echo "$out" | grep -q "previous_generation_owns_lock" \
+    || { echo "FAIL: wrong refusal: $out" >&2; exit 1; }
+[ ! -e "$LEASE" ]
+# A COMPLETE token for a different instance is still refused: completeness is
+# not authorisation, the tuple has to describe the live owner.
+set +e
+OTHER_TOK=$(token_with "$ALT_TOK" 4 cafebabe)
+out=$(run_script "handoff-lease '$PKG' $TOK 30 'mixed-gen18-0ca1b784' '$OTHER_TOK'" 2>&1)
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || { echo "FAIL: a complete but foreign identity was accepted" >&2; exit 1; }
+[ ! -e "$LEASE" ]
+# An incomplete token is refused as UNPROVEN: a fragment must never match.
+set +e
+out=$(run_script "handoff-lease '$PKG' $TOK 30 'mixed-gen18-0ca1b784' '1-1' 2>&1")
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || { echo "FAIL: a foreign incarnation was accepted" >&2; exit 1; }
+[ ! -e "$LEASE" ]
+kill "$FAKE_PID" 2>/dev/null || true
+rm -rf "$TMP/base/mode_switch.lock"
+echo "OK"
+
+# Test 36: a delayed takeover command is refused when the lock owner is no
+# longer the instance that was observed. Revalidation happens immediately
+# before the signal, and nothing is signalled on a mismatch.
+echo "=== Test 36: takeover revalidates the observed instance before the signal ==="
+TO_PREV=test-pkg
+TO_DIR=$TMP/base/live-favorites/$TO_PREV
+mkdir -p "$TO_DIR/activation"
+printf '#!/bin/sh\nsleep 30\n' > "$TO_DIR/activate_live_favorites_tablet.sh"
+chmod +x "$TO_DIR/activate_live_favorites_tablet.sh"
+"$TO_DIR/activate_live_favorites_tablet.sh" &
+TO_PID=$!
+sleep 0.2
+make_identifiable "$TO_DIR" "$TO_PID"
+mkdir -p "$TMP/base/mode_switch.lock"
+echo "$TO_PID" > "$TMP/base/mode_switch.lock/pid"
+rm -f "$LEASE"
+run_script "handoff-lease '$PKG' $TOK 60 '' '$(token_of "$TO_DIR")'" >/dev/null 2>&1 || true
+if [ ! -f "$LEASE" ]; then
+    # No live foreign lock at that moment: take the lease through the ordinary
+    # path so the takeover under test runs with a valid lease.
+    rm -rf "$TMP/base/mode_switch.lock"
+    run_script "handoff-lease '$PKG' $TOK 60" >/dev/null
+    mkdir -p "$TMP/base/mode_switch.lock"
+    echo "$TO_PID" > "$TMP/base/mode_switch.lock/pid"
+fi
+rm -f "$TO_DIR/activation/takeover.request"
+# A complete identity whose manifest field no longer matches: the package or the
+# observation moved between the click and the signal.
+STALE_TOK=$(token_with "$(token_of "$TO_DIR")" 4 deadbeef)
+out=$(run_script "handoff-takeover '$PKG' $TOK '$TO_PREV' '$STALE_TOK'")
+echo "$out" | grep -q "takeover released=0 reason=lock_incarnation_changed" \
+    || { echo "FAIL: the stale command was not refused: $out" >&2; exit 1; }
+[ ! -e "$TO_DIR/activation/takeover.request" ] \
+    || { echo "FAIL: a refused takeover wrote its marker" >&2; exit 1; }
+kill -0 "$TO_PID" 2>/dev/null \
+    || { echo "FAIL: a refused takeover signalled the owner" >&2; exit 1; }
+kill "$TO_PID" 2>/dev/null || true
+rm -rf "$TMP/base/mode_switch.lock"; rm -f "$LEASE"; kill "$ALT_PID" 2>/dev/null || true
+echo "OK"
+
+# Test 37: a takeover that observed NOTHING is refused before any signal. This
+# is the hole a path-based check left open: a directory name is not an identity.
+echo "=== Test 37: takeover without an observed instance signals nothing ==="
+run_script "handoff-lease '$PKG' $TOK 60" >/dev/null
+sleep 300 &
+UNOBS_PID=$!
+mkdir -p "$TMP/base/mode_switch.lock"
+echo "$UNOBS_PID" > "$TMP/base/mode_switch.lock/pid"
+rm -f "$PKG/activation/takeover.request"
+set +e
+out=$(run_script "handoff-takeover '$PKG' $TOK test-pkg" 2>&1)
+set -e
+case "$out" in
+    *'takeover released=0 reason=lock_incarnation_unproven'*) ;;
+    *) echo "FAIL: unobserved takeover was not refused: $out" >&2; exit 1 ;;
+esac
+[ ! -e "$PKG/activation/takeover.request" ] \
+    || { echo "FAIL: a refused takeover wrote its marker" >&2; exit 1; }
+kill -0 "$UNOBS_PID" 2>/dev/null \
+    || { echo "FAIL: an unobserved owner was signalled" >&2; exit 1; }
+rm -rf "$TMP/base/mode_switch.lock"; kill -9 "$UNOBS_PID" 2>/dev/null || true
+rm -f "$LEASE"
+echo "OK"
+
+# Test 38: the POSITIVE takeover path — a proven instance that acknowledges.
+# The acknowledgement is still the only proof of success: the fake supervisor
+# writes handoff.ack and frees the lock, and no ack means "unknown" (Test 28).
+echo "=== Test 38: takeover of a proven instance succeeds on its acknowledgement ==="
+POS=$TMP/base/live-favorites/posprev
+mkdir -p "$POS/activation"
+cp "$PKG/favorites_manifest.json" "$POS/favorites_manifest.json" 2>/dev/null || true
+cp "$PKG/SHA256SUMS" "$POS/SHA256SUMS" 2>/dev/null || true
+cat > "$POS/fake_supervisor.sh" <<'EOF'
+#!/bin/bash
+_on_term() {
+    _self=$(cat /proc/$$/stat 2>/dev/null) || exit 1
+    _rest=${_self##*\) }
+    set -- $_rest
+    printf '%s %s-%s\n' "$FAKE_TOKEN" "$$" "${20}" > "$FAKE_ACK.tmp"
+    mv -f "$FAKE_ACK.tmp" "$FAKE_ACK"
+    rm -rf "$FAKE_LOCK"
+    exit 0
+}
+trap _on_term TERM
+while :; do sleep 0.1; done
+EOF
+chmod +x "$POS/fake_supervisor.sh"
+run_script "handoff-lease '$PKG' $TOK 60" >/dev/null
+rm -f "$POS/activation/handoff.ack"
+mkdir -p "$TMP/base/mode_switch.lock"
+cp "$POS/fake_supervisor.sh" "$POS/activate_live_favorites_tablet.sh"
+chmod +x "$POS/activate_live_favorites_tablet.sh"
+FAKE_TOKEN=$TOK FAKE_ACK=$POS/activation/handoff.ack \
+    FAKE_LOCK=$TMP/base/mode_switch.lock \
+    bash -c "exec -a 'busybox sh $POS/activate_live_favorites_tablet.sh start' '$POS/activate_live_favorites_tablet.sh'" &
+POS_PID=$!
+echo "$POS_PID" > "$TMP/base/mode_switch.lock/pid"
+sleep 0.3
+make_identifiable "$POS" "$POS_PID"
+POS_TOK=$(token_of "$POS")
+# A bystander that must NOT be signalled: the handoff is bound to one instance.
+sleep 600 &
+BYSTANDER=$!
+[ -n "$POS_TOK" ] || { echo "FAIL: no identity for the fake supervisor" >&2; exit 1; }
+set +e
+out=$(run_script "handoff-takeover '$PKG' $TOK posprev '$POS_TOK'" 2>&1)
+rc=$?
+set -e
+case "$out" in
+    *"takeover released=1 acked=1 owner=$POS_PID previous=posprev"*) ;;
+    *) echo "FAIL: a proven handoff was not accepted: $out" >&2; exit 1 ;;
+esac
+# The supervisor's own record authorises the takeover, and the signal only
+# reached the instance that was observed.
+grep -q "^$TOK " "$POS/activation/handoff.ack" \
+    || { echo "FAIL: the ack record does not name the token" >&2; exit 1; }
+[ ! -d "$TMP/base/mode_switch.lock" ] \
+    || { echo "FAIL: the lock outlived the handoff" >&2; exit 1; }
+sleep 0.3
+kill -0 "$POS_PID" 2>/dev/null \
+    && { echo "FAIL: the taken-over supervisor is still alive" >&2; kill -9 "$POS_PID"; exit 1; }
+# Exactly one process was signalled. A positive handoff must never take down a
+# process it did not identify.
+kill -0 "$BYSTANDER" 2>/dev/null \
+    || { echo "FAIL: the handoff killed a process it did not identify" >&2; exit 1; }
+kill -9 "$BYSTANDER" 2>/dev/null || true
+rm -f "$LEASE"; rm -rf "$POS"
+echo "OK"
+
+# Test 39: a request from a PREVIOUS boot is refused. The boot component of the
+# identity is what tells two boots apart, so a token captured before a reboot
+# must never authorise a handoff after it - even when pid, instance, manifest and
+# digests look identical (which a reboot can reproduce).
+echo "=== Test 39: a token from a previous boot is refused ==="
+BOOT_DIR=$TMP/base/live-favorites/bootprev
+mkdir -p "$BOOT_DIR/activation"
+printf '#!/bin/sh\nexit 0\n' > "$BOOT_DIR/activate_live_favorites_tablet.sh"
+chmod +x "$BOOT_DIR/activate_live_favorites_tablet.sh"
+bash -c "exec -a 'busybox sh $BOOT_DIR/activate_live_favorites_tablet.sh start' sleep 300" &
+BOOT_PID=$!
+sleep 0.3
+make_identifiable "$BOOT_DIR" "$BOOT_PID"
+run_script "handoff-lease '$PKG' $TOK 60" >/dev/null
+mkdir -p "$TMP/base/mode_switch.lock"
+echo "$BOOT_PID" > "$TMP/base/mode_switch.lock/pid"
+BOOT_TOK=$(token_of "$BOOT_DIR")
+OLD_BOOT_TOK=$(token_with "$BOOT_TOK" 1 btime:1)
+[ "$OLD_BOOT_TOK" != "$BOOT_TOK" ] \
+    || { echo "FAIL: fixture did not change the boot component" >&2; exit 1; }
+rm -f "$BOOT_DIR/activation/takeover.request"
+set +e
+out=$(run_script "handoff-takeover '$PKG' $TOK bootprev '$OLD_BOOT_TOK'" 2>&1)
+set -e
+case "$out" in
+    *'takeover released=0 reason=lock_incarnation_changed'*) ;;
+    *) echo "FAIL: a previous-boot token was not refused: $out" >&2; exit 1 ;;
+esac
+[ ! -e "$BOOT_DIR/activation/takeover.request" ] \
+    || { echo "FAIL: a refused previous-boot request wrote its marker" >&2; exit 1; }
+kill -0 "$BOOT_PID" 2>/dev/null \
+    || { echo "FAIL: a previous-boot request signalled the owner" >&2; exit 1; }
+# The SAME tuple from the CURRENT boot is accepted up to the signal, proving the
+# refusal above came from the boot component and nothing else.
+[ "$(printf '%s' "$BOOT_TOK" | awk -F'|' '{print NF}')" = 5 ] \
+    || { echo "FAIL: fixture identity incomplete: $BOOT_TOK" >&2; exit 1; }
+kill -9 "$BOOT_PID" 2>/dev/null || true
+rm -rf "$TMP/base/mode_switch.lock"; rm -f "$LEASE" "$BOOT_DIR/activation/takeover.request"
 echo "OK"
 
 echo "ALL TUNNEL, INTEGRITY, PREFLIGHT AND VERIFICATION TESTS PASSED!"

@@ -151,7 +151,8 @@ def _read_bounded(path: Path, limit: int) -> tuple[bytes, os.stat_result]:
 # --------------------------------------------------------------------- client
 def build_request(action: str, task_id: str | None = None, *,
                   now: float | None = None,
-                  confirm_interrupt: bool = False) -> dict:
+                  confirm_interrupt: bool = False,
+                  operation_id: str | None = None) -> dict:
     if action not in ACTIONS:
         raise BridgeError(f"unsupported action: {action}")
     if action in TASKLESS_ACTIONS:
@@ -163,11 +164,18 @@ def build_request(action: str, task_id: str | None = None, *,
         raise BridgeError("invalid task id")
     if not isinstance(confirm_interrupt, bool) or (confirm_interrupt and action != "apply" and action != "refresh"):
         raise BridgeError("invalid interruption confirmation")
+    if operation_id is not None:
+        # The durable operation this request belongs to. Carried through the
+        # spool so the publisher adopts THAT operation instead of inferring one
+        # from the tablet's single slot.
+        if not isinstance(operation_id, str) or not _HEX_ID.fullmatch(operation_id):
+            raise BridgeError("invalid operation id")
     return {
         "version": REQUEST_VERSION,
         "id": uuid.uuid4().hex,
         "action": action,
         "task_id": task_id,
+        "operation_id": operation_id,
         "issued_at": int(time.time() if now is None else now),
         "confirm_interrupt": confirm_interrupt,
     }
@@ -196,7 +204,8 @@ def wait_response(response: Path, *, timeout: float, interval: float = 0.25) -> 
 
 def cmd_client(args) -> int:
     spool = Path(args.spool)
-    request = build_request(args.action, args.task_id, confirm_interrupt=args.confirm_interrupt)
+    request = build_request(args.action, args.task_id, confirm_interrupt=args.confirm_interrupt,
+                            operation_id=getattr(args, "operation_id", None))
     request_path = spool / "requests" / f"{request['id']}.json"
     response_path = spool / "responses" / f"{request['id']}.json"
     try:
@@ -258,6 +267,10 @@ def validate_request(raw: bytes, info: os.stat_result, *, client_uid: int | None
             raise BridgeError("this action takes no task id")
     elif not isinstance(task_id, str) or not _TASK_ID.fullmatch(task_id):
         raise BridgeError("invalid task id")
+    operation_id = payload.get("operation_id")
+    if operation_id is not None and (not isinstance(operation_id, str)
+                                     or not _HEX_ID.fullmatch(operation_id)):
+        raise BridgeError("invalid operation id")
     issued_at = payload.get("issued_at")
     if isinstance(issued_at, bool) or not isinstance(issued_at, int):
         raise BridgeError("invalid issued_at")
@@ -279,6 +292,10 @@ def publisher_argv(publisher: list[str], request: dict) -> list[str]:
         argv.append("--verify")
     elif request.get("confirm_interrupt") is True:
         argv.append("--confirm-interrupt")
+    if request.get("operation_id"):
+        # Adoption by id: the publisher proves the row is this task/revision
+        # instead of scanning whatever happens to be active for the tablet.
+        argv += ["--operation-id", request["operation_id"]]
     argv.append("--json")
     return argv
 
@@ -526,6 +543,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="required for apply/verify; omitted for refresh")
     client.add_argument("--request-owner-uid", type=int, default=None,
                         help="give the request to the publisher daemon uid")
+    client.add_argument("--operation-id", default=None,
+                        help="durable operation this request belongs to")
     client.add_argument("--confirm-interrupt", action="store_true",
                         help="explicitly permit interruption for apply only")
     client.add_argument("--timeout", type=float, default=60.0)

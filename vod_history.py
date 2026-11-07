@@ -1,8 +1,8 @@
 """Small, durable household watch history for prepared VOD episodes.
 
-This module deliberately has no network, process, or background-thread side
-effects.  It records explicit user choices only; HTTP/FUSE reads are not proof
-that somebody watched a frame on the television.
+This module has no network, process, or background-thread side effects. It
+stores explicit choices and, when supplied by a conservative detector,
+separately labelled inferred activity. Reads never prove a frame was watched.
 """
 
 import json
@@ -165,6 +165,7 @@ class VodHistory:
             record, now = self._record_locked(identity)
             selected = self._episode(identity, source="selected")
             selected["updated_at"] = now
+            selected["history_sequence"] = record["revision"]
             record.setdefault("completed", {}).pop(identity["task_id"], None)
             record["last_selected"] = selected
             record["recent"] = ([selected] + [event for event in record.get("recent", [])
@@ -187,12 +188,38 @@ class VodHistory:
             checkpoint = self._episode(identity, source=source, position_seconds=position_seconds,
                                        confidence="manual" if source == "manual" else source)
             checkpoint["updated_at"] = now
+            checkpoint["history_sequence"] = record["revision"]
             record.setdefault("completed", {}).pop(identity["task_id"], None)
             record["checkpoint"] = checkpoint
             record["recent"] = ([checkpoint] + [event for event in record.get("recent", [])
                                      if event.get("task_id") != identity["task_id"]])[:self.max_recent]
             self._save_locked()
             return dict(checkpoint)
+
+    def record_inferred(self, task):
+        """Record a probable episode without marking completion or a timestamp."""
+        identity = resolve_episode_identity(task)
+        if not identity:
+            return None
+        with self._lock:
+            existing = self._data["series"].get(identity["series_key"], {})
+            if identity["task_id"] in existing.get("completed", {}):
+                return None
+            now = float(self.clock())
+            for field in ("checkpoint", "last_selected"):
+                explicit = existing.get(field) or {}
+                if (explicit and explicit.get("task_id") != identity["task_id"] and
+                    now - float(explicit.get("updated_at", 0)) < 60):
+                    return None
+            record, now = self._record_locked(identity)
+            observed = self._episode(identity, source="inferred_stream", confidence="inferred")
+            observed["updated_at"] = now
+            observed["history_sequence"] = record["revision"]
+            record["inferred"] = observed
+            record["recent"] = ([observed] + [event for event in record.get("recent", [])
+                                if event.get("task_id") != identity["task_id"]])[:self.max_recent]
+            self._save_locked()
+            return dict(observed)
 
     def complete(self, task):
         identity = resolve_episode_identity(task)
@@ -207,6 +234,8 @@ class VodHistory:
                 record.pop("checkpoint", None)
             if record.get("last_selected", {}).get("task_id") == identity["task_id"]:
                 record.pop("last_selected", None)
+            if record.get("inferred", {}).get("task_id") == identity["task_id"]:
+                record.pop("inferred", None)
             record["recent"] = ([completed] + [event for event in record.get("recent", [])
                                     if event.get("task_id") != identity["task_id"]])[:self.max_recent]
             self._save_locked()
@@ -229,7 +258,22 @@ class VodHistory:
             records = json.loads(json.dumps(self._data["series"], ensure_ascii=False))
         results = []
         for record in records.values():
-            target = record.get("checkpoint") or record.get("last_selected")
+            explicit = [record.get(field) for field in ("checkpoint", "last_selected")
+                        if isinstance(record.get(field), dict)]
+            def event_order(event):
+                try:
+                    sequence = int(event.get("history_sequence") or 0)
+                except (ValueError, TypeError, OverflowError):
+                    sequence = 0
+                try:
+                    updated = float(event.get("updated_at") or 0)
+                except (ValueError, TypeError, OverflowError):
+                    updated = 0
+                return sequence, updated
+            target = max(explicit, key=event_order) if explicit else None
+            inferred = record.get("inferred")
+            if isinstance(inferred, dict) and (not target or event_order(inferred) > event_order(target)):
+                target = inferred
             target_id = target.get("task_id") if isinstance(target, dict) else None
             task = by_id.get(target_id)
             available = bool(task and task.get("status") == "ready")

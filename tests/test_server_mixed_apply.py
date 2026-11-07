@@ -7,6 +7,9 @@ A repeated click while the same task is in flight is idempotent.
 """
 
 import http.client
+import os
+import socket
+import subprocess
 import json
 import sys
 from pathlib import Path
@@ -19,8 +22,11 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "scripts"))
 
 import server
+import mixed_generation_service as mgs
+from scripts import mixed_operations as mo
 
 PIN = "mixed-apply-test-pin"
 TASK_ID = "a1b2c3d4"
@@ -325,6 +331,314 @@ class TestMixedApply(unittest.TestCase):
             # The phase must NOT have been rewound to preparing.
             self.assertEqual(OperationStore(db).get(op_id)["state"], "transferring")
 
+    def test_a_duplicate_apply_does_not_relaunch_the_publisher(self):
+        """Same key + same intention = the operation that already exists.
+
+        Relaunching would start a SECOND publication for the same target; the
+        panel would follow an id whose work was done twice.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "ops.db")
+            self._with_store(db)
+            status, first = self.request("POST", "/api/mixed/apply",
+                                         {"task_id": TASK_ID,
+                                          "idempotency_key": "k-once"})
+            self.assertEqual(status, 200)
+            calls_after_first = self.popen.call_count
+            self.assertEqual(calls_after_first, 1)
+            status, second = self.request("POST", "/api/mixed/apply",
+                                          {"task_id": TASK_ID,
+                                           "idempotency_key": "k-once"})
+            self.assertEqual(status, 200)
+            self.assertEqual(second["operation_id"], first["operation_id"])
+            self.assertTrue(second.get("duplicate"))
+            self.assertEqual(self.popen.call_count, calls_after_first)
+
+    def test_apply_is_refused_with_409_when_the_tablet_slot_is_taken(self):
+        """With a store configured, coordination fails CLOSED: no launch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "ops.db")
+            self._with_store(db)
+            from scripts.mixed_operations import OperationStore
+            holder, _ = OperationStore(db).begin(
+                tablet_id="tablet", principal="dashboard",
+                intention={"task_id": OTHER_TASK, "operation": "apply"},
+                idempotency_key="holder-key", user_message="Atualização solicitada")
+            status, body = self.request("POST", "/api/mixed/apply",
+                                        {"task_id": TASK_ID,
+                                         "idempotency_key": "mine-key"})
+            self.assertEqual(status, 409)
+            self.assertEqual(body["active_operation_id"], holder)
+            self.popen.assert_not_called()
+
+    def test_apply_is_refused_with_409_when_the_key_means_something_else(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "ops.db")
+            self._with_store(db)
+            first = self.request("POST", "/api/mixed/apply",
+                                 {"task_id": TASK_ID,
+                                  "idempotency_key": "k-intent"})[1]
+            self.popen.reset_mock()
+            status, body = self.request("POST", "/api/mixed/apply",
+                                        {"task_id": TASK_ID,
+                                         "idempotency_key": "k-intent",
+                                         "confirm_interrupt": True})
+            self.assertEqual(status, 409)
+            self.assertEqual(body["operation_id"], first["operation_id"])
+            self.popen.assert_not_called()
+
+    def test_apply_fails_closed_when_the_operation_cannot_be_recorded(self):
+        """No durable owner ⇒ no publication. The device must not be touched."""
+        broken = mock.Mock()
+        broken.begin.side_effect = RuntimeError("database is gone")
+        with mock.patch.object(server, "_mixed_operations_store_required",
+                               return_value=(broken, False), create=True):
+            status, body = self.request("POST", "/api/mixed/apply",
+                                        {"task_id": TASK_ID})
+        self.assertEqual(status, 503)
+        self.assertIn("registrar", body["error"])
+        self.popen.assert_not_called()
+
+    # --- the same fail-closed discipline for the inventory refresh -----------
+    def test_refresh_fails_closed_when_the_operation_cannot_be_recorded(self):
+        broken = mock.Mock()
+        broken.begin.side_effect = RuntimeError("database is gone")
+        with mock.patch.object(server, "_mixed_operations_store_required",
+                               return_value=(broken, False), create=True):
+            status, body = self.request("POST", "/api/mixed/refresh", {})
+        self.assertEqual(status, 503)
+        self.assertIn("registrar", body["error"])
+        self.popen.assert_not_called()
+
+    def test_refresh_fails_closed_when_the_store_is_configured_but_unusable(self):
+        """Configured but unreachable is a coordination failure, not legacy mode."""
+        with mock.patch.object(server, "_mixed_operations_store_required",
+                               return_value=(None, True), create=True):
+            status, body = self.request("POST", "/api/mixed/refresh", {})
+        self.assertEqual(status, 503)
+        self.assertIn("registrar", body["error"])
+        self.popen.assert_not_called()
+
+    def test_apply_fails_closed_when_the_store_is_configured_but_unusable(self):
+        with mock.patch.object(server, "_mixed_operations_store_required",
+                               return_value=(None, True), create=True):
+            status, body = self.request("POST", "/api/mixed/apply",
+                                        {"task_id": TASK_ID})
+        self.assertEqual(status, 503)
+        self.popen.assert_not_called()
+
+    def test_refresh_fails_closed_when_the_phase_cannot_be_written(self):
+        """A row whose phase cannot be written must not be published behind.
+
+        And it must not keep holding the tablet's slot: it is closed as
+        failed_safe, which is a result the panel can show.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "ops.db")
+            self._with_store(db)
+            broken = mock.Mock(wraps=server._mixed_get_operations_store())
+            broken.set_phase.side_effect = RuntimeError("read-only filesystem")
+            with mock.patch.object(server, "_mixed_operations_store_required",
+                                   return_value=(broken, False), create=True):
+                status, body = self.request("POST", "/api/mixed/refresh", {})
+            self.assertEqual(status, 503)
+            self.popen.assert_not_called()
+            from scripts.mixed_operations import OperationStore
+            pending = OperationStore(db).unresolved()
+            self.assertEqual([row["state"] for row in pending], ["failed_safe"])
+
+    def test_a_duplicate_refresh_returns_the_operation_and_launches_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "ops.db")
+            self._with_store(db)
+            status, first = self.request("POST", "/api/mixed/refresh",
+                                         {"idempotency_key": "r-dup"})
+            self.assertEqual(status, 200)
+            self.assertEqual(self.popen.call_count, 1)
+            status, second = self.request("POST", "/api/mixed/refresh",
+                                          {"idempotency_key": "r-dup"})
+            self.assertEqual(status, 200)
+            self.assertEqual(second["operation_id"], first["operation_id"])
+            self.assertTrue(second.get("duplicate"))
+            self.assertEqual(self.popen.call_count, 1)
+
+    def test_refresh_http_to_worker_chain_adopts_the_same_operation(self):
+        """One chain, not two unit tests.
+
+        The endpoint creates the operation, hands its id to the launched worker,
+        and the worker adopts THAT id although a refresh has no task id at all.
+        Ids and revisions on both ends must be the same value.
+        """
+        self.write_state(pending_generation=9)
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "ops.db")
+            self._with_store(db)
+            status, body = self.request("POST", "/api/mixed/refresh", {})
+            self.assertEqual(status, 200)
+            operation_id = body.get("operation_id")
+            self.assertIsNotNone(operation_id)
+            # The launched worker received the very same id.
+            argv = self.popen.call_args.args[0]
+            self.assertIn("--operation-id", argv)
+            self.assertEqual(argv[argv.index("--operation-id") + 1], operation_id)
+            # The worker adopts it: taskless refresh, same revision.
+            tracker = mgs._OperationTracker("tablet", "", revision=9,
+                                            executor="hostA:10-100",
+                                            operation_id=operation_id)
+            self.assertEqual(tracker.claim(), "owned")
+            from scripts.mixed_operations import OperationStore
+            row = OperationStore(db).get(operation_id)
+            self.assertEqual(row["executor"], "hostA:10-100")
+            self.assertEqual(row["intent_revision"], "9")
+            # And finishing closes the SAME row the panel is following.
+            self.assertEqual(tracker.finish("succeeded", "Lista atualizada"),
+                             "recorded")
+            self.assertEqual(OperationStore(db).get(operation_id)["state"],
+                             "succeeded")
+
+    def test_a_worker_with_another_revision_is_refused_on_the_same_id(self):
+        """The reserved revision is binding, not decorative."""
+        self.write_state(pending_generation=9)
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "ops.db")
+            self._with_store(db)
+            operation_id = self.request("POST", "/api/mixed/refresh", {})[1][
+                "operation_id"]
+            tracker = mgs._OperationTracker("tablet", "", revision=10,
+                                            executor="hostA:10-100",
+                                            operation_id=operation_id)
+            self.assertEqual(tracker.claim(), "blocked")
+
+    def test_a_terminal_operation_is_reported_not_republished(self):
+        self.write_state(pending_generation=9)
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "ops.db")
+            self._with_store(db)
+            operation_id = self.request("POST", "/api/mixed/refresh", {})[1][
+                "operation_id"]
+            from scripts.mixed_operations import OperationStore
+            OperationStore(db).finish(operation_id, state="succeeded",
+                                      user_message="Lista atualizada")
+            tracker = mgs._OperationTracker("tablet", "", revision=9,
+                                            executor="hostA:10-100",
+                                            operation_id=operation_id)
+            self.assertEqual(tracker.claim(), "already_terminal")
+
+    def test_an_in_flight_apply_from_the_journal_reports_the_operation_id(self):
+        """B7: the journal gate answers before any store write, so the id has to
+        be looked up - otherwise a reloaded panel has nothing to follow."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "ops.db")
+            self._with_store(db)
+            from scripts.mixed_operations import OperationStore
+            op_id, _ = OperationStore(db).begin(
+                tablet_id="tablet", principal="dashboard",
+                intention={"task_id": TASK_ID, "operation": "apply"},
+                idempotency_key="inflight-key", user_message="Atualização solicitada")
+            self.write_state(apply={"task_id": TASK_ID, "state": "publishing"})
+            status, body = self.request("POST", "/api/mixed/apply",
+                                        {"task_id": TASK_ID})
+            self.assertEqual(status, 200)
+            self.assertEqual(body["state"], "in_progress")
+            self.assertEqual(body.get("operation_id"), op_id)
+            self.popen.assert_not_called()
+
+    def test_an_in_flight_refresh_from_the_journal_reports_the_operation_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "ops.db")
+            self._with_store(db)
+            from scripts.mixed_operations import OperationStore
+            op_id, _ = OperationStore(db).begin(
+                tablet_id="tablet", principal="dashboard",
+                intention={"task_id": TASK_ID, "operation": "apply"},
+                idempotency_key="inflight-key-2",
+                user_message="Atualização solicitada")
+            self.write_state(apply={"task_id": TASK_ID, "state": "publishing"})
+            status, body = self.request("POST", "/api/mixed/refresh", {})
+            self.assertEqual(status, 200)
+            self.assertEqual(body["state"], "in_progress")
+            self.assertEqual(body.get("operation_id"), op_id)
+            self.popen.assert_not_called()
+
+    def test_mixed_events_requires_the_pin(self):
+        """UI13: the payload carries user_message and error codes."""
+        status, _body = self.request("GET", "/api/mixed/events?cursor=0", pin=False)
+        self.assertEqual(status, 401)
+        status, body = self.request("GET", "/api/mixed/events?cursor=0")
+        self.assertEqual(status, 200)
+
+    def test_mixed_status_requires_the_pin(self):
+        status, _body = self.request("GET", "/api/mixed/status", pin=False)
+        self.assertEqual(status, 401)
+        status, body = self.request("GET", "/api/mixed/status")
+        self.assertEqual(status, 200)
+
+    def test_the_server_and_the_store_share_one_exception_class(self):
+        """`mixed_operations` e `scripts.mixed_operations` são módulos DIFERENTES.
+
+        Se um teste montar o store por um caminho e chamar o helper do server por
+        outro, `TabletBusy` deixa de casar e o resultado vira artefato de import
+        (foi um bloqueio FALSO no harness do worker2). Esta asserção tranca isso.
+        """
+        from scripts import mixed_operations as ops_mod
+        self.assertIs(server.TabletBusy, ops_mod.TabletBusy)
+        self.assertIs(server.IdempotencyConflict, ops_mod.IdempotencyConflict)
+
+    def test_a_new_request_reclaims_the_slot_from_a_dead_executor(self):
+        """OOM/SIGKILL não pode travar o endpoint para sempre.
+
+        Diferente do reenvio com o mesmo id: aqui um pedido NOVO (outra chave)
+        encontra a vaga presa por um executor comprovadamente morto neste host.
+        A operação órfã vira pendência visível e a vaga passa ao pedido novo.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "ops.db")
+            self._with_store(db)
+            from scripts.mixed_operations import OperationStore
+            store = OperationStore(db)
+            # Um executor deste host que já não existe.
+            dead = subprocess.Popen([sys.executable, "-c", "pass"])
+            dead_pid = dead.pid
+            dead.wait(timeout=30)          # já colhido: /proc/<pid> não existe
+            stale, _ = store.begin(
+                tablet_id="tablet", principal="dashboard",
+                intention={"task_id": OTHER_TASK, "operation": "apply"},
+                idempotency_key="stale-key", user_message="Atualização solicitada")
+            store.set_phase(stale, state="preparing", stage="launch")
+            store.claim_execution(stale, task_id=OTHER_TASK, revision=None,
+                                  executor="%s:%d-1" % (socket.gethostname()[:32],
+                                                        dead_pid))
+            status, body = self.request("POST", "/api/mixed/refresh", {})
+            self.assertEqual(status, 200, body)
+            self.assertNotEqual(body.get("operation_id"), stale)
+            # A órfã ficou VISÍVEL como pendência, não silenciosa.
+            row = OperationStore(db).get(stale)
+            self.assertEqual(row["state"], "failed_safe")
+            self.assertEqual(row["error_code"], "executor_dead")
+            self.assertIn(stale, [o["operation_id"]
+                                  for o in OperationStore(db).unresolved()])
+
+    def test_a_live_executor_is_never_stolen(self):
+        """Contraprova: dono VIVO (ou de outro host) continua 409."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "ops.db")
+            self._with_store(db)
+            from scripts.mixed_operations import OperationStore
+            store = OperationStore(db)
+            holder, _ = store.begin(
+                tablet_id="tablet", principal="dashboard",
+                intention={"task_id": OTHER_TASK, "operation": "apply"},
+                idempotency_key="live-key", user_message="Atualização solicitada")
+            store.set_phase(holder, state="preparing", stage="launch")
+            # Identidade REAL deste processo: pid vivo E starttime correto (um
+            # starttime inventado significaria, corretamente, "pid reciclado").
+            store.claim_execution(holder, task_id=OTHER_TASK, revision=None,
+                                  executor=mgs._local_execution_identity())
+            status, body = self.request("POST", "/api/mixed/refresh", {})
+            self.assertEqual(status, 409)
+            self.assertEqual(body["active_operation_id"], holder)
+            self.assertEqual(OperationStore(db).get(holder)["state"], "preparing")
+
     def test_events_without_a_store_says_unavailable_not_empty(self):
         """"No store" and "no events" are different facts.
 
@@ -525,6 +839,93 @@ class TestMixedApply(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertFalse(body["available"])
         self.popen.assert_not_called()
+
+    def _with_store(self, db):
+        """Point the endpoint at a throwaway store and forget any cached one."""
+        patcher = mock.patch.dict("os.environ", {"MIXED_OPERATIONS_DB": db},
+                                  clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        reset = mock.patch.object(server, "_mixed_ops_store", None, create=True)
+        reset.start()
+        self.addCleanup(reset.stop)
+
+    def test_the_reserved_revision_travels_with_the_operation(self):
+        """Correlation needs the TARGET, not just the task.
+
+        The revision is read from the journal the publisher writes, so both sides
+        name the same generation and the worker's claim can compare them instead
+        of trusting the tablet's single slot.
+        """
+        self.write_state(pending_generation=7, pending_session="mixed-gen7-abc")
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "ops.db")
+            self._with_store(db)
+            status, body = self.request("POST", "/api/mixed/apply",
+                                        {"task_id": TASK_ID})
+            self.assertEqual(status, 200)
+            from scripts.mixed_operations import OperationStore
+            row = OperationStore(db).get(body["operation_id"])
+            self.assertEqual(row["intent_revision"], "7")
+            self.assertEqual(row["desired_generation"], 7)
+
+    def test_refresh_with_a_store_records_a_persistent_operation(self):
+        """A refresh is a publication: it needs a durable id too."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "ops.db")
+            self._with_store(db)
+            status, body = self.request("POST", "/api/mixed/refresh", {})
+            self.assertEqual(status, 200)
+            operation_id = body.get("operation_id")
+            self.assertIsNotNone(operation_id)
+            from scripts.mixed_operations import OperationStore
+            row = OperationStore(db).get(operation_id)
+            self.assertEqual(row["intention_hash"], mo.intention_hash(
+                {"operation": "refresh", "confirm_interrupt": False,
+                 "revision": None, "desired_generation": None}))
+            self.assertIn(row["state"], ("preparing", "queued"))
+
+    def test_a_repeated_refresh_key_returns_the_same_operation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "ops.db")
+            self._with_store(db)
+            first = self.request("POST", "/api/mixed/refresh",
+                                 {"idempotency_key": "r-key-1"})[1]
+            second = self.request("POST", "/api/mixed/refresh",
+                                  {"idempotency_key": "r-key-1"})[1]
+            self.assertIsNotNone(first.get("operation_id"))
+            self.assertEqual(first["operation_id"], second.get("operation_id"))
+
+    def test_a_refresh_key_with_another_intention_is_a_named_conflict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "ops.db")
+            self._with_store(db)
+            original = self.request("POST", "/api/mixed/refresh",
+                                    {"idempotency_key": "r-key-2"})[1]
+            status, body = self.request("POST", "/api/mixed/refresh",
+                                        {"idempotency_key": "r-key-2",
+                                         "confirm_interrupt": True})
+            self.assertEqual(status, 409)
+            # The name of the operation that already exists, never a silent reuse.
+            self.assertEqual(body["operation_id"], original["operation_id"])
+
+    def test_refresh_while_the_tablet_slot_is_taken_starts_no_second_publisher(self):
+        """The device has ONE slot: a competing request is pointed at it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "ops.db")
+            self._with_store(db)
+            from scripts.mixed_operations import OperationStore
+            store = OperationStore(db)
+            holder, _ = store.begin(tablet_id="tablet", principal="dashboard",
+                                    intention={"task_id": TASK_ID,
+                                               "operation": "apply"},
+                                    idempotency_key="other-key",
+                                    user_message="Atualização solicitada")
+            status, body = self.request("POST", "/api/mixed/refresh",
+                                        {"idempotency_key": "r-key-3"})
+            self.assertEqual(status, 409)
+            self.assertEqual(body["active_operation_id"], holder)
+            self.popen.assert_not_called()
 
     def test_legacy_vod_play_still_works(self):
         """The old button behaviour must be untouched when mixed is absent."""

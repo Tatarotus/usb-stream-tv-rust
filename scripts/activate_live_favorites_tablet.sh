@@ -116,6 +116,84 @@ proc_incarnation() { # <pid> -> "<pid>-<starttime>", or empty
     printf '%s-%s\n' "$_pi_pid" "$_pi_start"
 }
 
+# ------------------------------------------------------------------ identity
+# A full identity, not a fragment. Every component has to be present, because a
+# comparison against "unknown" would authorise whatever happens to be running.
+#
+# BOOT: /proc/sys/kernel/random/boot_id is stable for the whole boot. Android
+# kernels often lack it, in which case btime (seconds since epoch at boot, from
+# /proc/stat) is used - ALSO stable. Uptime is deliberately never used: it grows
+# on every call, so two reads of the SAME boot would look like two different
+# boots and no comparison could ever succeed.
+boot_identity() { # echoes a stable per-boot marker, or none
+    _bi=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
+    if [ -z "$_bi" ]; then
+        _bi=$("$BB" sed -n 's/^btime //p' /proc/stat 2>/dev/null | "$BB" head -n 1)
+    fi
+    case "$_bi" in
+        ''|*[!0-9a-fA-F:-]*) printf 'none\n' ;;
+        *) printf '%s\n' "$_bi" ;;
+    esac
+}
+
+instance_of() { # <pkgdir> -> the instance id written when its supervisor started
+    _in=$(cat "$1/activation/instance.id" 2>/dev/null || true)
+    case "$_in" in ''|*[!0-9a-f]*) printf 'none\n' ;; *) printf '%s\n' "$_in" ;; esac
+}
+
+owner_pkg_dir() { # <pid> -> the package dir that process is supervising, or empty
+    # DISCOVERY, not authorisation. The path is used to find which package the
+    # live lock owner belongs to; the identity computed from that package is
+    # what has to match. Without this, an identity observed in a recovered
+    # folder could never be recomputed, and the comparison would fall back to a
+    # recorded name - a location.
+    _od_pid=${1:-}
+    case "$_od_pid" in ''|*[!0-9]*) return 1 ;; esac
+    [ -r "/proc/$_od_pid/cmdline" ] || return 1
+    _od_cmd=$("$BB" tr '\000' '\n' < "/proc/$_od_pid/cmdline" 2>/dev/null || true)
+    for _od_tok in $_od_cmd; do
+        case "$_od_tok" in
+            "$BASE"/live-favorites/*/activate_live_favorites_tablet.sh)
+                printf '%s\n' "${_od_tok%/activate_live_favorites_tablet.sh}"
+                return 0 ;;
+        esac
+    done
+    return 1
+}
+
+identity_of() { # <pkgdir> -> boot|instance|incarnation|manifest_id|package_digest
+    _io_pkg=$1
+    _io_boot=$(boot_identity)
+    _io_inst=$(instance_of "$_io_pkg")
+    _io_sup=$(cat "$_io_pkg/activation/supervisor.pid" 2>/dev/null || true)
+    _io_inc=$(proc_incarnation "$_io_sup" 2>/dev/null || true)
+    [ -n "$_io_inc" ] || _io_inc=none
+    _io_mid=none
+    if [ -s "$_io_pkg/favorites_manifest.json" ]; then
+        _io_mid=$("$BB" sed -n 's/.*"manifest_id"[[:space:]]*:[[:space:]]*"\([0-9a-f]\{1,\}\)".*/\1/p' \
+            "$_io_pkg/favorites_manifest.json" | "$BB" head -n 1)
+    fi
+    [ -n "$_io_mid" ] || _io_mid=none
+    _io_digest=none
+    if [ -s "$_io_pkg/SHA256SUMS" ]; then
+        _io_digest=$("$BB" sha256sum "$_io_pkg/SHA256SUMS" 2>/dev/null | "$BB" cut -c1-32)
+    fi
+    [ -n "$_io_digest" ] || _io_digest=none
+    printf '%s|%s|%s|%s|%s\n' "$_io_boot" "$_io_inst" "$_io_inc" "$_io_mid" "$_io_digest"
+}
+
+identity_is_complete() { # <token>; 0 only when all five components are real
+    _ic_tok=${1:-}
+    case "$_ic_tok" in ''|*none*) return 1 ;; esac
+    case "$_ic_tok" in *'|'*'|'*'|'*'|'*) ;; *) return 1 ;; esac
+    set -- $("$BB" printf '%s' "$_ic_tok" | "$BB" tr '|' ' ')
+    [ "$#" -eq 5 ] || return 1
+    for _ic_field in "$@"; do
+        [ -n "$_ic_field" ] || return 1
+    done
+    return 0
+}
+
 # Kernel-managed exclusion. A killed or crashed holder has its lock released by
 # the kernel itself, so there is no stale-lock reclaim path, no rm -rf of a lock
 # another contender may have just created, and no window in which two
@@ -624,12 +702,11 @@ case "$ACTION" in
         # `none` — never invented.
         _d_proto=$("$BB" cat "$STATE/handoff.protocol" 2>/dev/null || true)
         [ -n "$_d_proto" ] || _d_proto=none
-        _d_boot=$("$BB" cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
-        if [ -z "$_d_boot" ]; then
-            # Android kernels often lack boot_id. Uptime is a weaker stand-in,
-            # and the field says so instead of passing itself off as one.
-            _d_boot="uptime:$("$BB" cut -d. -f1 /proc/uptime 2>/dev/null || echo 0)"
-        fi
+        # A STABLE boot marker. Never uptime: it grows on every call, so two
+        # reads of the same boot would differ and no identity comparison could
+        # ever hold.
+        _d_boot=$(boot_identity)
+        _d_instance=$(instance_of "$PKG")
         _d_gen=none
         _d_mid=none
         if [ -s "$PKG/favorites_manifest.json" ]; then
@@ -664,21 +741,27 @@ case "$ACTION" in
                    _d_lock_owned=1
                fi ;;
         esac
-        echo "describe protocol=$_d_proto boot_id=$_d_boot generation=$_d_gen manifest_id=$_d_mid package_digest=$_d_pkg_digest runtime_digest=$_d_rt_digest supervisor=$_d_sup_inc candidate=$_d_cand_inc lun=$_d_lun lock_owned=$_d_lock_owned path=$PKG"
+        echo "describe protocol=$_d_proto boot_id=$_d_boot generation=$_d_gen manifest_id=$_d_mid package_digest=$_d_pkg_digest runtime_digest=$_d_rt_digest supervisor=$_d_sup_inc candidate=$_d_cand_inc lun=$_d_lun lock_owned=$_d_lock_owned instance_id=$_d_instance identity=$(identity_of "$PKG") path=$PKG"
         exit 0 ;;
     handoff-lease)
         _hl_tok=${3:-}
         _hl_ttl=${4:-}
         _hl_prev=${5:-}
+        _hl_prev_inc=${6:-}
         case "$_hl_tok" in ''|*[!0-9a-f]*) die 'handoff-lease requires a 32-hex token' ;; esac
         [ ${#_hl_tok} -eq 32 ] || die 'handoff-lease requires a 32-hex token'
         case "$_hl_ttl" in ''|*[!0-9]*) die 'handoff-lease requires a numeric TTL (seconds)' ;; esac
         [ "$_hl_ttl" -ge 15 ] && [ "$_hl_ttl" -le 120 ] || die 'handoff-lease TTL must be between 15 and 120 seconds'
         case "$_hl_prev" in ''|*[!a-zA-Z0-9_.-]*) _hl_prev='' ;; esac
+        # The observed IDENTITY TOKEN: boot|instance|incarnation|manifest|digest.
+        # It is not shape-sanitised here; ``lease-write`` refuses it unless all
+        # five components are real, so a fragment can never authorise a lease.
+        # (Blanking it by an old ``<pid>-<starttime>`` pattern would silently
+        # turn a full identity into "nothing observed".)
         mkdir -p "$BASE"
         # The lease must name the CALLER's pid: the inner shell is a different
         # process, and the owner field is what a human inspects later.
-        _hl_out=$(lease_cs_exec lease-write "$PKG" "$_hl_tok" "$_hl_ttl" "$_hl_prev" "$$") \
+        _hl_out=$(lease_cs_exec lease-write "$PKG" "$_hl_tok" "$_hl_ttl" "$_hl_prev" "$$" "$_hl_prev_inc") \
             || die 'handoff lease is being acquired by another publisher'
         case "$_hl_out" in
             *'lease-cs ok'*) echo "handoff-lease token=$_hl_tok expires_in=$_hl_ttl"; exit 0 ;;
@@ -690,17 +773,30 @@ case "$ACTION" in
         _lw_ttl=${4:-}
         _lw_prev=${5:-}
         _lw_owner_pid=${6:-}
+        _lw_prev_inc=${7:-}
         case "$_lw_tok" in ''|*[!0-9a-f]*) lease_cs_answer refused invalid_token ;; esac
         [ ${#_lw_tok} -eq 32 ] || lease_cs_answer refused invalid_token
         _lw_now=$(lease_now) || lease_cs_answer refused no_clock
         if lease_lock_held_by_other; then
             _lw_owner=$(cat "$LOCK/pid" 2>/dev/null || true)
             _lw_ok=0
-            if [ -n "$_lw_prev" ] && [ -n "$_lw_owner" ] && [ -r "/proc/$_lw_owner/cmdline" ]; then
-                _lw_cmd=$("$BB" tr '\000' '\n' < "/proc/$_lw_owner/cmdline" 2>/dev/null || true)
-                case "$_lw_cmd" in
-                    *"$BASE/live-favorites/$_lw_prev/"*) _lw_ok=1 ;;
-                esac
+            # Identity first, and the WHOLE identity: boot + instance + the
+            # incarnation of the live lock owner + the manifest and package
+            # digests of the previous generation. A single component (a pid and
+            # its start time) is not enough to authorise a handover, and a
+            # directory name authorises nothing at all. An incomplete token is
+            # refused rather than compared: "unknown" must never match.
+            if identity_is_complete "$_lw_prev_inc" && [ -n "$_lw_owner" ]; then
+                _lw_dir=$(owner_pkg_dir "$_lw_owner" 2>/dev/null || true)
+                _lw_owner_inc=$(proc_incarnation "$_lw_owner" 2>/dev/null || true)
+                if [ -n "$_lw_dir" ] && [ -n "$_lw_owner_inc" ]; then
+                    _lw_live_id=$(identity_of "$_lw_dir")
+                    _lw_live_inc=$("$BB" printf '%s' "$_lw_live_id" | "$BB" cut -d'|' -f3)
+                    if [ "$_lw_live_id" = "$_lw_prev_inc" ] \
+                            && [ "$_lw_owner_inc" = "$_lw_live_inc" ]; then
+                        _lw_ok=1
+                    fi
+                fi
             fi
             [ "$_lw_ok" = 1 ] || lease_cs_answer refused previous_generation_owns_lock
         fi
@@ -746,9 +842,19 @@ case "$ACTION" in
         # its rollback trap and frees mode_switch.lock.
         _ht_tok=${3:-}
         _ht_prev=${4:-}
+        # The instance the caller OBSERVED (describe) before asking for the
+        # takeover. Optional for the legacy 5-argument form; when supplied it is
+        # binding, so a command that was delayed, retried or replayed against a
+        # different process lifetime is refused instead of signalled.
+        _ht_expect_inc=${5:-}
         case "$_ht_tok" in ''|*[!0-9a-f]*) die 'handoff-takeover requires a 32-hex token' ;; esac
         [ ${#_ht_tok} -eq 32 ] || die 'handoff-takeover requires a 32-hex token'
         case "$_ht_prev" in ''|*[!a-zA-Z0-9_.-]*) die 'handoff-takeover requires the previous session' ;; esac
+        # The expected identity is NOT sanitised by shape here. Its validity is
+        # decided by ``identity_is_complete`` at the moment of the effect: five
+        # real components or a refusal. Shape-matching it with the old
+        # ``<pid>-<starttime>`` pattern would silently blank a full token and
+        # turn a comparable identity into "nothing observed".
         _ht_lease=$(lease_read || true)
         [ -n "$_ht_lease" ] || takeover_refuse 'lease_missing' 'handoff lease missing or expired'
         set -- $_ht_lease
@@ -765,18 +871,36 @@ case "$ACTION" in
         case "$_ht_owner" in ''|*[!0-9]*) takeover_refuse 'lock_unowned' 'mode lock has no valid owner; inspect manually' ;; esac
         kill -0 "$_ht_owner" 2>/dev/null || takeover_refuse 'lock_orphan' "mode lock owner is gone but the lock remains"
         [ -r "/proc/$_ht_owner/cmdline" ] || takeover_refuse 'lock_unprovable' 'cannot prove the lock owner'
-        _ht_cmd=$("$BB" tr '\000' '\n' < "/proc/$_ht_owner/cmdline" 2>/dev/null || true)
-        case "$_ht_cmd" in
-            *"$BASE/live-favorites/$_ht_prev/"*) ;;
-            *) takeover_refuse 'lock_foreign' 'foreign lock owner; refusing to take over' ;;
-        esac
+        # A SIGNAL requires the instance the caller observed. A directory name is
+        # not an identity: refusing here is what stops a delayed or replayed
+        # command from terminating whatever happens to own the lock by the time
+        # it arrives. The caller proves the instance with `describe`; this is the
+        # last moment before the signal, so the proof is rechecked below.
+        identity_is_complete "$_ht_expect_inc" \
+            || takeover_refuse 'lock_incarnation_unproven' 'refusing to signal a lock owner whose full identity was not observed'
+        _ht_inc=$(proc_incarnation "$_ht_owner") \
+            || takeover_refuse 'lock_incarnation_unreadable' 'cannot read the lock owner incarnation'
+        # Revalidation under the guard, and BEFORE anything path-shaped is
+        # even looked at: the caller proved an instance with `describe`, so the
+        # process actually holding the lock must still BE that instance, with the
+        # whole tuple (boot, instance, incarnation, digests) unchanged. A reboot,
+        # a recycled pid, a replaced package or a competing publisher between
+        # observation and action makes the tuple differ, and then nothing is
+        # signalled. Identity first means the directory cannot authorise a
+        # signal.
+        _ht_dir=$(owner_pkg_dir "$_ht_owner" 2>/dev/null || true)
+        [ -n "$_ht_dir" ] \
+            || takeover_refuse 'lock_incarnation_unproven' 'cannot prove which package the lock owner supervises'
+        _ht_live_id=$(identity_of "$_ht_dir")
+        _ht_live_inc=$("$BB" printf '%s' "$_ht_live_id" | "$BB" cut -d'|' -f3)
+        if [ "$_ht_inc" != "$_ht_live_inc" ] || [ "$_ht_live_id" != "$_ht_expect_inc" ]; then
+            takeover_refuse 'lock_incarnation_changed' 'the lock owner is not the instance that was observed'
+        fi
         # Tell the proven previous supervisor that this TERM is an intentional
         # handoff. Its rollback validates both this marker and the live lease;
         # an ordinary TERM or a stale marker continues to restore legacy VOD.
         _ht_state="$BASE/live-favorites/$_ht_prev/activation"
         [ -d "$_ht_state" ] || takeover_refuse 'no_previous_state' 'previous activation directory missing'
-        _ht_inc=$(proc_incarnation "$_ht_owner") \
-            || takeover_refuse 'lock_incarnation_unreadable' 'cannot read the lock owner incarnation'
         _ht_marker="$_ht_state/takeover.request"
         _ht_tmp="$_ht_state/.takeover.request.$$"
         # token + pid + incarnation: the marker is only valid for the exact
@@ -977,6 +1101,12 @@ _used=$("$BB" du -k "$IMAGE" | "$BB" awk '{print $1}')
 [ "$_used" -le 262144 ] || die 'sparse unpack exceeded 256 MiB physical limit'
 
 echo $$ > "$SUPERVISOR"
+# Instance identity for THIS supervisor lifetime, written once here and only
+# read afterwards (describe stays read-only). sha256 over the pid and the start
+# moment gives a unique, stable value per start without a random source this
+# firmware may not have.
+printf '%s|%s' "$$" "$("$BB" date +%s 2>/dev/null || echo 0)" \
+    | "$BB" sha256sum 2>/dev/null | "$BB" cut -c1-32 > "$STATE/instance.id" || true
 echo preparing > "$STATE/result"
 _previous=$("$BB" head -n 1 "$BASE/vod_mode.flag" 2>/dev/null | "$BB" tr -d '\r' || true)
 case "$_previous" in ''|*[!a-zA-Z0-9_-]*) _previous='' ;; esac

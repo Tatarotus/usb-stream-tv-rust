@@ -417,3 +417,172 @@ class ReconciliationTests(StoreTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExecutionCorrelationTests(StoreTestCase):
+    """Matrix: 'Clique duplicado/reload/two workers'.
+
+    One active operation per tablet proves only that *some* operation holds the
+    slot. Correlation has to prove that THIS task, THIS revision and THIS
+    execution are the ones that reserved it, otherwise a worker attaches its
+    result to another intention's row.
+    """
+
+    def _reserved(self, **intention_over):
+        intention = {"task_id": "a1b2c3d4", "operation": "apply", "revision": "7"}
+        intention.update(intention_over)
+        op_id, _ = self.store.begin(tablet_id="t1", principal="dashboard",
+                                   intention=intention, user_message="x")
+        return op_id
+
+    def test_the_claim_records_which_execution_owns_the_operation(self):
+        op_id = self._reserved()
+        row = self.store.claim_execution(op_id, task_id="a1b2c3d4", revision="7",
+                                         executor="hostA:10-100")
+        self.assertEqual(row["executor"], "hostA:10-100")
+        self.assertEqual(row["intent_revision"], "7")
+        # A retry inside the SAME run re-claims its own row.
+        again = self.store.claim_execution(op_id, task_id="a1b2c3d4",
+                                           revision="7", executor="hostA:10-100")
+        self.assertEqual(again["executor"], "hostA:10-100")
+
+    def test_a_second_execution_may_never_hijack_the_row(self):
+        op_id = self._reserved()
+        self.store.claim_execution(op_id, task_id="a1b2c3d4", revision="7",
+                                   executor="hostA:10-100")
+        with self.assertRaises(mo.OperationsError):
+            self.store.claim_execution(op_id, task_id="a1b2c3d4", revision="7",
+                                       executor="hostB:20-200")
+        self.assertEqual(self.store.get(op_id)["executor"], "hostA:10-100")
+
+    def test_another_task_or_revision_is_refused(self):
+        op_id = self._reserved()
+        with self.assertRaises(mo.OperationsError):
+            self.store.claim_execution(op_id, task_id="deadbeef", revision=None,
+                                       executor="hostA:10-100")
+        with self.assertRaises(mo.OperationsError):
+            self.store.claim_execution(op_id, task_id="a1b2c3d4", revision="8",
+                                       executor="hostA:10-100")
+
+    def test_an_unstated_revision_is_not_a_wildcard_for_the_hash(self):
+        """No revision recorded: the task id still has to match.
+
+        A NULL revision cannot be compared, so it must not be read as "any
+        revision matches" — the task identity remains the gate.
+        """
+        op_id = self._reserved(revision=None)
+        with self.assertRaises(mo.OperationsError):
+            self.store.claim_execution(op_id, task_id="deadbeef", revision="7",
+                                       executor="hostA:10-100")
+        row = self.store.claim_execution(op_id, task_id="a1b2c3d4",
+                                         revision="7", executor="hostA:10-100")
+        self.assertEqual(row["executor"], "hostA:10-100")
+
+    def test_a_terminal_operation_is_never_reopened(self):
+        op_id = self._reserved()
+        self.store.finish(op_id, state="succeeded", user_message="ok")
+        with self.assertRaises(mo.OperationsError):
+            self.store.claim_execution(op_id, task_id="a1b2c3d4", revision="7",
+                                       executor="hostA:10-100")
+
+
+class ExplicitMigrationTests(unittest.TestCase):
+    """Matrix: existing journal must survive the upgrade, explicitly."""
+
+    OLD_SCHEMA = """
+        CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE operations (
+            operation_id TEXT PRIMARY KEY, tablet_id TEXT NOT NULL,
+            principal TEXT NOT NULL, idempotency_key TEXT,
+            intention_hash TEXT NOT NULL, state TEXT NOT NULL, stage TEXT,
+            stage_started_at REAL, created_at REAL NOT NULL,
+            updated_at REAL NOT NULL, heartbeat_at REAL,
+            bytes_done INTEGER, bytes_total INTEGER,
+            desired_generation INTEGER, observed_generation INTEGER,
+            error_code TEXT, user_message TEXT NOT NULL DEFAULT '',
+            retryable INTEGER NOT NULL DEFAULT 0,
+            reconnected INTEGER NOT NULL DEFAULT 0, next_action TEXT,
+            fencing_epoch INTEGER NOT NULL DEFAULT 0, expires_at REAL);
+        INSERT INTO meta (key, value) VALUES ('schema_version', '1');
+        INSERT INTO operations (operation_id, tablet_id, principal,
+            intention_hash, state, created_at, updated_at)
+            VALUES ('old-op', 't1', 'default', 'h', 'failed_safe', 1, 1);
+    """
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.path = pathlib.Path(self._dir.name) / "old.db"
+        conn = sqlite3.connect(self.path)
+        conn.executescript(self.OLD_SCHEMA)
+        conn.commit()
+        conn.close()
+
+    def test_an_older_file_gains_the_new_columns_and_keeps_its_rows(self):
+        store = mo.OperationStore(self.path)
+        columns = {row[1] for row in sqlite3.connect(self.path).execute(
+            "PRAGMA table_info(operations)")}
+        for added in ("task_id", "intent_revision", "executor",
+                      "executor_claimed_at", "pendency_closed"):
+            self.assertIn(added, columns)
+        # The row is history, not a migration casualty.
+        self.assertEqual(store.get("old-op")["principal"], "default")
+
+    def test_the_recorded_schema_version_is_brought_forward(self):
+        mo.OperationStore(self.path)
+        conn = sqlite3.connect(self.path)
+        recorded = conn.execute(
+            "SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+        conn.close()
+        self.assertEqual(int(recorded), mo.SCHEMA_VERSION)
+
+
+class DeadExecutorTests(StoreTestCase):
+    """Recuperação de worker morto com o CAS no lugar do dano."""
+
+    def _stale(self, executor="hostA:111-222"):
+        op_id, _ = self.store.begin(tablet_id="t1", principal="dashboard",
+                                   intention={"operation": "refresh"},
+                                   user_message="Atualização solicitada")
+        self.store.set_phase(op_id, state="preparing", stage="launch")
+        self.store.claim_execution(op_id, task_id=None, revision=None,
+                                   executor=executor)
+        return op_id
+
+    def test_abandons_the_exact_executor_that_was_proven_dead(self):
+        op_id = self._stale()
+        row = self.store.abandon_dead_execution(
+            op_id, proof="pid 111 is gone (verified on hostA)",
+            expected_executor="hostA:111-222")
+        self.assertEqual(row["state"], "failed_safe")
+        self.assertEqual(row["error_code"], "executor_dead")
+        self.assertIn(op_id, [o["operation_id"] for o in self.store.unresolved()])
+        self.assertIsNone(self.store.active_for_tablet("t1"))
+
+    def test_refuses_when_the_owner_is_not_the_one_that_was_proven_dead(self):
+        """CAS: prova de OUTRO executor não autoriza evictar este."""
+        op_id = self._stale("hostA:333-444")
+        with self.assertRaises(mo.OperationsError):
+            self.store.abandon_dead_execution(
+                op_id, proof="pid 111 is gone (verified on hostA)",
+                expected_executor="hostA:111-222")
+        self.assertEqual(self.store.get(op_id)["state"], "preparing")
+        self.assertEqual(self.store.get(op_id)["executor"], "hostA:333-444")
+
+    def test_refuses_without_an_executor_or_proof(self):
+        op_id = self._stale()
+        with self.assertRaises(mo.OperationsError):
+            self.store.abandon_dead_execution(op_id, proof="x" * 20,
+                                              expected_executor="")
+        with self.assertRaises(mo.OperationsError):
+            self.store.abandon_dead_execution(op_id, proof="curta",
+                                              expected_executor="hostA:111-222")
+
+    def test_refuses_an_operation_that_already_reported_progress(self):
+        op_id = self._stale()
+        self.store.set_phase(op_id, state="transferring")
+        with self.assertRaises(mo.OperationsError):
+            self.store.abandon_dead_execution(
+                op_id, proof="pid 111 is gone (verified on hostA)",
+                expected_executor="hostA:111-222")
+        self.assertEqual(self.store.get(op_id)["state"], "transferring")

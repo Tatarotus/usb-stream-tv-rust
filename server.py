@@ -33,7 +33,8 @@ from vod_storage import GDriveStorage, StorageError
 from vod_playback_cache import CurrentVideoCache
 from scripts.mixed_cache_signal import MixedCacheSignal, next_episode
 from scripts.mixed_watch_signal import MixedWatchRecorder
-from scripts.mixed_operations import OperationStore
+from scripts.mixed_operations import (OperationStore, IdempotencyConflict,
+                                    TabletBusy)
 from vod_history import VodHistory, resolve_episode_identity
 from vod_revision import (REVISION_HEADER, content_revision, is_valid_revision)
 
@@ -3176,6 +3177,114 @@ def _mixed_get_operations_store():
         log_event("MIXED_OPS_STORE_UNAVAILABLE")
         return None
     return _mixed_ops_store
+
+
+def _mixed_operations_store_required():
+    """``(store, failed)`` for the coordination-critical endpoints.
+
+    ``failed`` is True only when a database IS configured and cannot be used.
+    That is a coordination failure, not the legacy mode: publishing with a
+    configured-but-unreachable store would touch the device with no durable
+    owner, so the caller answers 503 and launches nothing. With the variable
+    unset the behaviour stays exactly what it was before this feature.
+    """
+    path = os.environ.get(_MIXED_OPS_DB_ENV, "").strip()
+    if not path:
+        return None, False
+    store = _mixed_get_operations_store()
+    return store, store is None
+
+
+def _mixed_executor_is_dead(executor):
+    """Can THIS host prove the recorded executor is gone?
+
+    ``executor`` is ``host:<pid>-<starttime>``. Proof requires the same host (a
+    pid elsewhere says nothing) and either a missing ``/proc/<pid>`` or a
+    different start time (pid recycled). Anything else is "unknown" and must not
+    be treated as death.
+    """
+    if not executor:
+        return False
+    host, _, rest = str(executor).partition(":")
+    if not host or host != socket.gethostname()[:32]:
+        return False
+    pid_text = rest.split("-", 1)[0]
+    if not pid_text.isdigit():
+        return False
+    try:
+        with open("/proc/%s/stat" % pid_text, "r") as handle:
+            stat = handle.read()
+    except OSError:
+        return True
+    fields = stat.rsplit(")", 1)[-1].split()
+    start = fields[19] if len(fields) > 19 else ""
+    recorded = rest.split("-", 1)[1] if "-" in rest else ""
+    return bool(recorded) and start != recorded
+
+
+def _mixed_begin_with_recovery(store, *, intention, idempotency_key,
+                               desired_generation, user_message):
+    """``store.begin`` that survives a worker which died holding the slot.
+
+    A NEW request (possibly a different task) must not be refused for ever
+    because an OOM/SIGKILL left an operation in ``preparing`` with a dead
+    executor. When this host can PROVE the recorded executor is gone, the stale
+    operation is closed as a visible pendency (``failed_safe``) and the slot is
+    handed to the new request. When death cannot be proven (another host, or a
+    live process) the original ``TabletBusy`` is raised and the caller answers
+    409 - refusing beats stealing a live owner.
+    """
+    try:
+        return store.begin(tablet_id=_mixed_tablet_id(), principal="dashboard",
+                           intention=intention, idempotency_key=idempotency_key,
+                           desired_generation=desired_generation,
+                           user_message=user_message)
+    except TabletBusy as busy:
+        active = None
+        try:
+            active = store.active_for_tablet(_mixed_tablet_id())
+        except Exception:
+            active = None
+        if not isinstance(active, dict) or not _mixed_executor_is_dead(
+                active.get("executor")):
+            raise
+        if active.get("state") not in ("queued", "preparing"):
+            raise
+        proof = ("executor %s is gone (verified on this host); operation %s "
+                 "abandoned so a new request can proceed"
+                 % (active.get("executor"), active.get("operation_id")))
+        try:
+            store.abandon_dead_execution(
+                active["operation_id"], proof=proof,
+                # o MESMO executor cuja morte foi provada: o store rejeita se a
+                # posse mudou entre a verificação e o abandono (CAS).
+                expected_executor=active.get("executor"))
+        except Exception:
+            raise busy
+        log_event("MIXED_OPS_RECOVERED_DEAD_EXECUTOR")
+        return store.begin(tablet_id=_mixed_tablet_id(), principal="dashboard",
+                           intention=intention, idempotency_key=idempotency_key,
+                           desired_generation=desired_generation,
+                           user_message=user_message)
+
+
+def _mixed_current_operation_id():
+    """The operation holding the tablet slot right now, or None. Read-only.
+
+    The journal gate (an update already in flight) answers BEFORE any store
+    write, so without this lookup the panel receives `in_progress` with no id to
+    follow - exactly the case the contract calls "the same operation_id or an
+    explicit conflict". A store problem here is not fatal: the gate still refuses
+    and simply omits the id rather than inventing one.
+    """
+    store, _failed = _mixed_operations_store_required()
+    if store is None:
+        return None
+    try:
+        active = store.active_for_tablet(_mixed_tablet_id())
+    except Exception:
+        return None
+    return active.get("operation_id") if isinstance(active, dict) else None
 
 
 def _mixed_tablet_id():
@@ -6332,8 +6441,16 @@ self.addEventListener('message', (event) => {
         return True
 
     def handle_mixed_status(self, query=None):
-        """Public, token-free status of the manual mixed-generation update."""
+        """Status of the manual mixed-generation update. Authenticated.
+
+        It used to be token-free, which exposed `user_message` (operation text,
+        error codes and the panel's own wording) to any host on the local
+        network. Reading the result is not a mutating action, but it is not
+        public information either.
+        """
         query = query or {}
+        if not self._check_vod_pin(query):
+            return
         task_id = None
         if isinstance(query, dict):
             values = query.get("task_id") or []
@@ -6352,6 +6469,10 @@ self.addEventListener('message', (event) => {
         would silently drop a pending failure.
         """
         query = query or {}
+        # Same reason as `/api/mixed/status`: the payload carries user_message,
+        # error codes and operation ids. Local network is not an audience.
+        if not self._check_vod_pin(query):
+            return
         cursor = 0
         if isinstance(query, dict):
             values = query.get("cursor") or []
@@ -6481,15 +6602,21 @@ self.addEventListener('message', (event) => {
         in_flight_task, _ = _mixed_apply_progress(state)
         if in_flight_task == task_id:
             view = _mixed_status_view(state, task_id)
-            self._send_vod_json(200, {"ok": True, "available": True,
-                                      "state": "in_progress",
-                                      "message": view["message"],
-                                      "interrupts_playback": view["interrupts_playback"]})
+            current = _mixed_current_operation_id()
+            payload = {"ok": True, "available": True, "state": "in_progress",
+                       "message": view["message"],
+                       "interrupts_playback": view["interrupts_playback"]}
+            if current:
+                payload["operation_id"] = current
+            self._send_vod_json(200, payload)
             return
         if in_flight_task and in_flight_task != task_id:
-            self._send_vod_json(409, {"ok": False,
-                                      "error": "outra atualização em andamento",
-                                      "task_id": in_flight_task})
+            payload = {"ok": False, "error": "outra atualização em andamento",
+                       "task_id": in_flight_task}
+            current = _mixed_current_operation_id()
+            if current:
+                payload["active_operation_id"] = current
+            self._send_vod_json(409, payload)
             return
 
         argv = _mixed_action_argv("apply", task_id)
@@ -6507,23 +6634,103 @@ self.addEventListener('message', (event) => {
             argv = argv + ["--background"]
 
         # Persisted BEFORE the launch: the id the panel will follow exists even
-        # if this process dies immediately after. Best-effort, so a store
-        # problem never blocks the publication itself.
+        # if this process dies immediately after.
+        #
+        # Once a store IS configured, coordination fails CLOSED: an operation
+        # that cannot be recorded must not be published, because the device would
+        # then be touched with no durable owner and no way for the panel to
+        # follow it. Without a store the legacy behaviour is unchanged.
         operation_id = None
-        store = _mixed_get_operations_store()
+        store, store_failed = _mixed_operations_store_required()
+        if store_failed:
+            log_event("MIXED_OPS_STORE_UNAVAILABLE")
+            self._send_vod_json(503, {
+                "ok": False,
+                "error": "não foi possível registrar a operação; nada foi iniciado"})
+            return
         if store is not None:
+            # The RESERVED revision travels with the operation. It is the pending
+            # generation the publisher will actually apply, read from the journal
+            # the publisher writes — so both sides name the same target and the
+            # worker's claim can prove it, instead of correlating by task alone.
+            reserved = _mixed_int_or_none((state or {}).get("pending_generation"))
             try:
-                row, created = store.begin(
-                    tablet_id=_mixed_tablet_id(), principal="dashboard",
+                row, created = _mixed_begin_with_recovery(
+                    store,
                     intention={"task_id": task_id, "operation": "apply",
-                               "confirm_interrupt": params.get("confirm_interrupt") is True},
+                               "confirm_interrupt": params.get("confirm_interrupt") is True,
+                               "revision": reserved},
                     idempotency_key=params.get("idempotency_key"),
+                    desired_generation=reserved,
                     user_message="Atualização solicitada")
-                operation_id = row
-                if created:
-                    store.set_phase(row, state="preparing", stage="launch")
+            except IdempotencyConflict as exc:
+                # Same key, different intention: never recycled into a second
+                # activation. Naming the original is what lets the panel follow
+                # the operation that already exists.
+                log_event("MIXED_APPLY_IDEMPOTENCY_CONFLICT")
+                self._send_vod_json(409, {
+                    "ok": False, "error": "chave de idempotência reutilizada",
+                    "operation_id": exc.operation_id})
+                return
+            except TabletBusy as exc:
+                # Another operation holds the tablet's single slot. Launching
+                # anyway would start a second publisher for the same device.
+                log_event("MIXED_APPLY_BUSY")
+                self._send_vod_json(409, {
+                    "ok": False, "error": "outra atualização em andamento",
+                    "active_operation_id": exc.operation_id or None})
+                return
             except Exception:
+                # Persistence itself failed. Nothing was recorded, so nothing is
+                # launched: the caller is told to try again.
                 log_event("MIXED_OPS_BEGIN_FAILED")
+                self._send_vod_json(503, {
+                    "ok": False,
+                    "error": "não foi possível registrar a operação; nada foi iniciado"})
+                return
+            operation_id = row
+            if created:
+                try:
+                    store.set_phase(row, state="preparing", stage="launch")
+                except Exception:
+                    # The row exists but its phase could not be written. Nothing
+                    # was launched, so the answer is 503 and the operation is
+                    # closed as failed_safe so it stops holding the tablet slot.
+                    log_event("MIXED_OPS_PHASE_FAILED")
+                    try:
+                        store.finish(row, state="failed_safe",
+                                     error_code="phase_failed",
+                                     user_message="Não foi possível preparar a "
+                                                  "atualização; nada foi iniciado.")
+                    except Exception:
+                        pass
+                    self._send_vod_json(503, {
+                        "ok": False,
+                        "error": "não foi possível registrar a operação; nada foi iniciado"})
+                    return
+            else:
+                # A DUPLICATE click: same key, same intention. Relaunching would
+                # start a second publication for the same target, so the caller
+                # is handed the operation that already exists.
+                log_event("MIXED_APPLY_DUPLICATE")
+                try:
+                    existing = store.get(operation_id)
+                except Exception:
+                    existing = {}
+                view = _mixed_status_view(state, task_id)
+                self._send_vod_json(200, {
+                    "ok": True, "available": True,
+                    "state": existing.get("state") or "in_progress",
+                    "operation_id": operation_id,
+                    "duplicate": True,
+                    "message": (existing.get("user_message")
+                                or view["message"] or "Atualização já em andamento"),
+                    "interrupts_playback": view["interrupts_playback"]})
+                return
+            # The worker adopts THIS operation by id: the tablet's single slot
+            # proves only that some operation is active, never that this task and
+            # this revision reserved it.
+            argv = argv + ["--operation-id", operation_id]
 
         try:
             subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -6579,12 +6786,16 @@ self.addEventListener('message', (event) => {
         in_flight_task, in_flight_state = _mixed_apply_progress(state)
         if in_flight_task:
             view = _mixed_status_view(state, None)
-            self._send_vod_json(200, {"ok": True, "available": True,
-                                      "state": "in_progress",
-                                      "reason": "another_update_in_progress",
-                                      "task_id": in_flight_task,
-                                      "message": view["message"],
-                                      "interrupts_playback": view["interrupts_playback"]})
+            payload = {"ok": True, "available": True,
+                       "state": "in_progress",
+                       "reason": "another_update_in_progress",
+                       "task_id": in_flight_task,
+                       "message": view["message"],
+                       "interrupts_playback": view["interrupts_playback"]}
+            current = _mixed_current_operation_id()
+            if current:
+                payload["operation_id"] = current
+            self._send_vod_json(200, payload)
             return
         argv = _mixed_action_argv("refresh", None)
         if argv is None:
@@ -6596,20 +6807,126 @@ self.addEventListener('message', (event) => {
             argv = argv + ["--confirm-interrupt"]
         if _mixed_bridge_spool() is None:
             argv = argv + ["--background"]
+        # Same durable operation as `apply`: a refresh is a publication too, and
+        # without an id a second click either starts a second publisher or
+        # reports a conflict the panel has no stable name for. Recorded BEFORE
+        # the launch, so the id exists even if this process dies right after.
+        operation_id = None
+        store, store_failed = _mixed_operations_store_required()
+        if store_failed:
+            # A database IS configured but cannot be used. That is a coordination
+            # failure, never the legacy mode: launching would touch the device
+            # with no durable owner and no way for the panel to follow it.
+            log_event("MIXED_OPS_STORE_UNAVAILABLE")
+            self._send_vod_json(503, {
+                "ok": False,
+                "error": "não foi possível registrar a operação; nada foi iniciado"})
+            return
+        if store is not None:
+            reserved = _mixed_int_or_none((state or {}).get("pending_generation"))
+            try:
+                row, created = _mixed_begin_with_recovery(
+                    store,
+                    intention={"operation": "refresh",
+                               "confirm_interrupt": params.get("confirm_interrupt") is True,
+                               "revision": reserved,
+                               "desired_generation": params.get("desired_generation")},
+                    idempotency_key=params.get("idempotency_key"),
+                    desired_generation=params.get("desired_generation"),
+                    user_message="Atualização da lista solicitada")
+            except IdempotencyConflict as exc:
+                # The SAME key with a different intention: never recycled into a
+                # second activation. Naming the original is what lets the panel
+                # follow the operation that already exists.
+                self._send_vod_json(409, {
+                    "ok": False, "error": "chave de idempotência reutilizada",
+                    "operation_id": exc.operation_id})
+                return
+            except TabletBusy as exc:
+                # Somebody holds the tablet's slot. Launching anyway would start a
+                # second publisher for the same device, so the caller is pointed
+                # at the operation in course instead.
+                log_event("MIXED_REFRESH_BUSY")
+                self._send_vod_json(409, {
+                    "ok": False, "error": "outra atualização em andamento",
+                    "active_operation_id": exc.operation_id or None})
+                return
+            except Exception:
+                # Persistence itself failed: nothing recorded, so nothing runs.
+                log_event("MIXED_OPS_BEGIN_FAILED")
+                self._send_vod_json(503, {
+                    "ok": False,
+                    "error": "não foi possível registrar a operação; nada foi iniciado"})
+                return
+            operation_id = row
+            if created:
+                try:
+                    store.set_phase(row, state="preparing", stage="launch")
+                except Exception:
+                    # The row exists but its phase could not be written. Nothing
+                    # was launched, so the honest answer is 503; the operation is
+                    # closed as failed_safe so it does not hold the tablet slot.
+                    log_event("MIXED_OPS_PHASE_FAILED")
+                    try:
+                        store.finish(row, state="failed_safe",
+                                     error_code="phase_failed",
+                                     user_message="Não foi possível preparar a "
+                                                  "atualização; nada foi iniciado.")
+                    except Exception:
+                        pass
+                    self._send_vod_json(503, {
+                        "ok": False,
+                        "error": "não foi possível registrar a operação; nada foi iniciado"})
+                    return
+            else:
+                # A DUPLICATE click: same key, same intention. Launching again
+                # would publish the same inventory twice, so the caller is
+                # handed the operation that already exists.
+                log_event("MIXED_REFRESH_DUPLICATE")
+                try:
+                    existing = store.get(operation_id)
+                except Exception:
+                    existing = {}
+                view = _mixed_status_view(state, None)
+                self._send_vod_json(200, {
+                    "ok": True, "available": True,
+                    "state": existing.get("state") or "in_progress",
+                    "operation_id": operation_id,
+                    "duplicate": True,
+                    "message": (existing.get("user_message")
+                                or view["message"] or "Lista já em atualização"),
+                    "interrupts_playback": view["interrupts_playback"]})
+                return
+        if operation_id is not None:
+            # Same correlation as apply: the worker adopts this operation by id,
+            # so a taskless refresh still proves it is publishing ITS operation.
+            argv = argv + ["--operation-id", operation_id]
         try:
             subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              stdin=subprocess.DEVNULL, start_new_session=True,
                              cwd=_mixed_app_dir() or None)
         except OSError as exc:
             log_event(f"MIXED_REFRESH_LAUNCH_FAILED {type(exc).__name__}")
+            if operation_id is not None and store is not None:
+                try:
+                    store.finish(operation_id, state="failed_safe",
+                                 error_code="launch_failed",
+                                 user_message="Não foi possível iniciar a atualização; "
+                                              "nada foi alterado na TV.")
+                except Exception:
+                    pass
             self._send_vod_json(503, {"ok": False,
                                       "error": "não foi possível iniciar a atualização"})
             return
         log_event("MIXED_REFRESH_REQUESTED inventory")
         view = _mixed_status_view(state, None)
-        self._send_vod_json(200, {"ok": True, "available": True, "state": "started",
-                                  "message": view["message"] or "Lista em atualização",
-                                  "interrupts_playback": view["interrupts_playback"]})
+        response = {"ok": True, "available": True, "state": "started",
+                    "message": view["message"] or "Lista em atualização",
+                    "interrupts_playback": view["interrupts_playback"]}
+        # Additive: existing clients read exactly the fields they read before.
+        if operation_id is not None:
+            response["operation_id"] = operation_id
+        self._send_vod_json(200, response)
 
     def handle_mode_guard(self):
         """Exclusive lease used by the mixed-media publisher around LUN swaps.

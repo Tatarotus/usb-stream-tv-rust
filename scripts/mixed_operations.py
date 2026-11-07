@@ -50,7 +50,9 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+# Bumped when the shape changes so an operator can tell which revision a file
+# was created by; the additive migrations below bring older files forward.
+SCHEMA_VERSION = 2
 
 # Phases a publication moves through, in order. ``ready_to_activate`` is NOT
 # "applied": it means the artifacts are in place and the device has not been
@@ -214,6 +216,15 @@ class OperationStore:
                     -- would hash differently and a valid adoption would look
                     -- like a conflict.
                     task_id            TEXT,
+                    -- The revision the operation reserved. Correlation needs more
+                    -- than "an active operation for this tablet": the id alone
+                    -- does not say WHICH intention it belongs to.
+                    intent_revision    TEXT,
+                    -- The execution that proved it owns this operation, recorded
+                    -- by compare-and-swap. Without it, "the worker that ran" is
+                    -- an assumption, not an association.
+                    executor           TEXT,
+                    executor_claimed_at REAL,
                     state              TEXT NOT NULL,
                     stage              TEXT,
                     stage_started_at   REAL,
@@ -294,6 +305,18 @@ class OperationStore:
                              "pendency_closed INTEGER NOT NULL DEFAULT 0")
             if "task_id" not in cols:
                 conn.execute("ALTER TABLE operations ADD COLUMN task_id TEXT")
+            if "intent_revision" not in cols:
+                conn.execute("ALTER TABLE operations ADD COLUMN intent_revision TEXT")
+            if "executor" not in cols:
+                conn.execute("ALTER TABLE operations ADD COLUMN executor TEXT")
+            if "executor_claimed_at" not in cols:
+                conn.execute("ALTER TABLE operations ADD COLUMN "
+                             "executor_claimed_at REAL")
+            # An older file keeps the version it was created with otherwise, and
+            # an operator reading `schema_version` would be told the wrong shape.
+            conn.execute(
+                "UPDATE meta SET value=? WHERE key='schema_version' "
+                "AND CAST(value AS INTEGER) < ?", (str(SCHEMA_VERSION), SCHEMA_VERSION))
         finally:
             conn.close()
 
@@ -313,6 +336,13 @@ class OperationStore:
         # task without depending on how each caller built the intention.
         task_id = intention.get("task_id") if isinstance(intention, dict) else None
         task_id = str(task_id) if task_id else None
+        # The revision is part of the identity of the intention, not decoration:
+        # a worker that adopts an operation for a DIFFERENT revision would attach
+        # its result to someone else's target.
+        revision = (intention.get("revision") if isinstance(intention, dict) else None)
+        if revision is None and desired_generation is not None:
+            revision = desired_generation
+        revision = str(revision) if revision is not None else None
         now = self._now()
         op_id = new_operation_id()
         try:
@@ -346,13 +376,13 @@ class OperationStore:
                 conn.execute(
                     """INSERT INTO operations (
                            operation_id, tablet_id, principal, idempotency_key,
-                           intention_hash, task_id, state, stage, stage_started_at,
-                           created_at, updated_at, heartbeat_at,
+                           intention_hash, task_id, intent_revision, state, stage,
+                           stage_started_at, created_at, updated_at, heartbeat_at,
                            desired_generation, user_message, expires_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (op_id, tablet_id, principal, idempotency_key, digest,
-                     task_id, state, stage, now, now, now, now, desired_generation,
-                     user_message, None))
+                     task_id, revision, state, stage, now, now, now, now,
+                     desired_generation, user_message, None))
                 conn.execute(
                     "INSERT INTO events (operation_id, kind, state, stage, "
                     "user_message, created_at) VALUES (?,?,?,?,?,?)",
@@ -363,6 +393,132 @@ class OperationStore:
             # the caller's transaction discipline. Do not guess an id.
             raise TabletBusy("") from exc
         return op_id, True
+
+    def claim_execution(self, operation_id: str, *, task_id: str | None,
+                        revision: str | None, executor: str,
+                        steal_dead: bool = False) -> dict:
+        """Bind ONE execution to this operation, by compare-and-swap.
+
+        Why the tablet's single active slot is not enough: it proves only that
+        *some* operation holds the slot, never that this worker, for this task and
+        this revision, is the one that reserved it. Without this CAS a worker
+        could attach its result to another intention's operation and the panel
+        would show a success that belongs to something else.
+
+        The claim is idempotent for the SAME executor (a retry inside one run
+        re-claims its own operation) and refused for a different one, so a stale
+        or parallel worker cannot hijack the row.
+
+        Raises :class:`OperationsError` when the operation does not belong to the
+        claimed intention.
+        """
+        if not executor:
+            raise OperationsError("an execution identity is required")
+        now = self._now()
+        with self._tx() as conn:
+            row = conn.execute(
+                "SELECT state, task_id, intent_revision, executor, tablet_id "
+                "FROM operations WHERE operation_id=?", (operation_id,)).fetchone()
+            if row is None:
+                raise UnknownOperation(operation_id)
+            if row["state"] in TERMINAL_STATES:
+                raise OperationsError("operation is already terminal: %s" % row["state"])
+            if task_id is not None and str(row["task_id"] or "") != str(task_id):
+                raise OperationsError("operation belongs to another task")
+            # A NULL recorded revision means the creator did not state one, so
+            # there is nothing to compare against: the task id and the executor
+            # CAS still have to agree. When both sides DO state a revision, a
+            # mismatch is a refusal — that is the case that would attach this
+            # run's result to another revision's target.
+            if revision is not None and row["intent_revision"] is not None \
+                    and str(row["intent_revision"]) != str(revision):
+                raise OperationsError("operation belongs to another revision")
+            current = row["executor"]
+            if current is not None and str(current) != str(executor):
+                if not steal_dead:
+                    raise OperationsError("operation is owned by another execution")
+                # The caller proved the recorded execution is GONE (its process
+                # does not exist any more). Without this, an OOM/SIGKILL/reboot
+                # during the publication left the row active for ever: 'preparing'
+                # holds the tablet's single slot, is not an "unresolved" state, and
+                # no API could close it ('resolve_reconciliation' demands
+                # needs_reconciliation/interrupted). The proof stays with the
+                # caller because only it can look at /proc.
+                now = self._now()
+                epoch_row = conn.execute(
+                    "SELECT value FROM meta WHERE key=?",
+                    ("epoch:%s" % row["tablet_id"],)).fetchone()
+                fencing_bump = int(epoch_row["value"]) + 1 if epoch_row else 1
+                conn.execute(
+                    "INSERT INTO meta (key, value) VALUES (?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    ("epoch:%s" % row["tablet_id"], str(fencing_bump)))
+                conn.execute(
+                    "UPDATE operations SET executor=?, executor_claimed_at=?, "
+                    "updated_at=?, error_code=? WHERE operation_id=?",
+                    (str(executor), now, now,
+                     "previous_execution_dead", operation_id))
+            conn.execute(
+                "UPDATE operations SET executor=?, executor_claimed_at=?, "
+                "updated_at=? WHERE operation_id=?",
+                (str(executor), now, now, operation_id))
+        return self.get(operation_id)
+
+    def abandon_dead_execution(self, operation_id: str, *, proof: str,
+                               expected_executor: str) -> dict:
+        """Close an operation whose worker died, freeing the tablet slot.
+
+        Only reachable with ``proof``, and only from a state where the worker had
+        not reported progress yet (``queued``/``preparing``). The result is a
+        VISIBLE pendency (``failed_safe``), not silence: an OOM/SIGKILL during
+        preparation means nobody knows whether the device was touched, so it must
+        be shown and reconciled by a human - but it must not hold the tablet
+        hostage from every later request.
+
+        This is the door the endpoint uses when a NEW request finds the slot
+        occupied by an executor that is provably gone.
+        """
+        if not isinstance(proof, str) or len(proof.strip()) < 8:
+            raise OperationsError("abandoning an operation requires recorded proof")
+        if not expected_executor:
+            raise OperationsError("abandoning requires the executor that was proven dead")
+        now = self._now()
+        with self._tx() as conn:
+            row = conn.execute(
+                "SELECT state, executor FROM operations WHERE operation_id=?",
+                (operation_id,)).fetchone()
+            if row is None:
+                raise UnknownOperation(operation_id)
+            if row["state"] not in ("queued", "preparing"):
+                raise OperationsError(
+                    "only an operation that never reported progress can be "
+                    "abandoned (state=%s)" % row["state"])
+            # Compare-and-swap on the OWNER: the caller proved a specific
+            # execution is dead, so only THAT one may be abandoned. Without this
+            # the proof was a free-text argument and a live owner could be
+            # evicted by a caller that lied - the guard has to live where the
+            # damage would happen, not only in the HTTP path.
+            current = row["executor"]
+            if current is not None and str(current) != str(expected_executor):
+                raise OperationsError(
+                    "the operation is owned by a different execution now; "
+                    "refusing to abandon it")
+            conn.execute(
+                "UPDATE operations SET state='failed_safe', updated_at=?, "
+                "heartbeat_at=?, error_code='executor_dead', retryable=1, "
+                "user_message=?, expires_at=? WHERE operation_id=?",
+                (now, now,
+                 "O worker desta atualização parou de existir; o resultado é "
+                 "desconhecido. Nada foi confirmado na TV.",
+                 now + self.retention_seconds, operation_id))
+            conn.execute(
+                "INSERT INTO events (operation_id, kind, state, user_message, "
+                "error_code, created_at) VALUES (?,?,?,?,?,?)",
+                (operation_id, "terminal", "failed_safe",
+                 "Worker morto durante a preparação; reconciliar.",
+                 "executor_dead", now))
+        self._record_proof(operation_id, proof)
+        return self.get(operation_id)
 
     def set_phase(self, operation_id: str, *, fencing_epoch: int | None = None,
                   state: str, stage: str | None = None,
@@ -575,6 +731,37 @@ class OperationStore:
                          (int(epoch), operation_id))
 
     # ------------------------------------------------------------------- reads
+    def identity(self) -> dict:
+        """Which FILE this store actually is: path, dev:inode and instance id.
+
+        Two sides that believe they share a database while pointing at different
+        files is the defect this method exists to make visible: the path alone
+        proves nothing (the host and the container legitimately see different
+        prefixes for the same inode), so the device:inode pair is reported, plus a
+        random id recorded once at creation. Comparing either across the two
+        sides is a fact; comparing paths is an assumption.
+        """
+        info = {"path": str(self.path), "device": None, "inode": None,
+                "instance_id": None, "schema_version": SCHEMA_VERSION}
+        if str(self.path) != ":memory:":
+            try:
+                stat = self.path.stat()
+                info["device"] = int(stat.st_dev)
+                info["inode"] = int(stat.st_ino)
+            except OSError:
+                return info
+        with self._tx() as conn:
+            row = conn.execute("SELECT value FROM meta WHERE key='db_instance_id'")
+            found = row.fetchone()
+            if found is None:
+                value = uuid.uuid4().hex
+                conn.execute("INSERT INTO meta (key, value) VALUES "
+                             "('db_instance_id', ?)", (value,))
+                info["instance_id"] = value
+            else:
+                info["instance_id"] = found["value"]
+        return info
+
     def get(self, operation_id: str) -> dict:
         with self._ro() as conn:
             row = conn.execute("SELECT * FROM operations WHERE operation_id=?",

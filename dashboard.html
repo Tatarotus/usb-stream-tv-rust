@@ -4020,39 +4020,49 @@ function extractYouTubeId(url) {
         let mixedOpsCursor = 0;
         let mixedOpsTimer = null;
         let mixedOpsBackoff = 0;
-        let mixedOpsDismissed = false;
+        // Dispensar esconde o RESULTADO terminal até uma operação nova. Uma
+        // pendência (problema não resolvido) nunca some por dismiss: o usuário
+        // pode fechar o detalhe, não declarar resolvido.
+        let mixedOpsTerminalDismissed = false;
         let mixedOpsLastUnresolved = [];
+        let mixedOpsLastOperationId = null;
+        // UI4: o cliente retém a última operação TERMINAL que viu. O snapshot do
+        // servidor devolve `unresolved` + operações citadas por eventos APÓS o
+        // cursor; num fluxo silencioso o segundo poll vem vazio, e sem retenção
+        // o aviso sumia sozinho - o oposto de "persistente até dispensar".
+        let mixedOpsRetainedTerminal = null;
 
-        // Dispensar remove o DETALHE, nunca a pendência. Um problema ainda não
-        // resolvido volta a aparecer: "aviso visto" e "problema resolvido" são
-        // coisas diferentes, e confundi-los esconde falha real.
         function dismissMixedOpsIndicator() {
             if (mixedOpsLastUnresolved && mixedOpsLastUnresolved.length) return;
-            mixedOpsDismissed = true;
+            mixedOpsTerminalDismissed = true;
+            mixedOpsRetainedTerminal = null;
             const el = document.getElementById('mixed-ops-indicator');
             if (el) { el.style.display = 'none'; el.innerHTML = ''; }
         }
 
-        function renderMixedOpsIndicator(operations, unresolved) {
+        function renderMixedOpsIndicator(operations, unresolved, fallbackTerminal) {
             const el = document.getElementById('mixed-ops-indicator');
             if (!el) return;
-            const ops = operations || [];
             mixedOpsLastUnresolved = unresolved || [];
-            const isProblem = mixedOpsLastUnresolved.length > 0;
-            let op = null;
-            if (isProblem) {
-                op = ops.find(o => mixedOpsLastUnresolved.indexOf(o.operation_id) !== -1) || null;
-            } else if (!mixedOpsDismissed) {
-                // Resultado terminal: mostrado uma vez, e dispensável.
-                const terminal = ops.filter(o => o.state === 'succeeded'
-                                              || o.state === 'failed_safe');
-                op = terminal.length ? terminal[terminal.length - 1] : null;
+            const chosen = mixedOperationToShow(operations, mixedOpsLastUnresolved,
+                                                fallbackTerminal);
+            if (!chosen) { el.style.display = 'none'; el.innerHTML = ''; return; }
+            const op = chosen.op;
+            const isProblem = chosen.isProblem;
+            // Operação nova reabre o aviso, mesmo que a anterior tenha sido
+            // dispensada: dispensar vale para AQUELE resultado, não para sempre.
+            if (mixedOpsLastOperationId && op.operation_id !== mixedOpsLastOperationId) {
+                mixedOpsTerminalDismissed = false;
             }
-            if (!op) { el.style.display = 'none'; el.innerHTML = ''; return; }
+            mixedOpsLastOperationId = op.operation_id;
             el.classList.toggle('is-problem', isProblem);
             const stage = op.stage ? ' <span style="opacity:.7">(' + escapeHtml(op.stage) + ')</span>' : '';
+            const active = MIXED_ACTIVE_STATES.indexOf(op.state) !== -1;
             let html = '<div>' + escapeHtml(op.user_message || op.state || '') + stage + '</div>';
-            if (!isProblem) {
+            if (active) {
+                html = '<div>⏳ ' + escapeHtml(op.user_message || op.state || '') + stage
+                     + (op.heartbeat_at ? '' : '') + '</div>';
+            } else {
                 html += '<div class="mixed-ops-actions">'
                       + '<button type="button" onclick="dismissMixedOpsIndicator()">Dispensar</button>'
                       + '</div>';
@@ -4061,27 +4071,131 @@ function extractYouTubeId(url) {
             el.style.display = 'block';
         }
 
+        // UI9: `AbortSignal.timeout` não existe em WebViews antigas. Sem
+        // fallback a busca fica muda e o laço cai em backoff para sempre.
+        function timeoutSignal(ms) {
+            if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+                return AbortSignal.timeout(ms);
+            }
+            if (typeof AbortController === 'undefined') return undefined;
+            const controller = new AbortController();
+            setTimeout(() => { try { controller.abort(); } catch (err) {} }, ms);
+            return controller.signal;
+        }
+
+        // Uma operação EM ANDAMENTO precisa aparecer enquanto acontece, com
+        // estágio e heartbeat; e um resultado terminal precisa continuar
+        // visível (e consultável) até o usuário dispensar, não por 15 s.
+        const MIXED_ACTIVE_STATES = ['queued', 'preparing', 'transferring',
+                                     'validating', 'ready_to_activate',
+                                     'activating', 'verifying',
+                                     'needs_reconciliation', 'interrupted'];
+
+        function mixedOperationToShow(operations, unresolved, fallbackTerminal) {
+            const ops = operations || [];
+            const pending = unresolved || [];
+            if (pending.length) {
+                // Pendência vence qualquer outra coisa: ela não desaparece.
+                const problem = ops.find(o => pending.indexOf(o.operation_id) !== -1);
+                if (problem) return { op: problem, isProblem: true };
+            }
+            // Dispensar vale para AQUELE resultado. Uma operação nova (outro
+            // operation_id) reabre o aviso; sem isso o painel ficaria mudo para
+            // sempre depois do primeiro "Dispensar".
+            const newest = ops.length ? ops[ops.length - 1].operation_id : null;
+            const dismissed = mixedOpsTerminalDismissed
+                && (!newest || newest === mixedOpsLastOperationId);
+            if (dismissed) return null;
+            const active = ops.find(o => MIXED_ACTIVE_STATES.indexOf(o.state) !== -1);
+            if (active) return { op: active, isProblem: false };
+            const terminal = ops.filter(o => o.state === 'succeeded'
+                                          || o.state === 'already_current'
+                                          || o.state === 'failed_safe'
+                                          || o.state === 'blocked');
+            if (terminal.length) {
+                return { op: terminal[terminal.length - 1], isProblem: false };
+            }
+            // Nada novo no snapshot: o RESULTADO já visto continua visível até o
+            // usuário dispensar (ou até aparecer uma operação nova).
+            if (fallbackTerminal && fallbackTerminal.operation_id
+                    && fallbackTerminal.operation_id !== mixedOpsLastOperationId) {
+                return null;   // operação nova manda; a antiga não a substitui
+            }
+            if (fallbackTerminal) {
+                return { op: fallbackTerminal, isProblem: false };
+            }
+            return null;
+        }
+
+        // UI8: estado explícito de "sem contato". Preserva o conteúdo conhecido
+        // (pendência ou resultado) e acrescenta a frase; nunca afirma sucesso.
+        function renderMixedOpsOffline() {
+            const el = document.getElementById('mixed-ops-indicator');
+            if (!el) return;
+            const known = mixedOperationToShow([], mixedOpsLastUnresolved,
+                                               mixedOpsRetainedTerminal);
+            const note = '<div>⚠️ Sem contato com o servidor. '
+                       + (known ? 'Mostrando o último estado conhecido.' : '')
+                       + '</div>';
+            if (!known) {
+                // Nada conhecido: mesmo assim a perda de contato é um estado, e
+                // silêncio aqui é o que faz o usuário achar que "nada aconteceu".
+                el.classList.remove('is-problem');
+                el.innerHTML = note;
+                el.style.display = 'block';
+                return;
+            }
+            const isProblem = known.isProblem;
+            el.classList.toggle('is-problem', isProblem);
+            el.innerHTML = '<div>' + escapeHtml(known.op.user_message
+                                                || known.op.state || '') + '</div>'
+                         + note;
+            el.style.display = 'block';
+        }
+
         async function pollMixedEvents() {
             let nextIn = 15000;
             try {
+                // UI13: o endpoint agora exige PIN (o payload tem user_message e
+                // códigos de erro). Sem o cabeçalho o painel ficaria mudo em 401.
                 const res = await fetch('/api/mixed/events?cursor=' + mixedOpsCursor,
-                                        { signal: AbortSignal.timeout(6000) });
+                                        { signal: timeoutSignal(6000),
+                                          headers: { 'X-Auth-PIN': getAuthPin() } });
                 if (!res.ok) throw new Error('http_' + res.status);
                 const data = await res.json();
                 if (data && data.available) {
                     mixedOpsCursor = data.cursor || mixedOpsCursor;
                     mixedOpsBackoff = 0;
                     const unresolved = data.unresolved || [];
-                    renderMixedOpsIndicator(data.operations || [], unresolved);
-                    nextIn = unresolved.length ? 2000 : 15000;
+                    const operations = data.operations || [];
+                    const terminalNow = operations.filter(
+                        o => o.state === 'succeeded' || o.state === 'already_current'
+                          || o.state === 'failed_safe' || o.state === 'blocked');
+                    if (terminalNow.length) {
+                        mixedOpsRetainedTerminal = terminalNow[terminalNow.length - 1];
+                    }
+                    renderMixedOpsIndicator(operations, unresolved,
+                                            mixedOpsRetainedTerminal);
+                    const hasActive = operations.some(
+                        o => MIXED_ACTIVE_STATES.indexOf(o.state) !== -1);
+                    // UI6: operação em curso é 2 s; parado, 15 s.
+                    nextIn = (unresolved.length || hasActive) ? 2000 : 15000;
                 } else {
-                    // Sem store configurado: nada a mostrar, cadência lenta.
-                    renderMixedOpsIndicator([], []);
+                    // UI7: sem store configurado não há o que mostrar, mas uma
+                    // pendência JÁ visível não pode ser apagada por isso.
+                    if (!mixedOpsLastUnresolved.length) {
+                        renderMixedOpsIndicator([], []);
+                    }
+                    nextIn = 15000;
                 }
             } catch (err) {
-                // Falha de rede não inventa estado: só desacelera o laço.
+                // UI8: falha de rede NÃO inventa estado, mas também não pode ser
+                // silenciosa — "sem contato" e "nada acontecendo" são fatos
+                // diferentes. Mantém o que já era conhecido e diz que está sem
+                // contato; um poll bem-sucedido limpa o aviso.
                 mixedOpsBackoff = Math.min(30000, Math.max(2000, (mixedOpsBackoff || 1000) * 2));
                 nextIn = mixedOpsBackoff;
+                renderMixedOpsOffline();
             }
             mixedOpsTimer = setTimeout(pollMixedEvents, nextIn);
         }
@@ -4094,10 +4208,12 @@ function extractYouTubeId(url) {
         // Iniciado aqui, depois das declarações `let` acima: chamar antes delas
         // cairia na temporal dead zone e derrubaria o script inteiro.
         startMixedOpsPolling();
-        // Ao voltar para a aba, sondar imediatamente: o tempo em segundo plano
-        // não deve atrasar a descoberta de uma falha.
+        // UI3: voltar para a aba sonda imediatamente, mas SEM criar uma cadeia
+        // paralela. Limpar o timer garante uma única cadeia de polling.
         document.addEventListener('visibilitychange', () => {
-            if (!document.hidden) pollMixedEvents();
+            if (document.hidden) return;
+            if (mixedOpsTimer) { clearTimeout(mixedOpsTimer); mixedOpsTimer = null; }
+            pollMixedEvents();
         });
 
         // Autenticação Silenciosa (PIN 1233 padrão)
@@ -4540,23 +4656,67 @@ function extractYouTubeId(url) {
         let localSavedMoviesFetchedAt = 0;
         let continueWatching = [];
 
+        // P1 (veracidade): a linha NÃO pode sugerir que algo foi assistido sem
+        // evidência de reprodução. Ordem de prioridade: eventos de reprodução
+        // (manual/inferred_stream/checkpoint) antes de `selected`, que é apenas
+        // "o painel pediu para reproduzir e não há prova de que a TV reproduziu".
+        // `selected` só aparece rotulado E datado, e nunca sozinho como
+        // "Episódio N".
+        const PLAYBACK_SOURCES = ['manual', 'inferred_stream', 'checkpoint', 'progress'];
+
+        function episodeWhen(updatedAt) {
+            const ts = Number(updatedAt);
+            if (!Number.isFinite(ts) || ts <= 0) return { text: '', absolute: '' };
+            const ms = ts < 1e12 ? ts * 1000 : ts;
+            const when = new Date(ms);
+            if (Number.isNaN(when.getTime())) return { text: '', absolute: '' };
+            const days = Math.floor((Date.now() - when.getTime()) / 86400000);
+            const text = days <= 0 ? 'hoje' : days === 1 ? 'há 1 dia' : `há ${days} dias`;
+            // Data absoluta sempre no title: relativa sozinha não é auditável.
+            let absolute;
+            try {
+                absolute = when.toLocaleString('pt-BR');
+            } catch (err) {
+                absolute = when.toISOString().slice(0, 16).replace('T', ' ');
+            }
+            return { text: text, absolute: absolute };
+        }
+
         function renderLastEpisode() {
             const label = document.getElementById('tv-last-episode');
             if (!label) return;
-            const entry = (continueWatching || []).find(item => item && item.episode_number != null);
-            label.hidden = !entry;
-            if (!entry) { label.textContent = ''; return; }
-            const source = entry.position_source === 'manual' ? 'Marcado por você' :
-                entry.position_source === 'selected' ? 'Selecionado anteriormente' :
-                entry.position_source === 'inferred_stream' ? 'Possível reprodução na TV' : 'Registro de reprodução';
+            const entries = (continueWatching || []).filter(item => item && item.episode_number != null);
+            if (!entries.length) { label.hidden = true; label.textContent = ''; label.title = ''; return; }
+            const playback = entries.filter(e => PLAYBACK_SOURCES.indexOf(e.position_source) !== -1);
+            const pool = (playback.length ? playback : entries).slice()
+                .sort((a, b) => (Number(b.updated_at) || 0) - (Number(a.updated_at) || 0));
+            const entry = pool[0];
+            const when = episodeWhen(entry.updated_at);
+            const series = entry.series_title || 'Série';
             const season = entry.season_number != null ? ` · Temporada ${entry.season_number}` : '';
-            label.textContent = `${source}: ${entry.series_title || 'Série'}${season} · Episódio ${entry.episode_number}`;
+            const episode = ` · Episódio ${entry.episode_number}`;
+            const dated = when.text ? ` ${when.text}` : '';
+            if (!playback.length) {
+                // Sem NENHUM evento de reprodução: diz o que se sabe (a seleção e
+                // a data) e não afirma reprodução. Nunca "Episódio N" solto.
+                label.textContent = `Reprodução não registrada`
+                    + (when.text ? ` (última seleção ${when.text})` : '')
+                    + `: ${series}${season}${episode}`;
+                label.title = when.absolute ? `Última seleção em ${when.absolute}` : '';
+            } else {
+                const source = entry.position_source === 'manual' ? 'Marcado por você'
+                    : entry.position_source === 'inferred_stream' ? 'Possível reprodução na TV'
+                    : 'Registro de reprodução';
+                label.textContent = `${source}${dated}: ${series}${season}${episode}`;
+                label.title = when.absolute ? `${source} em ${when.absolute}` : '';
+            }
+            label.hidden = false;
         }
 
         async function loadLocalSavedMovies() {
             if (Date.now() - localSavedMoviesFetchedAt < 30000) return;
             try {
-                const res = await fetch('/api/channels', { cache: 'no-store', signal: AbortSignal.timeout(4000) });
+                const res = await fetch('/api/channels', { cache: 'no-store', signal: timeoutSignal(4000) });
                 if (!res.ok) return;
                 const channels = await res.json();
                 localSavedMovies = Object.values(channels)
@@ -4648,7 +4808,7 @@ function extractYouTubeId(url) {
         async function pollVodStatus() {
             await loadLocalSavedMovies();
             try {
-                const res = await fetch('/api/vod/status', { signal: AbortSignal.timeout(4000) });
+                const res = await fetch('/api/vod/status', { signal: timeoutSignal(4000) });
                 if (!res.ok) return;
                 const data = await res.json();
 
@@ -5305,9 +5465,11 @@ function extractYouTubeId(url) {
         // disponível; qualquer falha é `unknown` e nunca aciona o switch antigo.
         async function probeMixedStatus(taskId) {
             const url = '/api/mixed/status?task_id=' + encodeURIComponent(String(taskId || ''));
+            const mixedPin = getAuthPin();
             let res;
             try {
-                res = await fetch(url, { signal: AbortSignal.timeout(4000) });
+                res = await fetch(url, { signal: timeoutSignal(4000),
+                                         headers: { 'X-Auth-PIN': mixedPin } });
             } catch (err) {
                 return { mode: 'unknown', reason: 'timeout_or_network' };
             }
@@ -5331,7 +5493,7 @@ function extractYouTubeId(url) {
         async function confirmMixedOnTablet(taskId, pin) {
             try {
                 const res = await fetch('/api/mixed/confirm?task_id=' + encodeURIComponent(String(taskId || '')),
-                    { signal: AbortSignal.timeout(30000), headers: { 'X-Auth-PIN': pin || getAuthPin() } });
+                    { signal: timeoutSignal(30000), headers: { 'X-Auth-PIN': pin || getAuthPin() } });
                 if (!res.ok) return { confirmed: null, reason: 'http_' + res.status };
                 const data = await res.json();
                 if (!data || data.available === false) return { confirmed: null, reason: 'unavailable' };
@@ -5347,97 +5509,14 @@ function extractYouTubeId(url) {
         // como assistido e nunca escreve no banner de "vídeo em reprodução".
         // Atualiza a lista a partir do catálogo atual (exclusões e downloads
         // novos). Não depende de existir um VOD pronto para ancorar.
-        async function refreshTvList() {
-            triggerHaptic();
-            const pin = getAuthPin();
-            const probe = await probeMixedStatus(null);
-            if (probe.mode !== 'mixed') {
-                showActionBanner('⚠️ Atualização da lista indisponível. Verifique a conexão e tente novamente.', 'warn', 30000);
-                return;
+        // UI1: uma chave por clique. Sem ela, dois cliques viram duas
+        // publicações; com ela, o segundo recebe a MESMA operação e o painel
+        // segue o id devolvido em vez de comparar carimbos de tempo.
+        function newIdempotencyKey() {
+            if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+                return crypto.randomUUID().replace(/-/g, '');
             }
-            showActionBanner('⏳ Atualizando a lista da TV. A reprodução pode ser interrompida.');
-            await refreshMixedInventory('Lista da TV', probe.data, pin);
-        }
-
-        async function refreshMixedInventory(displayTitle, mixed, pin) {
-            const terminal = ['active', 'already_current', 'failed', 'blocked',
-                              'unconfirmed', 'incomplete', 'unknown'];
-            let state = '';
-            let reason = '';
-            const baselineApplyTimestamp = mixed.apply_updated_ts;
-            let currentApplyTimestamp = baselineApplyTimestamp;
-            let currentMixed = mixed;
-            try {
-                const res = await fetch('/api/mixed/refresh', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-Auth-PIN': pin },
-                    body: JSON.stringify({ pin: pin,
-                                           confirm_interrupt: true })
-                });
-                let data = null;
-                try { data = await res.json(); } catch (err) { data = null; }
-                if (!res.ok || !data || !data.ok) {
-                    if (res.status === 401) showActionBanner(`PIN incorreto.`, 'warn');
-                    else if (res.status === 409) showActionBanner(`⏳ Outra atualização está em andamento. Aguarde e toque de novo.`, 'warn');
-                    else showActionBanner(`⚠️ Não foi possível iniciar a atualização da lista. Nada foi alterado na TV.`, 'warn', 30000);
-                    return;
-                }
-                if (data.available === false) {
-                    // Ponte indisponível: NÃO caímos no switch legado, porque o
-                    // modo misto está ativo e a troca antiga reconectaria o
-                    // pendrive com a lista errada.
-                    showActionBanner(`⚠️ A atualização da lista está indisponível agora.`, 'warn', 40000);
-                    return;
-                }
-                state = data.state || '';
-                reason = data.reason || '';
-                const deadline = Date.now() + 16 * 60 * 1000;
-                while (Date.now() < deadline) {
-                    const hasNewApply = typeof currentApplyTimestamp === 'number' &&
-                        Number.isFinite(currentApplyTimestamp) && currentApplyTimestamp !== baselineApplyTimestamp;
-                    if (hasNewApply && terminal.indexOf(state) !== -1) break;
-                    await new Promise(resolve => setTimeout(resolve, 2000));
-                    const probe2 = await probeMixedStatus(null);
-                    if (probe2.mode !== 'mixed') continue;
-                    currentMixed = probe2.data;
-                    state = probe2.data.state || state;
-                    reason = probe2.data.reason || reason;
-                    currentApplyTimestamp = probe2.data.apply_updated_ts;
-                }
-            } catch (err) {
-                showActionBanner(`Erro de comunicação ao atualizar a lista. Não afirmo o estado da TV.`, 'warn', 30000);
-                return;
-            }
-            if (typeof currentApplyTimestamp !== 'number' || !Number.isFinite(currentApplyTimestamp) ||
-                    currentApplyTimestamp === baselineApplyTimestamp || terminal.indexOf(state) === -1) {
-                showActionBanner('⏳ A atualização pode continuar em andamento. O resultado é desconhecido; verifique a TV antes de tentar novamente.', 'warn', 30000);
-                return;
-            }
-            if (state === 'active' || state === 'already_current') {
-                // Só afirmamos sucesso depois de a TV confirmar o estado real.
-                const check = await confirmMixedOnTablet(null, pin);
-                if (check.confirmed === true) {
-                    // A mensagem diz o que de fato aconteceu: 'active' trocou o
-                    // pendrive (a TV reconectou); 'already_current' não trocou.
-                    const reconnected = currentMixed && currentMixed.reconnected === true ||
-                        (currentMixed && currentMixed.interrupts_playback === true);
-                    showActionBanner(reconnected
-                        ? `✅ <strong>Lista da TV atualizada</strong> — o pendrive foi reconectado e você já pode navegar nas pastas.`
-                        : state === 'already_current'
-                            ? `✅ <strong>A lista já estava atualizada</strong> — nada foi alterado na TV.`
-                            : `✅ <strong>Lista da TV atualizada</strong> — você já pode navegar nas pastas.`,
-                        'success', 30000);
-                    pollVodStatus();
-                } else if (check.confirmed === false) {
-                    showActionBanner(`⚠️ A atualização terminou, mas a TV não confirma esta lista. Toque em NA TV de um vídeo para tentar de novo.`, 'warn', 30000);
-                } else {
-                    showActionBanner(`⚠️ Atualização enviada, mas o estado da TV é desconhecido. Confira o pendrive antes de concluir.`, 'warn', 30000);
-                }
-            } else if (state === 'blocked') {
-                showActionBanner(`⚠️ Não foi possível autorizar a atualização (${escapeHtml(String(reason || 'estado da TV desconhecido'))}). Verifique a TV e tente novamente.`, 'warn', 30000);
-            } else {
-                showActionBanner(`⚠️ Não foi possível concluir a atualização da lista (${escapeHtml(String(reason || state || 'estado desconhecido'))}). Verifique a TV antes de tentar novamente.`, 'warn', 40000);
-            }
+            return (String(Date.now()) + Math.random().toString(16).slice(2, 18));
         }
 
         async function applyMixedGeneration(taskId, displayTitle, mixed, pin) {
@@ -5458,14 +5537,16 @@ function extractYouTubeId(url) {
             let message = mixed.message || '';
             let reason = mixed.reason || '';
             let inventoryConfirmed = false;
-            const baselineApplyTimestamp = mixed.apply_updated_ts;
-            let currentApplyTimestamp = baselineApplyTimestamp;
+            const applyIdempotencyKey = newIdempotencyKey();
+            let operationId = null;
+            let started = false;
             try {
                 const res = await fetch('/api/mixed/apply', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-Auth-PIN': pin },
                     body: JSON.stringify({ task_id: taskId, pin: pin,
-                                           confirm_interrupt: true })
+                                           confirm_interrupt: true,
+                                           idempotency_key: applyIdempotencyKey })
                 });
                 let data = null;
                 try { data = await res.json(); } catch (err) { data = null; }
@@ -5482,69 +5563,76 @@ function extractYouTubeId(url) {
                 state = data.state || state;
                 message = data.message || message;
 
-                // Acompanha até um estado final de verdade (ou o limite). Um
-                // timeout NÃO é apresentado como falha: é um estado recuperável.
-                const deadline = Date.now() + 16 * 60 * 1000;
-                let ticks = 0;
-                while (Date.now() < deadline) {
-                    const hasNewApply = typeof currentApplyTimestamp === 'number' &&
-                        Number.isFinite(currentApplyTimestamp) &&
-                        currentApplyTimestamp !== baselineApplyTimestamp;
-                    // A status response can still describe the PREVIOUS apply
-                    // immediately after the new request starts. Only the
-                    // tablet plus the entire current inventory can prove it.
-                    if (hasNewApply && (state === 'active' || state === 'already_current')) {
-                        const inventory = await confirmMixedOnTablet(null, pin);
-                        if (inventory.confirmed === true) {
-                            inventoryConfirmed = true;
-                            break;
-                        }
-                    } else if (hasNewApply && mixedTerminal.indexOf(state) !== -1) {
-                        break;
-                    }
-                    await new Promise(resolve => setTimeout(resolve, 2000));
-                    ticks += 1;
-                    if (ticks % 5 === 0) bannerStillRunning();
-                    const probe = await probeMixedStatus(taskId);
-                    // Sonda indisponível no meio do caminho: mantém o último
-                    // estado conhecido e continua tentando (não inventa erro).
-                    if (probe.mode !== 'mixed') continue;
-                    state = probe.data.state || state;
-                    message = probe.data.message || message;
-                    reason = probe.data.reason || reason;
-                    currentApplyTimestamp = probe.data.apply_updated_ts;
-                }
+                operationId = data.operation_id || null;
+                // UI2: o clique NÃO roda um laço de 16 minutos. Ele inicia e
+                // devolve o controle; o laço GLOBAL mostra fase, estágio e o
+                // desfecho, e o resultado terminal permanece visível até o
+                // usuário dispensar (mesmo fechando e reabrindo a aba).
+                showActionBanner(`⏳ Atualização iniciada. O progresso e o resultado aparecem aqui mesmo se você fechar a aba.`, 'info');
+                started = true;
             } catch (err) {
                 showActionBanner(`Erro de comunicação ao atualizar a lista. Não afirmo o estado da TV; verifique o pendrive.`, 'warn');
                 return;
             }
+            // O laço global é a ÚNICA fonte de progresso, e ele é uma facilidade
+            // da PÁGINA: se não estiver carregado (recorte antigo), o pedido já
+            // foi aceito e não pode virar "erro de comunicação" por causa disso.
+            if (started && typeof startMixedOpsPolling === 'function') {
+                mixedOpsTerminalDismissed = false;
+                startMixedOpsPolling();
+            }
+        }
 
-            if (typeof currentApplyTimestamp !== 'number' || !Number.isFinite(currentApplyTimestamp) ||
-                    currentApplyTimestamp === baselineApplyTimestamp) {
-                showActionBanner(`⏳ Não foi possível confirmar o resultado da nova atualização. Verifique a TV antes de tentar novamente.`, 'warn', 30000);
+        async function refreshTvList() {
+            triggerHaptic();
+            const pin = getAuthPin();
+            const probe = await probeMixedStatus(null);
+            if (probe.mode !== 'mixed') {
+                showActionBanner('⚠️ Atualização da lista indisponível. Verifique a conexão e tente novamente.', 'warn', 30000);
                 return;
             }
-            if ((state === 'active' || state === 'already_current') && inventoryConfirmed) {
-                bannerStillRunning();
-                const check = await confirmMixedOnTablet(taskId, pin);
-                if (check.confirmed === true) {
-                    showActionBanner(`✅ <strong>Lista atualizada</strong> — abra <strong>${escapeHtml(displayTitle)}</strong> na TV.`, 'success');
-                    pollVodStatus();
-                } else if (check.confirmed === false) {
-                    showActionBanner(`⚠️ A atualização terminou, mas a TV não confirma esta geração. Não abra o vídeo ainda; toque no botão novamente.`, 'warn');
-                } else {
-                    showActionBanner(`⚠️ Atualização enviada, mas o estado da TV é desconhecido. Verifique o pendrive antes de abrir o vídeo.`, 'warn');
+            showActionBanner('⏳ Atualizando a lista da TV. A reprodução pode ser interrompida.');
+            await refreshMixedInventory('Lista da TV', probe.data, pin);
+        }
+
+        async function refreshMixedInventory(displayTitle, mixed, pin) {
+            let reason = '';
+            let started = false;
+            // UI1: uma chave por clique. UI2: sem laço local — o progresso e o
+            // resultado são do laço global, que segue o operation_id devolvido.
+            const idempotencyKey = newIdempotencyKey();
+            try {
+                const res = await fetch('/api/mixed/refresh', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-Auth-PIN': pin },
+                    body: JSON.stringify({ pin: pin,
+                                           confirm_interrupt: true,
+                                           idempotency_key: idempotencyKey })
+                });
+                let data = null;
+                try { data = await res.json(); } catch (err) { data = null; }
+                if (!res.ok || !data || !data.ok) {
+                    if (res.status === 401) showActionBanner(`PIN incorreto.`, 'warn');
+                    else if (res.status === 409) showActionBanner(`⏳ Outra atualização está em andamento. Aguarde e toque de novo.`, 'warn');
+                    else showActionBanner(`⚠️ Não foi possível iniciar a atualização da lista. Nada foi alterado na TV.`, 'warn', 30000);
+                    return;
                 }
-            } else if ((state === 'active' || state === 'already_current') && !inventoryConfirmed) {
-                showActionBanner(`⚠️ A TV ainda não confirmou a lista completa. Verifique a atualização antes de continuar.`, 'warn', 30000);
-            } else if (state === 'blocked') {
-                showActionBanner(`⚠️ Não foi possível autorizar a atualização (${escapeHtml(String(reason || 'estado da TV desconhecido'))}). Verifique a TV e tente novamente.`, 'warn', 20000);
-            } else if (state === 'unconfirmed') {
-                showActionBanner(`⚠️ Estado desconhecido na TV após a atualização. Verifique o pendrive; não afirmo que a lista anterior está intacta.`, 'warn', 30000);
-            } else if (state === 'failed' || state === 'incomplete') {
-                showActionBanner(`Não foi possível atualizar a lista. Verifique a TV/pendrive antes de tentar de novo.`, 'warn', 20000);
-            } else {
-                showActionBanner(`⏳ A atualização continua em andamento. Toque no botão novamente para ver o resultado (nada será duplicado).`, 'info', 30000);
+                if (data.available === false) {
+                    // Ponte indisponível: NÃO caímos no switch legado, porque o
+                    // modo misto está ativo e a troca antiga reconectaria o
+                    // pendrive com a lista errada.
+                    showActionBanner(`⚠️ A atualização da lista está indisponível agora.`, 'warn', 40000);
+                    return;
+                }
+                reason = data.reason || '';
+                showActionBanner(`⏳ Atualização da lista iniciada. O resultado aparece aqui mesmo se você fechar a aba.`, 'info');
+                started = true;
+            } catch (err) {
+                showActionBanner(`Erro de comunicação ao atualizar a lista. Não afirmo o estado da TV.`, 'warn', 30000);
+            }
+            if (started && typeof startMixedOpsPolling === 'function') {
+                mixedOpsTerminalDismissed = false;
+                startMixedOpsPolling();
             }
         }
 
@@ -7575,7 +7663,7 @@ function toggleMute() {
             isPolling = true;
 
             try {
-                const res = await fetch('/api/status', { signal: AbortSignal.timeout(3500) });
+                const res = await fetch('/api/status', { signal: timeoutSignal(3500) });
                 if (!res.ok) {
                     markOfflineStatus();
                     return;
@@ -7806,7 +7894,7 @@ function toggleMute() {
 
             // Sincroniza favoritos de canais e séries antes de renderizar (com restauração automática se servidor reiniciar)
             try {
-                const favRes = await fetch('/api/favorites', { signal: AbortSignal.timeout(3000) });
+                const favRes = await fetch('/api/favorites', { signal: timeoutSignal(3000) });
                 if (favRes.ok) {
                     const favData = await favRes.json();
                     const sFavs = Array.isArray(favData.favorites) ? favData.favorites.map(String) : [];
@@ -7825,7 +7913,7 @@ function toggleMute() {
             } catch (e) {}
 
             try {
-                const sFavRes = await fetch('/api/favorites/series', { signal: AbortSignal.timeout(3000) });
+                const sFavRes = await fetch('/api/favorites/series', { signal: timeoutSignal(3000) });
                 if (sFavRes.ok) {
                     const sFavData = await sFavRes.json();
                     const sFavs = Array.isArray(sFavData.favorites) ? sFavData.favorites.map(String) : [];

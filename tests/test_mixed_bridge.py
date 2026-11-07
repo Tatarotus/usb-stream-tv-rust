@@ -33,6 +33,37 @@ class BridgeCase(unittest.TestCase):
         with self.assertRaises(bridge.BridgeError):
             bridge.build_request('verify_inventory', confirm_interrupt=True)
 
+    def test_the_operation_id_travels_from_the_request_to_the_publisher_argv(self):
+        """Whole flow, not a stub: the id the endpoint created reaches the worker.
+
+        Without it the publisher could only guess its operation from the tablet's
+        single slot, which says nothing about WHICH task or revision reserved it.
+        """
+        op_id = "0123456789abcdef0123456789abcdef"
+        request = bridge.build_request("refresh", operation_id=op_id)
+        self.assertEqual(request["operation_id"], op_id)
+        argv = bridge.publisher_argv(["publisher"], request)
+        self.assertIn("--operation-id", argv)
+        self.assertEqual(argv[argv.index("--operation-id") + 1], op_id)
+        # The request survives validation with the id intact.
+        import json as _json
+        import os as _os
+        import stat as _stat
+        fd, name = tempfile.mkstemp(dir=self._temp.name)
+        with _os.fdopen(fd, "w") as handle:
+            _json.dump(request, handle)
+        _os.chmod(name, 0o600)
+        info = _os.stat(name)
+        validated = bridge.validate_request(
+            Path(name).read_bytes(), info, client_uid=_os.getuid(),
+            now=request["issued_at"])
+        self.assertEqual(validated["operation_id"], op_id)
+        self.assertEqual(bridge.publisher_argv(["publisher"], validated),
+                         argv)
+        # A malformed id is refused instead of silently dropped.
+        with self.assertRaises(bridge.BridgeError):
+            bridge.build_request("refresh", operation_id="not-hex")
+
     def setUp(self):
         self._temp = tempfile.TemporaryDirectory(prefix="bridge-test-")
         self.addCleanup(self._temp.cleanup)
@@ -161,6 +192,43 @@ class HappyPathTests(BridgeCase):
         self.assertFalse((self.spool / "requests" / f"{request['id']}.json").exists())
         self.assertFalse((self.spool / "processing" / f"{request['id']}.json").exists())
         self.assertTrue((self.spool / "done" / f"{request['id']}.json").is_file())
+
+    def test_refresh_round_trip_carries_the_operation_id_to_the_worker(self):
+        """Whole chain: refresh request -> daemon -> publisher argv.
+
+        The worker must receive the SAME id the endpoint created, otherwise a
+        taskless refresh can only guess its operation from the tablet's slot.
+        """
+        op_id = "fedcba9876543210fedcba9876543210"
+        request = bridge.build_request("refresh", operation_id=op_id)
+        response = bridge.submit(self.spool, request)
+        completed = self.run_daemon()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        data, _info = bridge._read_bounded(response, bridge.MAX_RESPONSE_BYTES)
+        self.assertIs(json.loads(data)["confirmed"], True)
+        argv = self.log.read_text()
+        self.assertIn("--refresh", argv)
+        self.assertIn(f"--operation-id {op_id}", argv)
+        # A taskless refresh must not invent a task id on the way.
+        self.assertNotIn("--task-id", argv)
+
+    def test_the_daemon_refuses_a_request_with_a_malformed_operation_id(self):
+        request = bridge.build_request("refresh", operation_id="f" * 32)
+        request["operation_id"] = "not-hex"
+        self.spool.joinpath("requests").mkdir(parents=True, exist_ok=True)
+        target = self.spool / "requests" / f"{request['id']}.json"
+        target.write_text(json.dumps(request))
+        os.chmod(target, 0o600)
+        completed = self.run_daemon()
+        # The daemon keeps running after refusing one request, so the exit
+        # status is not the answer. The PROOF is the answer it wrote back and
+        # the fact that the publisher never ran with a malformed id.
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertFalse(self.log.exists())
+        answer = json.loads((self.spool / "responses" / f"{request['id']}.json")
+                            .read_text())
+        self.assertIs(answer.get("ok"), False)
+        self.assertEqual(answer.get("state"), "rejected")
 
     def test_verify_action_is_forwarded_as_verify(self):
         request = bridge.build_request("verify", TASK)

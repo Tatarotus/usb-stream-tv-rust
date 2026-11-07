@@ -32,6 +32,9 @@ APP_HOST=${APP_HOST:-/opt/containers/apps/usb-stream-tv}
 APP_CONTAINER=${APP_CONTAINER:-/app}
 CONTAINER=${CONTAINER:-usb-stream-tv}
 REMOTE=${REMOTE:-oracle}
+# Diretório da aplicação (o checkout que tem `scripts/`). Existe para o script
+# ser testável em sandbox: sem ele, só os dois caminhos de produção são tentados.
+APP_DIR=${APP_DIR:-}
 # Raiz compartilhada: diretório, nunca um arquivo isolado — um bind de arquivo
 # individual sobrevive mal a recriação do container.
 REL_DIR=${REL_DIR:-vod_cache/.operations}
@@ -87,7 +90,7 @@ EOF
 say "4/5 rodando a migração do módulo (schema real, não inventado)"
 run <<EOF
 set -eu
-cd /opt/usb-stream-tv 2>/dev/null || cd /opt/containers/apps/usb-stream-tv
+cd "${APP_DIR:-/opt/usb-stream-tv}" 2>/dev/null || cd /opt/containers/apps/usb-stream-tv
 MIXED_OPERATIONS_DB="$HOST_DB" python3 - <<'PY'
 import os, sys
 sys.path.insert(0, "scripts")
@@ -98,33 +101,50 @@ print("  operacoes hoje :", len(store.unresolved()), "pendentes")
 PY
 EOF
 
-say "5/5 provando que host e container veem o MESMO inode"
-# Um marcador gravado no host e lido pelo container: se os caminhos apontassem
-# para arquivos diferentes, o marcador não apareceria.
+say "5/5 provando que host e container veem o MESMO arquivo"
+# Caminho não prova nada: host e container veem prefixos diferentes para o
+# MESMO inode. A prova é física (device:inode) mais o `db_instance_id` gravado
+# uma única vez pelo próprio módulo, e um marcador escrito agora e lido do outro
+# lado. Se os dois lados fossem bancos independentes, nenhuma das três casaria.
 run <<EOF
 set -eu
 STAMP="opsdb-\$(date +%s)-\$\$"
-python3 - "\$STAMP" <<'PY'
-import os, sqlite3, sys
-db = os.environ.get("DB") or "$HOST_DB"
-conn = sqlite3.connect(db)
-conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-conn.execute("INSERT INTO meta (key, value) VALUES ('shared_marker', ?) "
-             "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (sys.argv[1],))
-conn.commit(); conn.close()
+cd "${APP_DIR:-/opt/usb-stream-tv}" 2>/dev/null || cd /opt/containers/apps/usb-stream-tv
+IDENT=\$(MIXED_OPERATIONS_DB="$HOST_DB" python3 - "\$STAMP" <<'PY'
+import os, sys, pathlib
+sys.path.insert(0, "scripts")
+import mixed_operations as ops
+store = ops.OperationStore(os.environ["MIXED_OPERATIONS_DB"])
+info = store.identity()
+with store._tx() as conn:
+    conn.execute("INSERT INTO meta (key, value) VALUES ('shared_marker', ?) "
+                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (sys.argv[1],))
+print(info["device"], info["inode"], info["instance_id"])
 PY
+)
+echo "  host      : device inode instance_id = \$IDENT"
 echo "  marcador gravado no host: \$STAMP"
 if docker inspect "$CONTAINER" >/dev/null 2>&1; then
     GOT=\$(docker exec "$CONTAINER" python3 -c "
 import sqlite3
 c = sqlite3.connect('$CONTAINER_DB')
-print(c.execute(\"SELECT value FROM meta WHERE key='shared_marker'\").fetchone()[0])
+row = c.execute(\"SELECT value FROM meta WHERE key='shared_marker'\").fetchone()
+inst = c.execute(\"SELECT value FROM meta WHERE key='db_instance_id'\").fetchone()
+import os
+st = os.stat('$CONTAINER_DB')
+print(row[0] if row else 'none', inst[0] if inst else 'none', st.st_dev, st.st_ino)
 " 2>/dev/null || echo unreadable)
-    echo "  marcador lido no container: \$GOT"
-    if [ "\$GOT" = "\$STAMP" ]; then
-        echo "  => MESMO ARQUIVO (host e container)"
+    if [ "\$GOT" = unreadable ]; then
+        echo "  => container não conseguiu ler o banco: não configure os dois lados assim" >&2
+        exit 1
+    fi
+    set -- \$GOT
+    echo "  container : marcador=\$1 instance_id=\$2 device=\$3 inode=\$4"
+    _host_inst=\$(echo "\$IDENT" | awk '{print \$3}')
+    if [ "\$1" = "\$STAMP" ] && [ "\$2" = "\$_host_inst" ]; then
+        echo "  => MESMO ARQUIVO (host e container: mesmo instance_id e marcador)"
     else
-        echo "  => CAMINHOS DIFERENTES: NÃO configure os dois lados assim" >&2
+        echo "  => BANCOS INDEPENDENTES: os dois lados NÃO compartilham o arquivo" >&2
         exit 1
     fi
 else

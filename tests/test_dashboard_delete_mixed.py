@@ -21,6 +21,8 @@ function triggerHaptic() {}
 function escapeHtml(s) { return s; }
 function getAuthPin() { return 'pin'; }
 function showActionBanner(s) { banners.push(s); }
+// Helper de PÁGINA (definido fora do recorte): o recorte o consome.
+function timeoutSignal(ms) { return {}; }
 function confirm(s) { confirmCalls++; prompt = s; return !cancelled; }
 async function pollVodStatus() {}
 async function fetch(url, opts) {
@@ -30,6 +32,13 @@ async function fetch(url, opts) {
     if (url.startsWith('/api/mixed/status')) return {ok:true,json:async()=>statusAnswers.shift() || statusData};
     if (url.startsWith('/api/mixed/apply')) return {ok:true,json:async()=>applyAnswer};
     if (url.startsWith('/api/mixed/refresh')) return {ok:true,json:async()=>applyAnswer};
+    // O clique agora devolve o controle e o laço GLOBAL acompanha a operação;
+    // ele sonda /api/mixed/events. Sem resposta aqui o laço viraria erro de
+    // rede e o teste mediria outra coisa.
+    if (url.startsWith('/api/mixed/events')) {
+        return {ok:true,json:async()=>({ok:true,available:true,cursor:1,events:[],
+                                        operations:[],unresolved:[]})};
+    }
     if (url.startsWith('/api/mixed/confirm?task_id=')) {
         if (url.endsWith('task_id=')) {
             inventoryChecks++;
@@ -63,52 +72,60 @@ async function run() {
     assert(calls.includes('/api/mixed/apply'),
            'even an episode already on TV must check inventory with publisher');
     const applyRequest = requests.find(r=>r.url === '/api/mixed/apply');
-    assert.equal(JSON.parse(applyRequest.opts.body).confirm_interrupt, true);
+    const applyBody = JSON.parse(applyRequest.opts.body);
+    assert.equal(applyBody.confirm_interrupt, true);
     assert.equal(applyRequest.opts.headers['X-Auth-PIN'], 'pin');
-    assert(calls.some(u=>u.startsWith('/api/mixed/confirm')));
-    assert.equal(inventoryChecks, 1, 'full inventory must be confirmed');
+    // UI1: uma chave por clique, para que repetir devolva a MESMA operação.
+    assert.ok(applyBody.idempotency_key, 'the click must carry an idempotency key');
+    // UI2: o clique NÃO roda laço próprio. Ele pede, devolve o controle e o
+    // laço GLOBAL acompanha a operação (fase, estágio e desfecho).
+    assert.equal(inventoryChecks, 0,
+                 'the click must not run its own confirmation loop');
+    // O laço global e a rota /api/mixed/events são provados no harness
+    // dedicado (test_dashboard_mixed_ops.py); este recorte cobre o CLIQUE:
+    // ele pede, carrega a chave e devolve o controle sem esperar resultado.
+    assert.ok(banners.some(s=>s.indexOf('iniciada') !== -1),
+              'the click reports that the update STARTED, not that it finished');
+    assert.ok(!banners.some(s=>s.includes('Lista atualizada')),
+              'the click must never claim the update finished on its own');
 
-    // An old terminal status must not be presented as the result of the new
-    // request while the current inventory still differs from the tablet.
-    calls=[]; banners=[]; inventoryChecks=0;
-    applyAnswer={ok:true,available:true,state:'started'};
-    statusData={available:true,state:'already_current',selected_in_active:true,apply_updated_ts:1};
-    statusAnswers=[{available:true,state:'failed',reason:'old_failure',apply_updated_ts:1},
-                   {available:true,state:'already_current',apply_updated_ts:2},
-                   {available:true,state:'already_current',apply_updated_ts:2}];
-    inventoryAnswers=[{available:true,confirmed:false},{available:true,confirmed:true}];
+    // Uma chave diferente por clique: dois cliques não podem virar uma
+    // operação reaproveitada por acidente.
+    calls=[]; banners=[];
     await applyMixedGeneration('22222222','Outro',statusData,'pin');
-    assert.equal(inventoryChecks,2, 'stale terminal must not end polling');
-    assert(banners.some(s=>s.includes('Lista atualizada')));
+    const second = requests.filter(r=>r.url === '/api/mixed/apply').pop();
+    assert.notEqual(JSON.parse(second.opts.body).idempotency_key,
+                    applyBody.idempotency_key,
+                    'each click needs its own key');
     assert(!banners.some(s=>s.includes('Não foi possível atualizar')),
            'failure from previous apply must be ignored');
 
-    // A blocked result must never request a second confirmation or retry.
+    // Uma recusa do endpoint (nada iniciado) aparece e NÃO é repetida: o clique
+    // não tem laço próprio para repetir nada.
     calls=[]; requests=[]; banners=[]; confirmCalls=0;
-    applyAnswer={ok:true,available:true,state:'started'};
-    statusAnswers=[{available:true,state:'blocked',reason:'active_vod_selected:x',apply_updated_ts:2}];
+    applyAnswer={ok:false,available:true,state:'blocked',reason:'active_vod_selected:x'};
     await applyMixedGeneration('22222222','Outro',statusData,'pin');
     assert.equal(confirmCalls, 0);
-    assert.equal(calls.filter(u=>u === '/api/mixed/apply').length, 1);
-    assert(banners.some(s=>s.includes('Não foi possível autorizar')));
+    assert.equal(calls.filter(u=>u === '/api/mixed/apply').length, 1,
+                 'a refused request must not be retried by the click');
+    assert.ok(banners.some(s=>s.includes('Não foi possível iniciar')),
+              'a refusal is shown and nothing is claimed about the TV');
 
-    calls=[]; requests=[]; banners=[]; confirmCalls=0;
-    applyAnswer={ok:true,available:true,state:'blocked',reason:'telemetry_stale'};
-    statusAnswers=[{available:true,state:'blocked',reason:'telemetry_stale',apply_updated_ts:2}];
-    await refreshMixedInventory('Outro',statusData,'pin');
-    const refreshRequest = requests.find(r=>r.url === '/api/mixed/refresh');
-    assert.equal(JSON.parse(refreshRequest.opts.body).confirm_interrupt, true);
-    assert.equal(refreshRequest.opts.headers['X-Auth-PIN'], 'pin');
-    assert.equal(confirmCalls, 0);
-    assert(banners.some(s=>s.includes('Não foi possível autorizar')));
-
-    calls=[]; requests=[]; banners=[]; inventoryChecks=0;
+    // O clique de refresh segue o MESMO contrato: um POST com chave, sem laço.
+    calls=[]; requests=[]; banners=[]; confirmCalls=0; inventoryChecks=0;
     applyAnswer={ok:true,available:true,state:'started'};
-    statusAnswers=[{available:true,state:'active',apply_updated_ts:1},
-                   {available:true,state:'already_current',apply_updated_ts:2}];
-    await refreshMixedInventory('Lista',statusData,'pin');
-    assert.equal(inventoryChecks,1, 'stale success must not trigger confirmation');
-    assert(banners.some(s=>s.includes('já estava atualizada')));
+    await refreshMixedInventory('Outro',statusData,'pin');
+    const refreshRequests = requests.filter(r=>r.url === '/api/mixed/refresh');
+    assert.equal(refreshRequests.length, 1,
+                 'the refresh click must send exactly one request');
+    const refreshBody = JSON.parse(refreshRequests[0].opts.body);
+    assert.equal(refreshBody.confirm_interrupt, true);
+    assert.equal(refreshRequests[0].opts.headers['X-Auth-PIN'], 'pin');
+    assert.ok(refreshBody.idempotency_key, 'refresh needs its own key per click');
+    assert.equal(confirmCalls, 0,
+                 'the refresh click must not run its own confirmation loop');
+    assert.equal(inventoryChecks, 0,
+                 'the refresh click must not wait for inventory confirmation');
     global.setTimeout=savedTimeout;
 
     calls=[]; banners=[]; cancelled=true;
@@ -128,7 +145,10 @@ def test_manual_episode_checkpoint_and_banner():
     assert 'btn-modal-checkpoint' in checkpoint and 'btn-modal-web' not in checkpoint
     standalone = re.search(r'@media \(display-mode: standalone\)[^{]*\{([^}]+)', html).group(1)
     assert 'btn-modal-checkpoint' not in standalone and 'btn-vod-modal-checkpoint' not in standalone
-    render = html[html.index('        function renderLastEpisode()'):html.index('        async function loadLocalSavedMovies()', html.index('        function renderLastEpisode()'))]
+    # O recorte começa na política de veracidade (P1): `renderLastEpisode`
+    # depende de PLAYBACK_SOURCES/episodeWhen definidos logo acima dele.
+    _p1 = html.index('        // P1 (veracidade): a linha NÃO pode sugerir')
+    render = html[_p1:html.index('        async function loadLocalSavedMovies()', _p1)]
     start = html.index('        async function markSelectedEpisode()')
     end = html.index('        function deleteSelectedVodModal()', start)
     script = r'''
@@ -148,7 +168,13 @@ async function run(){
     assert(!label.hidden && label.textContent.includes('Marcado por você') && label.textContent.includes('Episódio 3'));
     continueWatching=[{series_title:'Série',episode_number:4,position_source:'selected'}];
     renderLastEpisode();
-    assert(label.textContent.includes('Selecionado anteriormente'));
+    // P1: seleção NÃO é reprodução. O rótulo diz o que se sabe, sem afirmar
+    // que algo foi assistido.
+    assert(label.textContent.includes('Reprodução não registrada'), label.textContent);
+    assert(!/assistid/i.test(label.textContent), 'never claim "assistido" for a selection');
+    continueWatching=[{series_title:'Série',episode_number:230,position_source:'inferred_stream'}];
+    renderLastEpisode();
+    assert(label.textContent.includes('Possível reprodução na TV') && label.textContent.includes('Episódio 230'));
     continueWatching=[]; renderLastEpisode(); assert(label.hidden);
 }
 run().catch(e=>{console.error(e);process.exit(1)});

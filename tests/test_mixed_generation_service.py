@@ -256,6 +256,8 @@ class FakeDevice:
     SUPERVISOR_BODY = b"#!/system/xbin/busybox sh\n# handoff.ack acceptance record\n"
     LEGACY_BODY = b"#!/system/xbin/busybox sh\n# (older revision, no handoff protocol)\n"
 
+    MANIFEST_ID = "b9d04e0a" * 8
+
     def supervisor_body(self) -> bytes:
         return self.LEGACY_BODY if self.inherit_old_script else self.SUPERVISOR_BODY
 
@@ -318,6 +320,46 @@ class FakeDevice:
                 argv, 0,
                 "busybox\nsh\n/data/local/tmp/live-favorites"
                 f"/{self.lock_session}/activate_live_favorites_tablet.sh\nstart\n", "")
+        if "describe" in tokens and any(
+                t.endswith("/activate_live_favorites_tablet.sh") for t in tokens):
+            # The RUNNING revision announces its own identity. An older revision
+            # has no such action at all, which is what the "not handoff capable"
+            # refusal is based on: the file on disk is never the evidence.
+            index = tokens.index("describe")
+            path = tokens[index + 1] if len(tokens) > index + 1 else ""
+            protocol = "none" if self.inherit_old_script else "handoff.ack 1"
+            locked = 1 if (self.inherit_old_script or self.lock_owner) else 0
+            # The real action reads the generation and manifest out of the
+            # package it is describing, so the fake must too: reporting "none"
+            # would make every reconciliation look like a foreign generation.
+            generation = manifest_id = "none"
+            raw = self._read_device(path + "/favorites_manifest.json")
+            if raw:
+                import json as _json
+                try:
+                    data = _json.loads(raw.decode("utf-8", "replace"))
+                    generation = str(data.get("generation", "none"))
+                    manifest_id = str(data.get("manifest_id", "none"))
+                except ValueError:
+                    pass
+            # A REAL supervisor reports every identity component and the token it
+            # computes from them; the host now refuses a fragment, so the fake
+            # must describe itself exactly like the tablet script does. A device
+            # without a package manifest cannot be part of a real handoff at all
+            # (the package is validated before activation), so the fake reports
+            # the manifest id of the generation it is serving.
+            if str(manifest_id) == "none":
+                manifest_id = FakeDevice.MANIFEST_ID
+            token = "|".join(["fakeboot", "a" * 32, "4242-999", str(manifest_id),
+                              "c" * 32])
+            return CompletedProcess(
+                argv, 0,
+                f"describe protocol={protocol} boot_id=fakeboot "
+                f"generation={generation} manifest_id={manifest_id} "
+                f"package_digest={'c' * 32} runtime_digest={'d' * 32} "
+                f"supervisor=4242-999 candidate=4242-999 lun=none "
+                f"lock_owned={locked} instance_id={'a' * 32} "
+                f"identity={token} path={path}\n", "")
         if "sha256sum" in command:
             package = None
             if "cd" in tokens:
@@ -2270,15 +2312,14 @@ class MixedGenerationServiceTests(unittest.TestCase):
     def test_takeover_grammar_rejects_contradictions_and_missing_proof(self):
         def fake_with(answer):
             device = FakeDevice()
+            # The real transport answers the discovery and capability commands;
+            # only the takeover marker itself is scripted here.
+            real = mgs.TabletTransport(runner=device)
 
             class Fake(mgs.TabletTransport):
                 def root_shell(self, command, check=True, timeout=None):
-                    if "handoff.protocol" in command:
-                        class C:
-                            returncode = 0
-                            stdout = "handoff.ack 1\n"
-                            stderr = ""
-                        return C()
+                    if "handoff-takeover" not in command:
+                        return real.root_shell(command, check=check, timeout=timeout)
 
                     class R:
                         returncode = 0
@@ -2312,6 +2353,11 @@ class MixedGenerationServiceTests(unittest.TestCase):
 
     def test_previous_supervisor_capability_reports_both_answers(self):
         capable = FakeDevice()
+        # The proof is the RUNNING supervisor's own announcement, so the lock must
+        # be held by the session being asked about. A file on disk is not
+        # evidence: a later revision can replace it while the old process still
+        # supervises.
+        capable.lock_session = "sess-a"
         service = self.service(transport=mgs.TabletTransport(runner=capable))
         self.assertEqual(service.previous_supervisor_capability("sess-a"), (True, "ok"))
 
@@ -2345,18 +2391,17 @@ class MixedGenerationServiceTests(unittest.TestCase):
     def test_handoff_takeover_reads_the_marker_not_the_exit_status(self):
         """A refusal is only believed when the marker says so."""
         def fake_with(answer, *, capable=True, on_stderr=False, announce=None):
-            device = FakeDevice()
+            # The running supervisor's own ``describe`` answer is the capability
+            # proof now, so an older revision is modelled by the device itself
+            # (``inherit_old_script``) instead of by intercepting a file read.
+            capable_now = capable if announce is None else announce
+            device = FakeDevice(inherit_old_script=not capable_now)
+            real = mgs.TabletTransport(runner=device)
 
             class Fake(mgs.TabletTransport):
                 def root_shell(self, command, check=True, timeout=None):
-                    if "handoff.protocol" in command:
-                        capable_now = capable if announce is None else announce
-
-                        class C:
-                            returncode = 0
-                            stdout = "handoff.ack 1\n" if capable_now else ""
-                            stderr = ""
-                        return C()
+                    if "handoff-takeover" not in command:
+                        return real.root_shell(command, check=check, timeout=timeout)
 
                     class R:
                         returncode = 0
@@ -2398,21 +2443,13 @@ class MixedGenerationServiceTests(unittest.TestCase):
         device = FakeDevice(inherit_old_script=True)
         device.lock_session = "sess-prev"
 
-        # Delegate to the fake device through the real transport, intercepting
-        # only the capability probe.
+        # Delegate to the fake device through the real transport: the refusal
+        # must come from the running revision's own announcement, and the file on
+        # disk must NOT be consulted (a later revision can replace it while the
+        # old process still supervises).
         real = mgs.TabletTransport(runner=device)
 
-        class LockedOld(mgs.TabletTransport):
-            def root_shell(self, command, check=True, timeout=None):
-                if "handoff.protocol" in command:
-                    class C:
-                        returncode = 0
-                        stdout = ""
-                        stderr = ""
-                    return C()
-                return real.root_shell(command, check=check, timeout=timeout)
-
-        service.transport = LockedOld(runner=device)
+        service.transport = real
         with self.assertRaises(mgs.PreviousSupervisorNotUpgradable):
             service.handoff_takeover("sess-x", "b" * 32, "sess-prev")
 
@@ -3102,3 +3139,168 @@ class SupervisorIdentityTests(unittest.TestCase):
     def test_unrelated_output_is_not_an_identity(self):
         self.assertIsNone(self.parse("nada aqui"))
         self.assertIsNone(self.parse(""))
+
+
+class SupervisorReconciliationTests(unittest.TestCase):
+    """Fase 2 §4: a path is a location, an incarnation is the identity.
+
+    A generation recovered into an alternative folder supervises the same
+    content from somewhere else, so the recorded location is reconciled by
+    compare-and-swap — and only with full proof. A folder that merely contains
+    the same manifest is never adopted.
+    """
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        base = Path(self._dir.name)
+        (base / "staging").mkdir()
+        self.service = mgs.MixedGenerationService(
+            server_url="http://127.0.0.1:8080",
+            export_config_path=base / "export.json",
+            staging_base=base / "staging",
+            state_file=base / "state.json",
+            now=lambda: 1000.0, poll_interval=0.0, publication_timeout=0.0)
+        self.service.state.update({"active_session": "mixed-gen18-0ca1b784",
+                                   "active_generation": 18,
+                                   "active_manifest_id": "mid18"})
+        self.service.transport = mgs.TabletTransport(runner=FakeDevice())
+
+    @staticmethod
+    def _identity(path="/data/local/tmp/live-favorites/gen18-recuperada",
+                  incarnation="4242-999", manifest="mid18", lock_owned="1",
+                  generation="18"):
+        return mgs.SupervisorIdentity.parse(
+            f"describe protocol=handoff.ack 1 boot_id=b1 generation={generation} "
+            f"manifest_id={manifest} package_digest=p runtime_digest=r "
+            f"supervisor={incarnation} candidate=5-5 lun=/lun/tv.img "
+            f"lock_owned={lock_owned} path={path}")
+
+    def _observation(self, session="gen18-recuperada", **over):
+        identity = self._identity(**over)
+        return {"answered": True, "reason": None, "identity": identity,
+                "path": identity.path, "session": session,
+                "lock_owner": identity.incarnation.split("-")[0]}
+
+    def test_recovery_in_an_alternative_folder_reconciles_the_location(self):
+        out = self.service.reconcile_location(
+            self._observation(), generation=18, manifest_id="mid18")
+        self.assertTrue(out["reconciled"])
+        self.assertEqual(self.service.state["active_session"], "gen18-recuperada")
+        self.assertEqual(self.service.state["session_reconciled_from"],
+                         "mixed-gen18-0ca1b784")
+        # The swap is written where every reader looks, and it survives a reload
+        # of the journal file (an in-memory-only change would be lost).
+        self.assertEqual(out["from"], "mixed-gen18-0ca1b784")
+        again = self.service.reconcile_location(
+            self._observation(), generation=18, manifest_id="mid18")
+        self.assertTrue(again["reconciled"])
+        self.assertEqual(again["reason"], "location_already_reconciled")
+
+    def test_a_different_manifest_is_not_adopted_just_by_location(self):
+        out = self.service.reconcile_location(
+            self._observation(manifest="outro"), generation=18,
+            manifest_id="mid18")
+        self.assertFalse(out["reconciled"])
+        self.assertEqual(out["reason"], "observed_manifest_differs")
+        self.assertEqual(self.service.state["active_session"],
+                         "mixed-gen18-0ca1b784")
+
+    def test_a_supervisor_that_does_not_own_the_lock_is_not_adopted(self):
+        out = self.service.reconcile_location(
+            self._observation(lock_owned="0"), generation=18, manifest_id="mid18")
+        self.assertFalse(out["reconciled"])
+        self.assertEqual(out["reason"], "observed_supervisor_does_not_own_lock")
+
+    def test_an_unproven_incarnation_is_never_reconciled(self):
+        out = self.service.reconcile_location(
+            self._observation(incarnation="none"), generation=18,
+            manifest_id="mid18")
+        self.assertFalse(out["reconciled"])
+        self.assertEqual(out["reason"], "observed_incarnation_unproven")
+
+    def test_identity_changed_between_query_and_action_blocks_the_takeover(self):
+        """Reboot, a recycled pid, or another publisher winning the race."""
+        first = self._identity()
+        moved = self._identity(incarnation="4242-424242")
+        self.service.observe_active_supervisor = lambda: {
+            "answered": True, "reason": None, "identity": moved,
+            "path": moved.path, "session": "gen18-recuperada",
+            "lock_owner": "4242"}
+        self.assertFalse(self.service.revalidate_supervisor(first))
+        with self.assertRaises(mgs.PreviousSupervisorNotUpgradable) as ctx:
+            self.service.handoff_takeover("sess-x", "b" * 32, "gen18-recuperada",
+                                          observed=first)
+        self.assertIn("changed before the takeover", str(ctx.exception))
+
+    def test_an_unchanged_identity_revalidates(self):
+        first = self._identity()
+        self.service.observe_active_supervisor = lambda: self._observation()
+        self.assertTrue(self.service.revalidate_supervisor(first))
+
+
+class OperationTrackerCorrelationTests(unittest.TestCase):
+    """Correlation is proved, not assumed: one tablet slot is not enough.
+
+    The slot says *some* operation is active for the tablet; it never says that
+    this task, this revision and this execution are the ones that reserved it.
+    """
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.db = Path(self._dir.name) / "ops.db"
+        self._env = mock.patch.dict(os.environ, {}, clear=False)
+        self._env.start()
+        self.addCleanup(self._env.stop)
+        os.environ["MIXED_OPERATIONS_DB"] = str(self.db)
+        os.environ.pop("MIXED_TABLET_ID", None)
+        import mixed_operations
+        self.store = mixed_operations.OperationStore(self.db)
+        self.op_id, _ = self.store.begin(
+            tablet_id=mgs._publisher_tablet_id(), principal="dashboard",
+            intention={"task_id": "a1b2c3d4", "operation": "apply",
+                       "revision": "7"},
+            user_message="Atualização solicitada")
+
+    def _tracker(self, *, revision=7, executor="hostA:10-100"):
+        return mgs._OperationTracker(mgs._publisher_tablet_id(), "a1b2c3d4",
+                                     revision=revision, executor=executor)
+
+    def test_claim_binds_the_operation_to_the_execution(self):
+        tracker = self._tracker()
+        self.assertEqual(tracker.claim(), "owned")
+        self.assertEqual(self.store.get(self.op_id)["executor"], "hostA:10-100")
+        # The same execution re-claims its own row: a retry inside one run is not
+        # a conflict.
+        self.assertEqual(tracker.claim(), "owned")
+        # A different execution must never adopt it.
+        other = self._tracker(executor="hostB:20-200")
+        self.assertEqual(other.claim(), "blocked")
+        self.assertEqual(self.store.get(self.op_id)["executor"], "hostA:10-100")
+
+    def test_a_different_revision_is_refused(self):
+        self.assertEqual(self._tracker(revision=8).claim(), "blocked")
+
+    def test_a_different_task_is_refused(self):
+        tracker = mgs._OperationTracker(mgs._publisher_tablet_id(), "deadbeef",
+                                        revision=7, executor="hostA:10-100")
+        self.assertEqual(tracker.claim(), "blocked")
+
+    def test_a_coordination_failure_after_the_effect_is_not_a_safe_failure(self):
+        tracker = self._tracker()
+        self.assertEqual(tracker.claim(), "owned")
+
+        def boom(*_args, **_kw):
+            raise RuntimeError("database is gone")
+
+        tracker._store.finish = boom
+        before = self._tracker()
+        self.assertEqual(before.claim(), "owned")
+        before._store.finish = boom
+        # No effect yet: an unrecorded result is a clean failure.
+        self.assertEqual(before.finish("failed_safe", "x"), "unrecorded")
+        # After a possible effect, a clean failure would be a fabrication.
+        tracker.mark_effect_started()
+        self.assertEqual(tracker.finish("failed_safe", "x"),
+                         "unrecorded_after_effect")

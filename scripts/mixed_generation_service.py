@@ -35,6 +35,7 @@ import logging
 import math
 import atexit
 import os
+import socket
 from pathlib import Path
 import re
 import shutil
@@ -127,6 +128,15 @@ PUBLISH_BLOCKED_MESSAGES = {
 
 REFRESH_KEY = "inventory"
 _SESSION_RE = re.compile(r"[A-Za-z0-9_.-]{1,128}")
+# A process incarnation is `<pid>-<starttime>`: the pid alone is reused by the
+# kernel, so the start time is what makes one process lifetime distinguishable
+# from the next. Nothing else is accepted as an identity.
+# The full identity token the tablet reports and compares:
+# boot|instance|incarnation|manifest_id|package_digest - five non-empty
+# components, no spaces. It is validated as a whole because the tablet refuses
+# anything that is not complete, so a fragment must never be forwarded as if it
+# were one.
+_IDENTITY_TOKEN_RE = re.compile(r"[0-9A-Za-z_.:-]{1,64}(\|[0-9A-Za-z_.:-]{1,128}){4}")
 _SHA_LINE_RE = re.compile(r"^([0-9a-f]{64})  ([A-Za-z0-9_./-]{1,128})$")
 
 
@@ -1652,6 +1662,187 @@ class MixedGenerationService:
         return SupervisorIdentity.parse(
             (completed.stdout or "") + (completed.stderr or ""))
 
+    # ------------------------------------------------- supervisor observation
+    def _lock_pid_path(self) -> str:
+        return self._require_transport().base + "/mode_switch.lock/pid"
+
+    def _read_lock_owner(self) -> str | None:
+        """The pid currently registered as the mode-lock owner, or None.
+
+        The lock is the tablet's protected registry: it is the only place that
+        says which process is actually supervising, and it is written by that
+        process itself. Reading it is discovery, never proof — the proof is the
+        owner's own ``describe`` answer.
+        """
+        try:
+            completed = self._require_transport().root_shell(
+                f"cat {_quote(self._lock_pid_path())}", check=False)
+        except (PublicationError, TabletCommandError):
+            return None
+        owner = (completed.stdout or "").strip()
+        return owner if owner.isdigit() else None
+
+    def _cmdline_of(self, pid: int) -> str | None:
+        try:
+            completed = self._require_transport().root_shell(
+                f"tr '\\000' '\\n' < /proc/{int(pid)}/cmdline", check=False)
+        except (PublicationError, TabletCommandError):
+            return None
+        return completed.stdout or ""
+
+    def observe_active_supervisor(self) -> dict:
+        """Identify the supervisor that is ACTUALLY running. Read-only.
+
+        Discovery runs through the protected registry (the mode lock), because
+        the recorded session name is a location and a generation recovered into
+        another folder keeps the same identity elsewhere. The location is then
+        used only to reach the script of the *running* revision, whose own
+        ``describe`` answer is the proof.
+
+        Returns a dict with ``identity`` (or None) plus the discovered ``path``,
+        ``session`` and ``lock_owner``. ``answered`` says whether a supervisor
+        was found at all; every failure carries a ``reason`` so a caller can
+        refuse specifically instead of guessing.
+        """
+        result = {"answered": False, "reason": None, "identity": None,
+                  "path": None, "session": None, "lock_owner": None}
+        if self.transport is None:
+            result["reason"] = "no_tablet_transport"
+            return result
+        owner = self._read_lock_owner()
+        if owner is None:
+            # No live registration: there is no supervisor to identify. That is
+            # not a failure, and it is not proof that one is absent either —
+            # the caller sees `answered=False`.
+            result["reason"] = "no_lock_owner_registered"
+            return result
+        result["lock_owner"] = owner
+        cmdline = self._cmdline_of(int(owner))
+        if cmdline is None:
+            result["reason"] = "lock_owner_cmdline_unreadable"
+            return result
+        prefix = self._require_transport().base + "/live-favorites/"
+        found = None
+        for token in cmdline.splitlines():
+            token = token.strip()
+            if not token.startswith(prefix) or not token.endswith(
+                    "/activate_live_favorites_tablet.sh"):
+                continue
+            session = token[len(prefix):-len("/activate_live_favorites_tablet.sh")]
+            if _SESSION_RE.fullmatch(session):
+                found = (session, token[:-len("/activate_live_favorites_tablet.sh")])
+                break
+        if found is None:
+            # A lock owner whose own command line does not name a known session
+            # script is not a supervisor this publisher can identify. Refusing
+            # here is what keeps a foreign or older process from being signalled
+            # on the strength of a directory name.
+            result["reason"] = "lock_owner_is_not_a_known_supervisor"
+            return result
+        session, path = found
+        identity = self.describe_supervisor(path)
+        if identity is None:
+            result["reason"] = "supervisor_did_not_answer describe"
+            result["session"], result["path"] = session, path
+            return result
+        if not identity.incarnation.startswith(owner + "-"):
+            # The registry and the answer disagree about WHICH process is
+            # supervising, so neither is trustworthy. Never reconcile on this.
+            result["reason"] = "supervisor_incarnation_disagrees_with_lock_owner"
+            result["session"], result["path"] = session, path
+            return result
+        result.update({"answered": True, "identity": identity,
+                       "session": session, "path": path})
+        return result
+
+    def revalidate_supervisor(self, observed) -> bool:
+        """Re-read the identity under the guard, immediately before a mutation.
+
+        Between the moment a caller decides to take over a generation and the
+        moment it signals anything, the tablet can reboot, a pid can be
+        recycled, or another publisher can win the race. The identity must still
+        be the same incarnation, otherwise the caller proceeds from a fact that
+        has already expired.
+        """
+        if not isinstance(observed, SupervisorIdentity):
+            return False
+        current = self.observe_active_supervisor()
+        if not current.get("answered"):
+            return False
+        return observed.same_incarnation(current.get("identity"))
+
+    def reconcile_location(self, observation: dict, *, generation=None,
+                           manifest_id=None) -> dict:
+        """Compare-and-swap the RECORDED location onto the observed one.
+
+        Required by §4: a generation recovered into an alternative folder is
+        accepted only with full proof of the supervisor AND the artifacts, and
+        the observed location is reconciled in the active record before any
+        handoff is negotiated. A folder that merely contains the same manifest
+        is never adopted: identity (incarnation + lock ownership) and the
+        recorded generation/manifest must all agree first.
+
+        The write is a compare-and-swap: the recorded session must still be the
+        one that was read when the swap was prepared, otherwise the record
+        changed under us and nothing is written.
+        """
+        identity = observation.get("identity") if isinstance(observation, dict) else None
+        session = observation.get("session") if isinstance(observation, dict) else None
+        if not isinstance(identity, SupervisorIdentity) or not session:
+            return {"reconciled": False, "reason": "no_observed_supervisor"}
+        if not identity.lock_owned:
+            return {"reconciled": False, "reason": "observed_supervisor_does_not_own_lock"}
+        if identity.incarnation == "none":
+            return {"reconciled": False, "reason": "observed_incarnation_unproven"}
+        recorded_session = str(self.state.get("active_session") or "")
+        recorded_generation = self.state.get("active_generation")
+        recorded_manifest = str(self.state.get("active_manifest_id") or "")
+        if not recorded_session:
+            return {"reconciled": False, "reason": "no_recorded_session"}
+        if generation is not None and recorded_generation != generation:
+            return {"reconciled": False, "reason": "observed_generation_differs"}
+        if manifest_id and identity.manifest_id != manifest_id:
+            # Only the manifest the record already trusts is accepted; a folder
+            # holding a DIFFERENT manifest is a different generation.
+            return {"reconciled": False, "reason": "observed_manifest_differs"}
+        if session == recorded_session:
+            return {"reconciled": True, "reason": "location_already_reconciled",
+                    "session": session}
+        try:
+            with self.state_lock():
+                # CAS: EVERY field the proof was based on must be unchanged
+                # since it was read above, not just the session. Reading the
+                # generation and manifest outside the lock and re-checking only
+                # the path would let a publication promoted in between be
+                # attributed to the location we just adopted.
+                if str(self.state.get("active_session") or "") != recorded_session:
+                    return {"reconciled": False, "reason": "record_changed_concurrently"}
+                if self.state.get("active_generation") != recorded_generation:
+                    return {"reconciled": False, "reason": "record_changed_concurrently"}
+                if str(self.state.get("active_manifest_id") or "") != recorded_manifest:
+                    return {"reconciled": False, "reason": "record_changed_concurrently"}
+                updates = {"active_session": session,
+                           "session_reconciled_from": recorded_session,
+                           "session_reconciled_at": self._now(),
+                           "session_reconciled_incarnation": identity.incarnation}
+                # Top-level state, exactly like the promotion path writes it:
+                # `active_session` is read back from `self.state[...]` by every
+                # confirmation and activation helper, so recording it inside the
+                # publication journal would silently change nothing.
+                self.state.update(updates)
+                journal = self._journal()
+                journal.update({"session_reconciled_from": recorded_session,
+                                "session_reconciled_incarnation": identity.incarnation,
+                                "updated_ts": self._now()})
+                self.state["publication"] = journal
+                self._save_state()
+        except StateLockedError:
+            return {"reconciled": False, "reason": "record_locked_by_another_publisher"}
+        logger.warning("reconciled the recorded location of %s: %s -> %s",
+                       identity.incarnation, recorded_session, session)
+        return {"reconciled": True, "reason": "location_reconciled",
+                "session": session, "from": recorded_session}
+
     def verify_active_on_tablet(self, session: str, generation: int,
                                 manifest_id: str) -> dict:
         """Ask the tablet to prove which generation/manifest is active."""
@@ -1802,19 +1993,35 @@ class MixedGenerationService:
         raise ActivationNotStarted("tablet did not start the supervised session")
 
     def handoff_lease(self, session: str, token: str,
-                     *, previous_session: str | None = None) -> None:
+                     *, previous_session: str | None = None,
+                     observed_incarnation: str | None = None) -> None:
         """Ask the tablet to publish our exclusive handoff lease.
 
-        ``previous_session`` authorises a controlled handover: a live mode lock
-        owned by that exact (recorded) generation is expected and will be taken
-        over next; any other owner still refuses the lease.
+        ``previous_session`` names the recorded generation a controlled handover
+        would replace. ``observed_incarnation`` is what the caller actually saw
+        with ``describe``; the tablet compares it against the live lock owner's
+        own ``<pid>-<starttime>``.
+
+        A path is a location, not an identity. If a live owner holds the lock and
+        no observed incarnation is proven, the tablet refuses: authorising a
+        divergent owner because a directory name appears in its command line is
+        exactly the defect this parameter removes.
         """
         transport = self._require_transport()
         package_dir = self._package_dir_on_tablet(session)
         args = ["handoff-lease", package_dir, token, str(self.guard_ttl)]
-        if previous_session:
-            if not _SESSION_RE.fullmatch(previous_session):
-                raise PublicationError("invalid previous session name")
+        if previous_session and not _SESSION_RE.fullmatch(previous_session):
+            raise PublicationError("invalid previous session name")
+        if observed_incarnation:
+            # The tablet reads the SESSION from $5 and the identity TOKEN from $6.
+            # Exactly one of each is sent: appending the session in both branches
+            # shifted the token onto the session field, and every handoff from a
+            # live previous supervisor was refused for "no identity".
+            if not _IDENTITY_TOKEN_RE.fullmatch(observed_incarnation):
+                raise PublicationError("invalid observed identity token")
+            args.append(previous_session or "")
+            args.append(observed_incarnation)
+        elif previous_session:
             args.append(previous_session)
         command = self._script_command(package_dir, *args)
         completed = transport.root_shell(command, check=False)
@@ -1827,8 +2034,6 @@ class MixedGenerationService:
             return
         raise PublicationError(
             "tablet refused the handoff lease: " + sanitize_tablet_output(output))
-        if "already_active" in output:
-            raise PublicationError("tablet reports this session already active")
 
     def handoff_renew(self, session: str, token: str) -> None:
         """Extend the tablet handoff lease; only its token owner may do so."""
@@ -1850,61 +2055,66 @@ class MixedGenerationService:
     # revision that understands (and records) the handoff acceptance.
     HANDOFF_PROTOCOL_ANNOUNCEMENT = "handoff.ack 1"
 
-    def previous_supervisor_capability(self, previous_session: str) -> tuple[bool, str]:
+    def previous_supervisor_capability(self, previous_session: str,
+                                       *, identity=None) -> tuple[bool, str]:
         """Can the RUNNING supervisor of ``previous_session`` take a handoff?
 
-        Read-only: it inspects the script that session is actually executing.
-        Refusing to signal a supervisor that cannot acknowledge is what keeps a
-        generation switch from destroying a working session.
+        The RUNNING supervisor's own ``describe`` announcement is the proof.
+        Reading the *file* is not: a later revision can replace the script while
+        the old process still supervises, which would make the file claim a
+        protocol the running process does not implement.
+
+        A revision that does not answer ``describe`` in the handoff protocol is
+        refused, never signalled on the assumption that it might cope: killing a
+        supervisor that cannot acknowledge is what strands the tablet in legacy
+        mode.
         """
-        if not _SESSION_RE.fullmatch(previous_session or ""):
+        if previous_session and not _SESSION_RE.fullmatch(previous_session):
             return False, "invalid_previous_session"
         if self.transport is None:
             return False, "no_tablet_transport"
-        package_dir = self._package_dir_on_tablet(previous_session)
-        # The RUNNING supervisor's own announcement is the proof. Reading the
-        # script file is not: a later revision can replace it while the old
-        # process still supervises, which would make the file claim a protocol
-        # the running process does not implement.
-        try:
-            probe = self._require_transport().root_shell(
-                f"cat {_quote(package_dir + '/activation/handoff.protocol')}",
-                check=False)
-        except (PublicationError, TabletCommandError):
+        observed = identity
+        observation_session = None
+        if observed is None:
+            observation = self.observe_active_supervisor()
+            if not observation.get("answered"):
+                reason = observation.get("reason") or "unidentified"
+                if reason in ("no_lock_owner_registered",
+                              "lock_owner_is_not_a_known_supervisor"):
+                    # No live supervisor registered: nothing to take over, so a
+                    # switch is free. This is the only case that skips the
+                    # protocol proof, and it skips it because there is no
+                    # process to signal.
+                    return True, "no_previous_supervisor_running"
+                return False, "previous_supervisor_capability_unreadable"
+            observed = observation.get("identity")
+            observation_session = observation.get("session")
+        if not isinstance(observed, SupervisorIdentity):
             return False, "previous_supervisor_capability_unreadable"
-        marker = (probe.stdout or "").strip()
-        if marker == self.HANDOFF_PROTOCOL_ANNOUNCEMENT:
+        if previous_session and observation_session \
+                and observation_session != previous_session:
+            # The lock is held by a supervisor of ANOTHER session. It is not the
+            # one this handoff would replace, so there is nothing of ours to
+            # take over — but this is a location fact, never an authorisation to
+            # signal it. A caller that expected the recorded session to be the
+            # running one must reconcile the location first (see
+            # ``reconcile_location``); signalling is only ever negotiated by
+            # identity, inside ``handoff_takeover``.
+            return True, "no_previous_supervisor_running"
+        if observed.protocol == self.HANDOFF_PROTOCOL_ANNOUNCEMENT:
             return True, "ok"
-        # No announcement. That is only a refusal when there is actually a
-        # running supervisor of that session to signal: killing a supervisor
-        # that cannot acknowledge is what strands the tablet in legacy mode.
-        # With no live lock owned by it there is nothing to take over, so the
-        # switch is free.
-        try:
-            lock = self._require_transport().root_shell(
-                "cat /data/local/tmp/mode_switch.lock/pid", check=False)
-        except (PublicationError, TabletCommandError):
-            return False, "previous_supervisor_capability_unreadable"
-        owner = (lock.stdout or "").strip()
-        if not owner or not owner.isdigit():
-            return True, "no_previous_supervisor_running"
-        try:
-            cmdline = self._require_transport().root_shell(
-                f"tr '\\000' '\\n' < /proc/{int(owner)}/cmdline", check=False)
-        except (PublicationError, TabletCommandError, ValueError):
-            return False, "previous_supervisor_capability_unreadable"
-        cmd = cmdline.stdout or ""
-        if f"/live-favorites/{previous_session}/" not in cmd:
-            # The lock belongs to somebody else: not our previous supervisor.
-            return True, "no_previous_supervisor_running"
         return False, "previous_supervisor_not_handoff_capable"
 
     def handoff_takeover(self, session: str, token: str,
-                         previous_session: str) -> bool:
+                         previous_session: str, *,
+                         observed=None) -> bool:
         """Stop the previous supervisor under our lease, then free the lock.
 
-        The tablet only terminates a process whose ``/proc/<pid>/cmdline``
-        proves it belongs to ``previous_session``; anything else is refused.
+        The takeover is bound to the instance the caller OBSERVED: the tablet
+        compares the lock owner's own incarnation against the observed one
+        immediately before the signal, so a delayed, retried or replayed command
+        cannot reach a process the caller never identified.
+
         A supervisor that cannot acknowledge the handoff is refused too: killing
         it would strand the tablet in the legacy mode with no record.
 
@@ -1917,13 +2127,46 @@ class MixedGenerationService:
                 answer lost (unknown outcome).
         """
         transport = self._require_transport()
-        capable, reason = self.previous_supervisor_capability(previous_session)
+        identity = observed if isinstance(observed, SupervisorIdentity) else None
+        if identity is None:
+            # No instance was handed over. Observe NOW instead of signalling on
+            # the strength of a directory name: a lock owner that cannot be
+            # identified is exactly the case a signal must not reach.
+            observation = self.observe_active_supervisor()
+            if observation.get("answered"):
+                identity = observation.get("identity")
+            elif observation.get("reason") not in (
+                    "no_lock_owner_registered",
+                    "lock_owner_is_not_a_known_supervisor"):
+                raise PreviousSupervisorNotUpgradable(
+                    "no supervisor instance could be observed before the "
+                    f"takeover ({observation.get('reason')})")
+        capable, reason = self.previous_supervisor_capability(previous_session,
+                                                              identity=identity)
         if not capable:
             raise PreviousSupervisorNotUpgradable(
                 f"previous supervisor cannot accept a handoff ({reason})")
+        # Revalidation under the guard, immediately before the mutation: the
+        # tablet re-reads the lock owner itself, but the host must not even ask
+        # if its own observation already expired (reboot, recycled pid, another
+        # publisher winning the race between the decision and the signal).
+        if identity is not None and not self.revalidate_supervisor(identity):
+            raise PreviousSupervisorNotUpgradable(
+                "the observed supervisor instance changed before the takeover")
         package_dir = self._package_dir_on_tablet(session)
-        command = self._script_command(package_dir, "handoff-takeover", package_dir,
-                                       token, previous_session)
+        takeover_args = ["handoff-takeover", package_dir, token, previous_session]
+        if identity is not None:
+            # Binding the command to the observed instance: the tablet refuses a
+            # command whose expectation no longer matches the live lock owner,
+            # and it compares the FULL tuple (boot, instance, incarnation,
+            # manifest, package digest) - a bare <pid>-<starttime> is refused as
+            # unproven, which used to make every takeover impossible.
+            if not identity.identity_is_complete():
+                raise PreviousSupervisorNotUpgradable(
+                    "the observed supervisor identity is incomplete; refusing "
+                    "to signal on a fragment")
+            takeover_args.append(identity.identity_token)
+        command = self._script_command(package_dir, *takeover_args)
         try:
             completed = transport.root_shell(command, check=False)
         except (PublicationError, TabletCommandError, OSError) as exc:
@@ -2491,9 +2734,70 @@ class MixedGenerationService:
 
             # 7. Tablet-side handoff lease, controlled takeover of the previous
             #    supervisor, then the supervised switch.
+            #
+            # Before anything is negotiated, identify the supervisor that is
+            # ACTUALLY running, by the protected registry (the mode lock) and by
+            # its own `describe` answer. The recorded session is a location; the
+            # incarnation is the identity. A generation recovered into another
+            # folder keeps its identity there, which is why the recorded
+            # location is reconciled here instead of being trusted.
+            observation = self.observe_active_supervisor()
+            observed_identity = (observation.get("identity")
+                                 if observation.get("answered") else None)
+            observed_incarnation = (
+                observed_identity.identity_token
+                if isinstance(observed_identity, SupervisorIdentity)
+                and observed_identity.identity_is_complete() else None)
+            # Reconciliation and the identity veto apply to a HANDOFF. With no
+            # recorded session there is no location to swap and no supervisor to
+            # take over, so the tablet's own lease stays the only gate: it refuses
+            # a live lock owner whose incarnation the caller did not prove.
+            if previous_session and observation.get("answered"):
+                reconciled = self.reconcile_location(
+                    observation, generation=previous_generation,
+                    manifest_id=previous_manifest_id or None)
+                if not reconciled.get("reconciled"):
+                    # The device and the record disagree about WHERE the running
+                    # supervisor is. Neither may be assumed: nothing is
+                    # signalled, the LUN is not touched, and the server-side
+                    # services go back to the generation the TV is showing.
+                    keeper.stop()
+                    self._rollback_vps(guard_token=guard_token, session=session)
+                    self._update_journal(
+                        phase="needs_reconciliation",
+                        last_error="session_location_not_reconciled",
+                        manual_reconciliation_required=True)
+                    return {"state": "needs_reconciliation",
+                            "generation": generation,
+                            "reason": "session_location_not_reconciled",
+                            "interrupts_playback": False, "reconnected": False,
+                            "message": "A TV usa uma sessão recuperada que não pôde "
+                                       "ser reconciliada. A lista nova não foi "
+                                       "aplicada; nada foi alterado na TV."}
+                previous_session = str(reconciled.get("session") or previous_session)
+            elif previous_session and observation.get("reason") in (
+                    "lock_owner_cmdline_unreadable",
+                    "supervisor_did_not_answer describe",
+                    "supervisor_incarnation_disagrees_with_lock_owner"):
+                # A live lock owner that nobody can identify is conflicting data,
+                # not a free device: refusing here is what keeps a blind takeover
+                # from signalling a process it never proved.
+                keeper.stop()
+                self._rollback_vps(guard_token=guard_token, session=session)
+                self._update_journal(
+                    phase="needs_reconciliation",
+                    last_error="session_identity_conflicting",
+                    manual_reconciliation_required=True)
+                return {"state": "needs_reconciliation", "generation": generation,
+                        "reason": "session_identity_conflicting",
+                        "interrupts_playback": False, "reconnected": False,
+                        "message": "O supervisor ativo não pôde ser identificado. "
+                                   "A lista nova não foi aplicada; nada foi "
+                                   "alterado na TV."}
             handoff_token = hashlib.sha256(
                 f"{session}:{generation}:{self._now()}".encode("utf-8")).hexdigest()[:32]
-            self.handoff_lease(session, handoff_token, previous_session=previous_session)
+            self.handoff_lease(session, handoff_token, previous_session=previous_session,
+                               observed_incarnation=observed_incarnation)
             # The tablet lease is the single-writer token for the LUN swap and
             # expires on its own TTL. Renew it in lockstep with the server guard
             # so a long takeover can never run on an expired lease; a refused
@@ -2506,7 +2810,8 @@ class MixedGenerationService:
                 takeover_uncertain = True
                 try:
                     takeover_done = self.handoff_takeover(
-                        session, handoff_token, previous_session)
+                        session, handoff_token, previous_session,
+                        observed=observed_identity)
                 except (PreviousSupervisorNotUpgradable,
                         PreviousSupervisorTakeoverRefused):
                     # A refusal BEFORE any signal is a KNOWN state: nothing was
@@ -2966,6 +3271,7 @@ class SupervisorIdentity:
 
     __slots__ = ("protocol", "boot_id", "generation", "manifest_id",
                  "package_digest", "runtime_digest", "supervisor", "candidate",
+                 "identity", "instance_id",
                  "lun", "lock_owned", "path")
 
     FIELDS = __slots__
@@ -3010,6 +3316,27 @@ class SupervisorIdentity:
     @property
     def incarnation(self) -> str:
         return self.supervisor
+
+    @property
+    def identity_token(self) -> str:
+        """The token the tablet compares under the guard.
+
+        Preferred source is the ``identity=`` field the running supervisor
+        reports, because it is exactly what the tablet will recompute. When an
+        older reply lacks it, the token is assembled from the individual fields
+        in the same order; if any component is a placeholder the result is NOT
+        complete and the caller must refuse instead of sending a fragment.
+        """
+        if isinstance(self.identity, str) and self.identity not in ("", "none"):
+            return self.identity
+        return "|".join([self.boot_id, self.instance_id, self.supervisor,
+                         self.manifest_id, self.package_digest])
+
+    def identity_is_complete(self) -> bool:
+        token = self.identity_token
+        if not _IDENTITY_TOKEN_RE.fullmatch(token):
+            return False
+        return "none" not in token.split("|")
 
     def same_incarnation(self, other: "SupervisorIdentity | None") -> bool:
         """True only when both name the SAME running process.
@@ -3058,11 +3385,30 @@ class _OperationTracker:
     :meth:`claim`, which fails closed.
     """
 
-    def __init__(self, tablet_id: str, task_id: str | None = None):
+    def __init__(self, tablet_id: str, task_id: str | None = None,
+                 revision: str | int | None = None,
+                 executor: str | None = None,
+                 operation_id: str | None = None):
         self.tablet_id = tablet_id
+        # A taskless publication (inventory refresh) legitimately has NO task id:
+        # it must still be able to adopt ITS OWN operation, so "no task" is a
+        # value to compare, not a reason to refuse.
         self.task_id = str(task_id) if task_id else None
-        self.operation_id = None
+        self.revision = str(revision) if revision not in (None, "") else None
+        # The durable operation the caller created. When present it is the
+        # PRIMARY correlation: the row is read by id and proved to be this task
+        # and this revision, instead of adopting whatever happens to be active
+        # for the tablet (which proves only that SOME operation holds the slot).
+        self.operation_id = str(operation_id) if operation_id else None
+        # The execution identity is this PROCESS: host + <pid>-<starttime>. A pid
+        # is recycled, so the start time is what makes one worker run
+        # distinguishable from the next, and the CAS in the store binds the
+        # operation to it instead of assuming "the worker that ran".
+        self.executor = executor or _local_execution_identity()
         self._store = None
+        self._effect_started = False
+        self._terminal_state = None
+        self.adopted_from_dead = False
         self._configured = bool(os.environ.get("MIXED_OPERATIONS_DB", "").strip())
 
     def claim(self) -> str:
@@ -3077,9 +3423,10 @@ class _OperationTracker:
                      on the device with no recorded owner is worse than not
                      acting, so the caller aborts before any effect.
 
-        Correlation is by ``(tablet_id, task_id)``, never by tablet alone: the
-        slot is unique per tablet, so adopting whatever happens to be active
-        would attach this run to an operation meant for a different task.
+        Correlation is ``(tablet_id, task_id, revision)`` **proven by a CAS that
+        records this execution**, never by tablet alone: the slot is unique per
+        tablet, so adopting whatever happens to be active would attach this run
+        to an operation meant for a different task or revision.
         """
         if not self._configured:
             return "legacy"
@@ -3092,6 +3439,8 @@ class _OperationTracker:
                          "refusing to publish", type(exc).__name__)
             self._store = None
             return "blocked"
+        if self.operation_id:
+            return self._claim_by_id()
         try:
             active = self._store.active_for_tablet(self.tablet_id)
         except Exception as exc:
@@ -3099,25 +3448,162 @@ class _OperationTracker:
                          "to publish", type(exc).__name__)
             return "blocked"
         if active is not None:
-            if not self.task_id or str(active.get("task_id") or "") != self.task_id:
-                logger.error("tablet %s is publishing task %r while this run is "
-                             "%r; refusing to attach to another intention",
-                             self.tablet_id, active.get("task_id"), self.task_id)
+            match = self._intention_matches(active)
+            if match != "ok":
+                logger.error("tablet %s is publishing task %r revision %r while "
+                             "this run is task %r revision %r (%s); refusing to "
+                             "attach to another intention",
+                             self.tablet_id, active.get("task_id"),
+                             active.get("intent_revision"), self.task_id,
+                             self.revision, match)
                 return "blocked"
             self.operation_id = active["operation_id"]
+            # Proving the association, not assuming it: the row must carry this
+            # task and (when both sides stated one) this revision, and the claim
+            # records WHICH execution owns it. A row already owned by another
+            # execution is refused rather than adopted.
+            try:
+                self._store.claim_execution(
+                    self.operation_id, task_id=self.task_id,
+                    revision=self.revision, executor=self.executor)
+            except Exception as exc:
+                logger.error("operation %s does not belong to this execution "
+                             "(%s: %s); refusing to publish",
+                             self.operation_id, type(exc).__name__, exc)
+                return "blocked"
             return "owned"
         # Nothing active: record this publication's intent here, so a durable
         # owner exists before any effect rather than after it.
         try:
             self.operation_id, _created = self._store.begin(
                 tablet_id=self.tablet_id, principal="publisher",
-                intention={"task_id": self.task_id, "operation": "apply"},
+                intention={"task_id": self.task_id, "operation": "apply",
+                           "revision": self.revision},
+                desired_generation=(int(self.revision)
+                                    if (self.revision or "").isdigit() else None),
                 user_message="Publicação iniciada pelo publicador")
+            self._store.claim_execution(
+                self.operation_id, task_id=self.task_id,
+                revision=self.revision, executor=self.executor)
         except Exception as exc:
             logger.error("could not record the operation before publishing "
                          "(%s); refusing to publish", type(exc).__name__)
             return "blocked"
         return "owned"
+
+    def _intention_matches(self, row: dict) -> str:
+        """Does this row describe THIS run's intention?
+
+        Both sides are normalised, so a taskless refresh (no task id anywhere)
+        matches instead of being refused for lacking an id it never had. A
+        mismatch names the first field that differs, because "blocked" with no
+        reason is not investigable.
+        """
+        mine_task = self.task_id or None
+        row_task = row.get("task_id") or None
+        if row_task != mine_task:
+            return "task_differs"
+        row_revision = row.get("intent_revision")
+        if self.revision is not None and row_revision is not None \
+                and str(row_revision) != str(self.revision):
+            return "revision_differs"
+        return "ok"
+
+    @staticmethod
+    def _executor_is_dead(token: str | None) -> bool:
+        """Can we PROVE the recorded execution no longer exists?
+
+        ``executor`` is ``host:<pid>-<starttime>``. Proof is only possible for
+        our own host: a pid that is gone, or one that was recycled (the start
+        time differs). Another host's pid says nothing here, so it stays
+        unproven and the caller must not steal.
+
+        This is what makes a crash survivable: an OOM/SIGKILL/reboot leaves the
+        row active with a dead executor, and the next worker either adopts it
+        (proof of death) or refuses. Without it the tablet's slot stayed held
+        for ever - the same symptom B1 had, through another door.
+        """
+        if not token:
+            return False
+        host, _, rest = str(token).partition(":")
+        if not host or host != socket.gethostname()[:32]:
+            return False
+        pid_text = rest.split("-", 1)[0]
+        if not pid_text.isdigit():
+            return False
+        pid = int(pid_text)
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text()
+        except OSError:
+            return True                      # the process is gone
+        fields = stat.rsplit(")", 1)[-1].split()
+        start = fields[19] if len(fields) > 19 else ""
+        recorded_start = rest.split("-", 1)[1] if "-" in rest else ""
+        # A recycled pid keeps the number and changes the start time.
+        return bool(recorded_start) and start != recorded_start
+
+    def _claim_by_id(self) -> str:
+        """Adopt the operation the caller created, after proving it is OURS.
+
+        Read by id, then check the intention and finally the execution CAS. A
+        terminal row means the work this click asked for is already decided:
+        republishing it would be a second activation behind the same id.
+        """
+        try:
+            row = self._store.get(self.operation_id)
+        except Exception as exc:
+            logger.error("could not read operation %s (%s); refusing to publish",
+                         self.operation_id, type(exc).__name__)
+            return "blocked"
+        if row.get("tablet_id") != self.tablet_id:
+            logger.error("operation %s belongs to another tablet; refusing",
+                         self.operation_id)
+            return "blocked"
+        match = self._intention_matches(row)
+        if match != "ok":
+            logger.error("operation %s does not match this run (%s); refusing",
+                         self.operation_id, match)
+            return "blocked"
+        if row.get("state") in _TERMINAL_OPERATION_STATES:
+            self._terminal_state = row.get("state")
+            return "already_terminal"
+        try:
+            self._store.claim_execution(
+                self.operation_id, task_id=self.task_id,
+                revision=self.revision, executor=self.executor)
+        except Exception as exc:
+            recorded = row.get("executor")
+            if not self._executor_is_dead(recorded):
+                logger.error("operation %s does not belong to this execution "
+                             "(%s: %s) and its owner is not provably dead; "
+                             "refusing to publish",
+                             self.operation_id, type(exc).__name__, exc)
+                return "blocked"
+            # The recorded execution is GONE: take the operation over instead of
+            # leaving the tablet's slot held until someone edits SQLite.
+            logger.warning("operation %s was owned by a dead execution (%s); "
+                           "adopting it", self.operation_id, recorded)
+            try:
+                self._store.claim_execution(
+                    self.operation_id, task_id=self.task_id,
+                    revision=self.revision, executor=self.executor,
+                    steal_dead=True)
+            except Exception as steal_exc:
+                logger.error("could not adopt operation %s from a dead "
+                             "execution (%s); refusing to publish",
+                             self.operation_id, type(steal_exc).__name__)
+                return "blocked"
+            self.adopted_from_dead = True
+        return "owned"
+
+    def mark_effect_started(self) -> None:
+        """Record that an interruptive effect may now have happened.
+
+        From this point on a coordination failure is no longer a clean failure:
+        the device may have been touched, so the outcome is unknown and must be
+        reconciled instead of reported as ``failed_safe``.
+        """
+        self._effect_started = True
 
     @property
     def active(self) -> bool:
@@ -3134,18 +3620,82 @@ class _OperationTracker:
             logger.warning("could not record operation phase %s (%s)",
                            state, type(exc).__name__)
 
-    def finish(self, state: str, message: str, **kw) -> None:
+    def finish(self, state: str, message: str, **kw) -> str:
+        """Record the result. Returns how far it could be recorded.
+
+        ``recorded``            the row now carries this result;
+        ``unrecorded_after_effect`` the write failed AND an interruptive effect
+                                may already have happened. The caller must not
+                                claim a safe failure: the device has to be
+                                reconciled, and the caller says so.
+        ``unrecorded``          the write failed before any effect, which is a
+                                clean failure (nothing was touched).
+
+        Notification failure never blocks a publication; coordination failure
+        after a possible effect must change what the operator is told.
+        """
         if not self.active:
-            return
+            return "not_tracked"
         try:
             self._store.finish(self.operation_id, state=state,
                                user_message=message, **kw)
+            return "recorded"
         except Exception as exc:
             logger.warning("could not record operation result %s (%s)",
                            state, type(exc).__name__)
+        if not self._effect_started:
+            return "unrecorded"
+        # The result could not be written although the device may have been
+        # touched. Writing "needs_reconciliation" is a second, independent
+        # attempt: if it also fails, the caller still must not pretend the
+        # publication failed safely.
+        try:
+            self._store.finish(self.operation_id, state="needs_reconciliation",
+                               user_message="O resultado não pôde ser registrado "
+                                            "depois de a TV possivelmente ter "
+                                            "sido alterada; reconciliar.")
+            return "recorded_needs_reconciliation"
+        except Exception as exc:
+            logger.error("operation result AND reconciliation marker could not "
+                         "be recorded (%s); the caller must report an unknown "
+                         "outcome", type(exc).__name__)
+            return "unrecorded_after_effect"
 
 
-def _operation_outcome_for(state: str) -> str:
+# States in which an operation's work is already decided. Reached only through
+# adoption BY ID: a duplicate click must report the result, never republish it.
+_TERMINAL_OPERATION_STATES = frozenset({"succeeded", "already_current",
+                                        "failed_safe", "blocked", "superseded"})
+
+
+def _local_execution_identity() -> str:
+    """Identity of THIS worker run: host + ``<pid>-<starttime>``.
+
+    The same primitive the tablet uses for its supervisor: a pid alone is
+    recycled by the kernel, so the start time is what distinguishes one run from
+    the next. It is deliberately short and free of secrets so it can be stored
+    and shown; it identifies a run, never a user.
+    """
+    pid = os.getpid()
+    start = "unknown"
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+        rest = stat.rsplit(")", 1)[-1].split()
+        start = rest[19] if len(rest) > 19 else "unknown"
+    except (OSError, IndexError, ValueError):
+        pass
+    return f"{socket.gethostname()[:32]}:{pid}-{start}"
+
+
+# Reasons the publisher reports as "unknown" WITHOUT having touched the device:
+# the catalog could not be read, so nothing was prepared and nothing was
+# activated. Reporting those as `needs_reconciliation` would hold the tablet's
+# single slot for an effect that never happened - the operator would be told to
+# reconcile a TV nobody touched. They are clean failures with a visible message.
+_PRE_EFFECT_UNKNOWN_REASONS = frozenset({"inventory_unavailable"})
+
+
+def _operation_outcome_for(state: str, reason: str | None = None) -> str:
     """Map an apply result onto an operation outcome, failing closed.
 
     An unrecognised state is the ambiguous case by definition: the device may
@@ -3153,12 +3703,81 @@ def _operation_outcome_for(state: str) -> str:
     active state would hold the tablet slot forever, so it becomes
     ``needs_reconciliation`` — the caller must look at the device, not guess.
     """
+    if state == "unknown" and reason in _PRE_EFFECT_UNKNOWN_REASONS:
+        return "failed_safe"
     outcome = _OPERATION_OUTCOME.get(state)
     if outcome is None:
         logger.warning("unrecognised apply state %r; marking for reconciliation",
                        state)
         return "needs_reconciliation"
     return outcome
+
+
+def _tracked_publication(service, args, *, task_id, run):
+    """Claim, run and record a publication — for BOTH apply and refresh.
+
+    The refresh used to return before this point, so the operation the endpoint
+    created was never adopted and never finished: the row stayed in `preparing`
+    forever, holding the tablet's single slot and hiding the problem (that state
+    is active but not an "unresolved" one). The coordination is identical for a
+    task anchor and for an inventory refresh, so it lives in one place.
+    """
+    tracker = _OperationTracker(
+        _publisher_tablet_id(), task_id,
+        revision=service.state.get("pending_generation"),
+        operation_id=getattr(args, "operation_id", None))
+    decision = tracker.claim()
+    if decision == "already_terminal":
+        terminal = {"state": tracker._terminal_state or "succeeded",
+                    "generation": None, "interrupts_playback": False,
+                    "reconnected": False, "duplicate": True,
+                    "operation_id": tracker.operation_id,
+                    "reason": "operation_already_terminal",
+                    "message": "Esta atualização já foi concluída; nada foi "
+                               "alterado na TV."}
+        print(json.dumps(terminal, indent=2) if args.json
+              else terminal["message"])
+        return 0
+    if decision == "blocked":
+        payload = {"state": "blocked", "generation": None,
+                   "interrupts_playback": False, "reconnected": False,
+                   "reason": "coordination_unavailable",
+                   "message": "Não foi possível registrar a operação antes de "
+                              "publicar; nada foi alterado na TV."}
+        print(json.dumps(payload, indent=2) if args.json
+              else payload["message"])
+        return 3
+    tracker.phase("preparing", "publication", "Preparando a publicação")
+    # From here on the device may be touched, so a coordination failure stops
+    # being a clean failure (see ``_OperationTracker.finish``).
+    tracker.mark_effect_started()
+    try:
+        result = run()
+    except StateLockedError:
+        # Another publisher already owns the state: report idempotently instead
+        # of failing (a double click must never look like a broken update).
+        result = {"state": "in_progress", "generation": None,
+                  "interrupts_playback": True, "reason": "state_locked",
+                  "message": "⏳ Atualização da lista já está em andamento"}
+    state = str(result.get("state") or "unknown")
+    recorded = tracker.finish(_operation_outcome_for(state, result.get("reason")),
+                              str(result.get("message") or state),
+                              error_code=result.get("reason"),
+                              reconnected=bool(result.get("reconnected")))
+    if recorded == "unrecorded_after_effect":
+        # The result could not be persisted although the TV may already have been
+        # altered. Claiming a clean failure here would be a fabrication, so the
+        # caller is told the outcome is unknown and must be reconciled.
+        result = {"state": "needs_reconciliation", "generation": None,
+                  "interrupts_playback": True, "reconnected": False,
+                  "reason": "coordination_unrecorded_after_effect",
+                  "message": "A alteração pode ter ocorrido, mas o resultado não "
+                             "pôde ser registrado. Confira o estado da TV antes de "
+                             "tentar novamente."}
+    print(json.dumps(result, indent=2) if args.json
+          else result.get("message") or result.get("state"))
+    return 0 if result.get("state") in ("active", "already_current",
+                                        "in_progress") else 1
 
 
 def _apply_command(args) -> int:
@@ -3206,13 +3825,20 @@ def _apply_command(args) -> int:
         print(json.dumps(service.apply_status(args.task_id), indent=2))
         return 0
     if args.refresh:
-        result = service.refresh_inventory(manual=True,
-                                           confirm_interrupt=args.confirm_interrupt)
-        print(json.dumps(result, indent=2))
-        return 0 if result.get("state") in ("active", "already_current", "in_progress") else 1
+        # Same tracked path as `apply`: a refresh is a publication, so its
+        # operation must be adopted and finished, not left holding the slot.
+        return _tracked_publication(
+            service, args, task_id="",
+            run=lambda: service.refresh_inventory(
+                manual=True, confirm_interrupt=args.confirm_interrupt))
     if args.background:
         detached = [sys.executable, str(Path(__file__).resolve()), "--apply",
                     "--task-id", str(args.task_id), "--json"]
+        if getattr(args, "operation_id", ""):
+            # The child is a DIFFERENT process: without this it would fall back to
+            # "whatever is active for the tablet", losing the proof that it is
+            # publishing the operation the endpoint created.
+            detached += ["--operation-id", str(args.operation_id)]
         if args.confirm_interrupt:
             detached.append("--confirm-interrupt")
         for flag, value in (("--state-file", args.state_file),
@@ -3244,40 +3870,12 @@ def _apply_command(args) -> int:
     # Coordination before any effect: if the store is configured but ownership
     # cannot be recorded, refuse. Acting on the device with no durable owner is
     # worse than not acting.
-    tracker = _OperationTracker(_publisher_tablet_id(), str(args.task_id))
-    decision = tracker.claim()
-    if decision == "blocked":
-        payload = {"state": "blocked", "generation": None,
-                   "interrupts_playback": False, "reconnected": False,
-                   "reason": "coordination_unavailable",
-                   "message": "Não foi possível registrar a operação antes de "
-                              "publicar; nada foi alterado na TV."}
-        if args.json:
-            print(json.dumps(payload, indent=2))
-        else:
-            print(payload["message"])
-        return 3
-    tracker.phase("preparing", "publication", "Preparando a publicação")
-    try:
-        result = service.apply_task(str(args.task_id),
-                                    confirm_interrupt=args.confirm_interrupt)
-    except StateLockedError:
-        # Another publisher already owns the state: report idempotently instead
-        # of failing (a double click must never look like a broken update).
-        result = {"state": "in_progress", "generation": None,
-                  "interrupts_playback": True, "reason": "state_locked",
-                  "message": "⏳ Atualização da lista já está em andamento"}
-    state = str(result.get("state") or "unknown")
-    outcome = _operation_outcome_for(state)
-    tracker.finish(outcome,
-                   str(result.get("message") or state),
-                   error_code=result.get("reason"),
-                   reconnected=bool(result.get("reconnected")))
-    if args.json:
-        print(json.dumps(result, indent=2))
-    else:
-        print(result.get("message") or result.get("state"))
-    return 0 if result.get("state") in ("active", "already_current", "in_progress") else 1
+    return _tracked_publication(
+        service, args, task_id=str(args.task_id),
+        run=lambda: service.apply_task(str(args.task_id),
+                                       confirm_interrupt=args.confirm_interrupt))
+
+
 
 
 def main() -> int:
@@ -3315,6 +3913,9 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true",
                         help="Manually apply the generation containing --task-id")
     parser.add_argument("--task-id", default="")
+    parser.add_argument("--operation-id", default="",
+                        help="durable operation to adopt (set by the endpoint; "
+                             "proves this task/revision instead of guessing)")
     parser.add_argument("--background", action="store_true",
                         help="Detach the application and return immediately")
     parser.add_argument("--json", action="store_true",

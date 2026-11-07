@@ -24,6 +24,7 @@ COPY torrent_downloader.py ./
 # a compromised web container cannot reach the tablet or the USB LUN.
 COPY scripts/mixed_bridge.py ./scripts/mixed_bridge.py
 COPY scripts/mixed_cache_signal.py ./scripts/mixed_cache_signal.py
+COPY scripts/mixed_watch_signal.py ./scripts/mixed_watch_signal.py
 COPY channels.json ./
 COPY generate_slate.sh ./
 COPY dashboard.html ./
