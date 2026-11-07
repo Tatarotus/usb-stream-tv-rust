@@ -25,6 +25,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import unicodedata
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRATCH = ROOT / "scratch"
@@ -87,6 +88,13 @@ def clean_series_name(name: str) -> str:
     name = re.sub(r"[:\s]+$", "", name).strip()
     name = re.sub(r"[<>:\"/\\|?*]", "", name)
     name = " ".join(name.split())
+    if name and not name.isascii():
+        # The tablet catalog validator supports ASCII components only.
+        # Keep a stable folder even when a title has no Latin transliteration.
+        original = name
+        name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii").strip()
+        if not name:
+            name = "Serie_" + hashlib.sha256(original.encode("utf-8")).hexdigest()[:8]
     if len(name) > 60:
         name = name[:60].rstrip(". ")
     return name
@@ -94,6 +102,7 @@ def clean_series_name(name: str) -> str:
 
 def clean_filename(name: str, fallback_id: str) -> str:
     name = re.sub(r"^\s*@\s*", "", str(name or "")).strip()
+    name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
     if name.lower().endswith(".mp4"):
         base_name = name[:-4].strip()
     elif name.lower().endswith(".trp"):

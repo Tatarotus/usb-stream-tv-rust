@@ -29,6 +29,27 @@ def with_revision(task):
 
 
 class MixedMediaPackageTests(unittest.TestCase):
+    def test_accented_series_does_not_block_an_unrelated_new_episode(self):
+        tasks = [with_revision(dict(id="76956c8e", status="ready", file_size=8192,
+                    title="Cyberpunk Mercenários S01E01", series_title="Cyberpunk Mercenários")),
+                 with_revision(dict(id="4fbf7a8f", status="ready", file_size=8192,
+                    title="A Noiva de Istambul S01E256", series_title="A Noiva de Istambul"))]
+        entries = pkg.process_vod_tasks(tasks)
+        normalized = pkg.mixed_template.validate_entries(
+            [{"path": e["path"], "size": e["logical_size"]} for e in entries], 128 * 1024**3)
+        self.assertEqual(len(normalized), 2)
+        self.assertTrue(any("Cyberpunk Mercenarios/" in e["path"] for e in normalized))
+        self.assertTrue(any("E256" in e["path"] for e in normalized))
+        self.assertEqual(tasks[0]["series_title"], "Cyberpunk Mercenários")
+
+    def test_non_latin_series_has_a_stable_nonempty_ascii_folder(self):
+        name = pkg.clean_series_name("星空")
+        self.assertTrue(name.isascii())
+        self.assertTrue(name.startswith("Serie_"))
+        self.assertEqual(name, pkg.clean_series_name("星空"))
+        self.assertNotEqual(name, pkg.clean_series_name("森林"))
+        self.assertEqual(pkg.clean_filename("星空.mp4", "12345678"), "video_12345678.mp4")
+
     def setUp(self):
         self.tmp_dir = Path(tempfile.mkdtemp(prefix="test-mixed-pkg-"))
 
