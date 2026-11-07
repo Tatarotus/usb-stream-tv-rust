@@ -130,6 +130,17 @@ class PlaybackCacheTests(unittest.TestCase):
                          "retenção temporal deve ser 72 h")
         self.assertEqual(self.cache._episode_max_entries, 4,
                          "o limite de ENTRADAS segue 4 e é independente do tempo")
+        # A mudança de hoje é SÓ temporal: a reserva de espaço e o teto do cache
+        # continuam os mesmos defaults do construtor (6 GiB de cache, 8 GiB de
+        # reserva livre). Se alguém mexer neles, este teste falha aqui.
+        import inspect
+        params = inspect.signature(CurrentVideoCache.__init__).parameters
+        self.assertEqual(params["max_bytes"].default, 6 * 1024**3,
+                         "teto do cache deve seguir 6 GiB")
+        self.assertEqual(params["min_free_bytes"].default, 8 * 1024**3,
+                         "reserva de espaço livre deve seguir 8 GiB")
+        self.assertEqual(params["block_size"].default, 4 * 1024**2,
+                         "o bloco de 4 MiB (mesmo teto da requisição da TV) segue igual")
         self.cache.max_bytes = 64 * MIB      # espaço de sobra: nada evicta por capacidade
         nxt = dict(self.task, id="cafebabe", remote_path="cafebabe.mp4")
         self.assertTrue(self.cache.select_episode(self.task, nxt))
