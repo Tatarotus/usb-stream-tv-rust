@@ -193,7 +193,10 @@ class TabletTransport:
     def root_shell(self, command: str, *, check: bool = True,
                    timeout: float | None = None) -> CompletedProcess:
         """Run ``command`` as root on the device through ``adb shell su -c``."""
-        return self.adb("shell", "su", "-c", command, check=check, timeout=timeout)
+        # adb shell joins its arguments into a remote shell command. Protect
+        # the complete su -c argument across that first parse, so quotes and
+        # pipes intended for the privileged shell reach it unchanged.
+        return self.adb("shell", "su", "-c", _quote(command), check=check, timeout=timeout)
 
     def push(self, local_dir: Path, remote_dir: str, *, check: bool = True) -> CompletedProcess:
         if self.ssh_host:

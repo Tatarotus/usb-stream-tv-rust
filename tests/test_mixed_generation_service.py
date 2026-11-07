@@ -303,7 +303,11 @@ class FakeDevice:
                     self.files[self._local_to_device(target) + "/" + item.name] = item.read_bytes()
             return CompletedProcess(argv, 0, "", "")
         if len(argv) >= 2 and argv[-2] == "-c":
-            return self._shell(argv[-1], argv)
+            import shlex
+            # adb joins argv into the first remote shell; su then interprets
+            # the resulting command. Model that boundary instead of bypassing it.
+            remote = shlex.split(" ".join(argv[argv.index("shell") + 1:]))
+            return self._shell(" ".join(remote[2:]), argv)
         return CompletedProcess(argv, 0, "", "")
 
     def _shell(self, command: str, argv):
@@ -494,7 +498,8 @@ class FakeDevice:
         command = argv[-1] if argv else ""
         parts = shlex.split(command)
         if parts[:1] == ["adb"]:
-            inner = parts[6] if len(parts) > 6 else ""
+            remote = shlex.split(" ".join(parts[parts.index("shell") + 1:]))
+            inner = " ".join(remote[2:])
             return self._shell(inner, argv)
         if "pkg-ready" in command:
             if self.remote_generation_exists:
